@@ -215,19 +215,28 @@
   .hud .timer.urgent{ color:var(--danger); text-shadow:0 0 8px var(--danger); }
   .hud .roomtag{ color:var(--phosphor-dim); font-size:11px; }
 
-  .game-area{ display:flex; gap:12px; flex-wrap:wrap; }
+  .game-area{ display:flex; min-width:0; min-height:0; }
   .canvas-wrap{
     position:relative; flex:1 1 auto; min-width:0;
-    display:flex; justify-content:center;
+    display:flex; align-items:center; justify-content:center;
     border-radius:8px; overflow:hidden;
     border:1px solid var(--wall-edge);
     box-shadow:0 0 18px rgba(45,75,255,0.25) inset;
     background:#000;
   }
-  canvas{ display:block; max-width:100%; height:auto; }
+  canvas{ display:block; max-width:100%; max-height:100%; height:auto; }
 
-  .sidebar{ flex:0 0 132px; display:flex; flex-direction:column; gap:6px; }
-  .sidebar .player-row{ font-size:11.5px; padding:5px 7px; }
+  /* La sidebar giocatori e' un pannello sovrapposto alla mappa (non ruba
+     piu' spazio orizzontale al canvas): cosi' la mappa puo' occupare
+     davvero tutto lo schermo, in verticale come in orizzontale. */
+  .sidebar{
+    position:absolute; top:8px; right:8px; z-index:6;
+    display:flex; flex-direction:column; gap:4px;
+    max-width:38%; max-height:70%; overflow-y:auto;
+    background:rgba(2,6,3,0.62); border:1px solid var(--panel-edge);
+    border-radius:8px; padding:6px; backdrop-filter: blur(2px);
+  }
+  .sidebar .player-row{ font-size:10.5px; padding:4px 6px; white-space:nowrap; }
 
   .killer-banner{
     position:absolute; top:8px; left:50%; transform:translateX(-50%);
@@ -298,13 +307,14 @@
     display: flex;
     flex-direction: column;
   }
-  .cabinet.wide .game-area{ flex:1; min-height:0; }
-  .cabinet.wide .canvas-wrap{ flex:1; min-height:0; }
+  .cabinet.wide .game-area{ flex:1; min-height:0; min-width:0; }
+  .cabinet.wide .canvas-wrap{ flex:1; min-height:0; min-width:0; width:100%; height:100%; }
+  .cabinet.wide .hud{ flex:0 0 auto; }
+  .cabinet.wide .controls-row{ flex:0 0 auto; }
 
   @media (max-width:480px){
     .cabinet{ padding:12px; }
-    .sidebar{ flex-basis:100%; flex-direction:row; flex-wrap:wrap; }
-    .sidebar .player-row{ flex:1 1 auto; }
+    .sidebar{ max-width:56%; font-size:10px; }
   }
 </style>
 </head>
@@ -385,6 +395,7 @@
     <div class="game-area">
       <div class="canvas-wrap" id="canvasWrap">
         <canvas id="gameCanvas"></canvas>
+        <ul class="sidebar player-list" id="gamePlayers"></ul>
         <div class="killer-banner" id="killerBanner"></div>
         <div class="toast" id="toast"></div>
 
@@ -394,8 +405,6 @@
           <div class="note">si torna in lobby tra pochi secondi&hellip;</div>
         </div>
       </div>
-
-      <ul class="sidebar player-list" id="gamePlayers"></ul>
     </div>
 
     <div class="controls-row">
@@ -457,6 +466,10 @@ const COLOR_HEX = {
 const KILLER_COLOR = "#ff2b4e";
 const COLOR_NAMES = Object.keys(COLOR_HEX);
 const DIR_ANGLE = { right: 0, down: 90, left: 180, up: 270 };
+// Deve restare identico a DIRECTIONS in common.py: usato dalla simulazione
+// locale (client-side prediction) per muovere SUBITO il proprio personaggio
+// alla pressione di un tasto, senza aspettare il giro di rete col server.
+const DIR_VEC = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
 
 // Personaggi selezionabili: id -> etichetta mostrata in lobby. La forma di
 // ognuno viene disegnata da drawPacmanVariant() piu' sotto. Deve restare in
@@ -552,6 +565,22 @@ let lastKnownKillerId = null;
 // arrivano gli aggiornamenti dal server.
 let anim = {};
 let lastServerPos = {};
+
+// ---- client-side prediction del proprio personaggio ----
+// Il movimento del PROPRIO giocatore non aspetta piu' la risposta del
+// server (che porta con se' l'intera latenza di rete, da qui il ritardo
+// "abbondante" lamentato): viene simulato subito in locale, con le stesse
+// identiche regole di movimento del server (vedi update_movement in
+// main.py), cosi' la pressione di un tasto si vede muoversi il personaggio
+// nello stesso frame. Il server resta comunque l'autorita' finale (morti,
+// vittorie, posizione degli altri giocatori): ad ogni "state" che arriva si
+// ricorreggono dolcemente eventuali piccole discrepanze, e si scatta
+// direttamente sulla posizione del server se lo scarto e' grande (es. dopo
+// uno spawn, o dopo essere stati bloccati da un muro in modo imprevisto).
+let predGridX = 0, predGridY = 0, predAccum = 0, predDir = null, predNextDir = null;
+let predInited = false;
+let lastFrameTs = null;
+
 let lastPhase = null;
 let lastAliveMap = {};
 let eatenPellets = new Set();
@@ -707,7 +736,10 @@ function showScreen(name){
   });
   document.querySelector(".cabinet").classList.toggle("wide", name === "game");
   document.body.classList.toggle("game-fullscreen", name === "game");
-  if (name === "game" && mazeW) setupCanvas();
+  if (name === "game"){
+    lastFrameTs = null;
+    if (mazeW) setupCanvas();
+  }
 }
 
 /* =========================================================================
@@ -732,9 +764,22 @@ function requestFullscreenSafe(){
     }
   } catch (e) { /* ok, resta il fallback CSS */ }
 }
-document.addEventListener("fullscreenchange", function(){
-  if (currentScreen === "game" && mazeW) setupCanvas();
-});
+function resettleCanvas(){
+  // Il passaggio a schermo intero (o la rotazione su mobile) cambia le
+  // dimensioni del viewport in modo asincrono rispetto all'evento stesso:
+  // un solo setupCanvas() immediato a volte legge ancora le misure vecchie.
+  // Ripetere la misura per un breve periodo elimina il "layout sbagliato
+  // dopo il fullscreen" senza dover indovinare tempi esatti per ogni browser.
+  if (currentScreen !== "game" || !mazeW) return;
+  setupCanvas();
+  [50, 150, 350, 600].forEach(function(ms){
+    setTimeout(function(){
+      if (currentScreen === "game" && mazeW) setupCanvas();
+    }, ms);
+  });
+}
+document.addEventListener("fullscreenchange", resettleCanvas);
+window.addEventListener("orientationchange", resettleCanvas);
 
 function showToast(msg){
   const el = document.getElementById("toast");
@@ -1049,6 +1094,14 @@ function leaveGame(){
 const canvas = document.getElementById("gameCanvas");
 let ctx = null;
 let dpr = window.devicePixelRatio || 1;
+let canvasScale = 1; // px canvas (device) per unita' BASE_CELL, condiviso col layer mappa
+
+// La mappa (muri, ombre/glow) non cambia frame per frame: ridisegnarla a
+// mano 60 volte al secondo era la causa principale degli "scatti". Ora
+// viene disegnata UNA SOLA VOLTA su un canvas offscreen ogni volta che
+// cambia la mappa o la dimensione dello schermo, e ad ogni frame si fa solo
+// un blit (drawImage) del bitmap gia' pronto: costa quasi nulla alla CPU/GPU.
+const mazeLayer = document.createElement("canvas");
 
 function setupCanvas(){
   const aspect = mazeW / mazeH;
@@ -1063,14 +1116,16 @@ function setupCanvas(){
   }
 
   dpr = window.devicePixelRatio || 1;
-  const scale = (cssW * dpr) / (mazeW * BASE_CELL);
+  canvasScale = (cssW * dpr) / (mazeW * BASE_CELL);
 
-  canvas.width = Math.round(mazeW * BASE_CELL * scale);
-  canvas.height = Math.round(mazeH * BASE_CELL * scale);
+  canvas.width = Math.round(mazeW * BASE_CELL * canvasScale);
+  canvas.height = Math.round(mazeH * BASE_CELL * canvasScale);
   canvas.style.width = Math.round(cssW) + "px";
   canvas.style.height = Math.round(cssH) + "px";
   ctx = canvas.getContext("2d");
-  ctx.setTransform(scale, 0, 0, scale, 0, 0);
+  ctx.setTransform(canvasScale, 0, 0, canvasScale, 0, 0);
+
+  buildMazeLayer();
 }
 
 function isWallCell(cx, cy){
@@ -1078,9 +1133,9 @@ function isWallCell(cx, cy){
   return maze[cy][cx] === "#";
 }
 
-function drawMaze(){
-  ctx.fillStyle = mazeTheme.bg || "#000";
-  ctx.fillRect(0, 0, mazeW * BASE_CELL, mazeH * BASE_CELL);
+function paintMaze(targetCtx){
+  targetCtx.fillStyle = mazeTheme.bg || "#000";
+  targetCtx.fillRect(0, 0, mazeW * BASE_CELL, mazeH * BASE_CELL);
   for (let y = 0; y < mazeH; y++){
     for (let x = 0; x < mazeW; x++){
       if (maze[y][x] !== "#") continue;
@@ -1088,28 +1143,45 @@ function drawMaze(){
       const m = 1.5, r = 5;
       const palIdx = wallColorByCell[x + "," + y];
       const wc = palIdx != null ? WALL_PALETTE[palIdx] : mazeTheme;
-      ctx.save();
-      ctx.shadowColor = wc.glow;
-      ctx.shadowBlur = 4;
-      ctx.fillStyle = wc.wall;
-      roundRectPath(px + m, py + m, BASE_CELL - 2 * m, BASE_CELL - 2 * m, r);
-      ctx.fill();
-      ctx.strokeStyle = wc.edge;
-      ctx.lineWidth = 1;
-      ctx.stroke();
-      ctx.restore();
+      targetCtx.save();
+      targetCtx.shadowColor = wc.glow;
+      targetCtx.shadowBlur = 4;
+      targetCtx.fillStyle = wc.wall;
+      roundRectPath(targetCtx, px + m, py + m, BASE_CELL - 2 * m, BASE_CELL - 2 * m, r);
+      targetCtx.fill();
+      targetCtx.strokeStyle = wc.edge;
+      targetCtx.lineWidth = 1;
+      targetCtx.stroke();
+      targetCtx.restore();
     }
   }
 }
 
-function roundRectPath(x, y, w, h, r){
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
-  ctx.closePath();
+function buildMazeLayer(){
+  if (!mazeW || !mazeH) return;
+  mazeLayer.width = canvas.width;
+  mazeLayer.height = canvas.height;
+  const mctx = mazeLayer.getContext("2d");
+  mctx.setTransform(canvasScale, 0, 0, canvasScale, 0, 0);
+  paintMaze(mctx);
+}
+
+function drawMaze(){
+  // Blit del bitmap gia' pronto: nessun ridisegno di muri/ombre a runtime.
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.drawImage(mazeLayer, 0, 0);
+  ctx.restore();
+}
+
+function roundRectPath(targetCtx, x, y, w, h, r){
+  targetCtx.beginPath();
+  targetCtx.moveTo(x + r, y);
+  targetCtx.arcTo(x + w, y, x + w, y + h, r);
+  targetCtx.arcTo(x + w, y + h, x, y + h, r);
+  targetCtx.arcTo(x, y + h, x, y, r);
+  targetCtx.arcTo(x, y, x + w, y, r);
+  targetCtx.closePath();
 }
 
 function drawPellets(){
@@ -1321,10 +1393,68 @@ function drawGhost(px, py, r, colorHex, facingDeg, glowExtra){
 }
 
 function getRenderedPos(p, now){
+  if (p.id === myId && predInited){
+    return { x: predGridX + (predDir ? DIR_VEC[predDir][0] * predAccum : 0),
+             y: predGridY + (predDir ? DIR_VEC[predDir][1] * predAccum : 0) };
+  }
   const a = anim[p.id];
   if (!a) return { x: p.x, y: p.y };
   const t = Math.max(0, Math.min(1, (now - a.start) / a.duration));
   return { x: lerp(a.fromX, a.toX, t), y: lerp(a.fromY, a.toY, t) };
+}
+
+// Avanza la simulazione locale del proprio personaggio di `dt` secondi,
+// con le stesse regole di common.py/main.py (coda di direzione "next",
+// velocita' in celle/secondo, blocco sui muri). Chiamata ad ogni frame
+// dal render loop, quindi la risposta al tasto e' visivamente immediata.
+function stepLocalPrediction(dt, isKiller){
+  if (!predInited || dt <= 0) return;
+  const speed = NORMAL_SPEED * (isKiller ? KILLER_SPEED_MULT : 1);
+  let remaining = dt;
+  // Se il tab e' stato in background, dt puo' essere enorme: limitiamolo
+  // per evitare che il personaggio "teletrasporti" attraverso i muri.
+  if (remaining > 0.25) remaining = 0.25;
+
+  while (remaining > 0){
+    if (predNextDir){
+      const v = DIR_VEC[predNextDir];
+      if (!isWallCell(predGridX + v[0], predGridY + v[1])){
+        predDir = predNextDir;
+        predNextDir = null;
+      }
+    }
+    if (!predDir){ break; }
+    const v = DIR_VEC[predDir];
+    const nx = predGridX + v[0], ny = predGridY + v[1];
+    if (isWallCell(nx, ny)){
+      predAccum = 0;
+      break;
+    }
+    const step = Math.min(remaining, (1 - predAccum) / speed);
+    predAccum += speed * step;
+    remaining -= step;
+    if (predAccum >= 1 - 1e-6){
+      predAccum = 0;
+      predGridX = nx;
+      predGridY = ny;
+    } else {
+      break;
+    }
+  }
+}
+
+let lastFacingMap = {};
+function computeFacing(p){
+  if (p.id === myId && predInited && predDir){
+    return DIR_ANGLE[predDir];
+  }
+  const a = anim[p.id];
+  if (a && (a.toX !== a.fromX || a.toY !== a.fromY)){
+    const ddx = a.toX - a.fromX, ddy = a.toY - a.fromY;
+    if (Math.abs(ddx) > Math.abs(ddy)) return ddx > 0 ? DIR_ANGLE.right : DIR_ANGLE.left;
+    if (ddy !== 0) return ddy > 0 ? DIR_ANGLE.down : DIR_ANGLE.up;
+  }
+  return lastFacingMap[p.id] || 0;
 }
 
 function drawPlayers(players, now){
@@ -1335,8 +1465,8 @@ function drawPlayers(players, now){
 
     if (!p.alive) return;
 
-    const facing = p.dir ? DIR_ANGLE[p.dir] : (p._lastFacing || 0);
-    p._lastFacing = facing;
+    const facing = computeFacing(p);
+    lastFacingMap[p.id] = facing;
     const isKiller = p.is_killer;
     const chompSpeed = isKiller ? 11 : 8;
     const mouthDeg = 8 + 24 * Math.abs(Math.sin(now / 1000 * chompSpeed));
@@ -1404,6 +1534,14 @@ function drawExplosions(now){
 function renderLoop(now){
   requestAnimationFrame(renderLoop);
   if (currentScreen !== "game" || !ctx || !currSnapshot) return;
+
+  const dt = lastFrameTs != null ? Math.max(0, (now - lastFrameTs) / 1000) : 0;
+  lastFrameTs = now;
+  const me0 = findPlayer(currSnapshot, myId);
+  if (me0 && me0.alive && roundActive){
+    stepLocalPrediction(dt, !!me0.is_killer);
+  }
+
   drawMaze();
   drawPellets();
   drawPlayers(currSnapshot.players, now);
@@ -1462,9 +1600,14 @@ function onState(msg){
     lastAliveMap = {};
     anim = {};
     lastServerPos = {};
+    lastFacingMap = {};
     lastKnownKillerId = null;
     heldDirs = [];
     lastRequestedDir = null;
+    predInited = false;
+    predDir = null;
+    predNextDir = null;
+    predAccum = 0;
     startSiren();
     roundActive = true;
     document.getElementById("endOverlay").classList.add("hidden");
@@ -1517,6 +1660,30 @@ function onState(msg){
     lastServerPos[p.id] = { x: p.x, y: p.y };
   });
   lastPhase = msg.phase;
+
+  // Inizializza o ri-allinea (in modo "morbido") la simulazione locale del
+  // proprio personaggio rispetto alla posizione confermata dal server: il
+  // server resta l'autorita', il client predice solo per eliminare la
+  // latenza percepita. Un piccolo scarto (una cella) e' normale e atteso
+  // (il client e' avanti di quel poco che la rete impiega ad arrivare); uno
+  // scarto grande (spawn, respawn, blocco imprevisto) viene corretto subito.
+  const myServerP = findPlayer(msg, myId);
+  if (myServerP){
+    if (!predInited){
+      predGridX = myServerP.x;
+      predGridY = myServerP.y;
+      predAccum = 0;
+      predInited = true;
+    } else {
+      const dx = Math.abs(predGridX - myServerP.x);
+      const dy = Math.abs(predGridY - myServerP.y);
+      if (dx > 1 || dy > 1 || !myServerP.alive){
+        predGridX = myServerP.x;
+        predGridY = myServerP.y;
+        predAccum = 0;
+      }
+    }
+  }
 
   currSnapshot = msg;
   snapshotTime = now;
@@ -1611,6 +1778,7 @@ function activateDir(dir){
   heldDirs = heldDirs.filter(function(d){ return d !== dir; });
   heldDirs.push(dir);
   if (dir !== lastRequestedDir){ playTurn(); lastRequestedDir = dir; }
+  predNextDir = dir;
   sendMsg({ type: "move", direction: dir });
 }
 function releaseDir(dir){
@@ -1618,9 +1786,13 @@ function releaseDir(dir){
   if (heldDirs.length){
     const next = heldDirs[heldDirs.length - 1];
     lastRequestedDir = next;
+    predNextDir = next;
     sendMsg({ type: "move", direction: next });
   } else {
     lastRequestedDir = null;
+    predDir = null;
+    predNextDir = null;
+    predAccum = 0;
     sendMsg({ type: "stop" });
   }
 }
