@@ -31,7 +31,7 @@ import uuid
 import websockets
 
 from common import (
-    TICK_DT, COUNTDOWN_SECONDS, ROUND_SECONDS,
+    TICK_DT, COUNTDOWN_SECONDS, ROUND_SECONDS, KILLER_INTERVAL_SECONDS,
     MAX_PLAYERS, MIN_PLAYERS, NORMAL_SPEED, KILLER_SPEED_MULT,
     COLORS, DIRECTIONS, SPAWN_POINTS, is_wall, ROOM_CODE_CHARS,
     MAZE, MAZE_W, MAZE_H,
@@ -87,6 +87,7 @@ class Room:
         self.countdown_left = 0.0
         self.timer_left = 0.0
         self.killer_id = None
+        self.killer_timer = 0.0
         self.loop_task = None
         self.last_result = None
         self.initial_survivor_count = 0
@@ -148,6 +149,20 @@ class Room:
         self.killer_id = killer_id
         self.players[killer_id].is_killer = True
         self.initial_survivor_count = len(alive_ids) - 1
+        self.killer_timer = KILLER_INTERVAL_SECONDS
+
+    def rotate_killer(self):
+        """Sceglie un nuovo killer casuale tra i giocatori vivi. Chiamato
+        ogni KILLER_INTERVAL_SECONDS per tutta la durata del round."""
+        alive_ids = [p.id for p in self.players.values() if p.alive]
+        if not alive_ids:
+            return
+        if self.killer_id in self.players:
+            self.players[self.killer_id].is_killer = False
+        new_killer_id = random.choice(alive_ids)
+        self.killer_id = new_killer_id
+        self.players[new_killer_id].is_killer = True
+        self.killer_timer = KILLER_INTERVAL_SECONDS
 
     # ---------- game tick ----------
 
@@ -195,6 +210,7 @@ class Room:
             "phase": self.state.lower(),
             "countdown": round(max(self.countdown_left, 0), 1),
             "timer": round(max(self.timer_left, 0), 1),
+            "killer_timer": round(max(self.killer_timer, 0), 1),
             "killer_id": self.killer_id,
             "players": [p.to_public() for p in self.players.values()],
         }
@@ -202,6 +218,7 @@ class Room:
     def reset_to_lobby(self):
         self.state = "LOBBY"
         self.killer_id = None
+        self.killer_timer = 0.0
         for p in self.players.values():
             p.alive = True
             p.is_killer = False
@@ -220,6 +237,11 @@ class Room:
             if not self.players:
                 return
 
+            # Il movimento e' attivo sia in countdown che in gioco: ci si puo'
+            # muovere subito, ancora prima che il killer venga rivelato.
+            prev = self.update_movement()
+            self.check_collisions(prev)  # no-op finche' non c'e' un killer
+
             if self.state == "COUNTDOWN":
                 self.countdown_left -= TICK_DT
                 if self.countdown_left <= 0:
@@ -227,8 +249,9 @@ class Room:
 
             elif self.state == "PLAYING":
                 self.timer_left -= TICK_DT
-                prev = self.update_movement()
-                self.check_collisions(prev)
+                self.killer_timer -= TICK_DT
+                if self.killer_timer <= 0:
+                    self.rotate_killer()
                 winners, reason = self.check_win()
                 if winners is None and self.timer_left <= 0:
                     survivors = [p.id for p in self.players.values()

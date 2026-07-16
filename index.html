@@ -404,6 +404,18 @@ const SERVER_TICK_HZ = 20;
 const SERVER_TICK_MS = 1000 / SERVER_TICK_HZ;
 const BASE_CELL = 24; // risoluzione interna del canvas, in px per cella
 
+// Devono restare identiche a NORMAL_SPEED / KILLER_SPEED_MULT in common.py:
+// servono per calcolare quanto deve durare, in millisecondi, lo scivolamento
+// visivo di una pedina da una cella alla successiva. Cosi' l'animazione e'
+// fluida per costruzione e non dipende piu' da quanto arrivano puntuali gli
+// aggiornamenti di rete dal server.
+const NORMAL_SPEED = 4.5;
+const KILLER_SPEED_MULT = 1.25;
+function cellDurationMs(isKiller){
+  const speed = NORMAL_SPEED * (isKiller ? KILLER_SPEED_MULT : 1);
+  return 1000 / speed;
+}
+
 const COLOR_HEX = {
   azzurro: "#29d6ff",
   giallo:  "#ffd400",
@@ -423,8 +435,14 @@ let myId = null, roomCode = null, myName = "";
 let maze = [], mazeW = 0, mazeH = 0;
 let joinMode = false;
 
-let currSnapshot = null, prevSnapshot = null, snapshotTime = 0;
-let snapshotInterval = SERVER_TICK_MS;
+let currSnapshot = null, snapshotTime = 0;
+let lastKnownKillerId = null;
+// Stato di animazione locale per ogni giocatore: { fromX, fromY, toX, toY, start, duration }
+// Permette di disegnare uno scivolamento fluido cella-per-cella basato sulla
+// velocita' nota del gioco, invece che sull'intervallo (variabile) con cui
+// arrivano gli aggiornamenti dal server.
+let anim = {};
+let lastServerPos = {};
 let lastPhase = null;
 let lastAliveMap = {};
 let eatenPellets = new Set();
@@ -882,15 +900,18 @@ function drawPacman(px, py, radius, mouthDeg, rotationDeg, colorHex, glowExtra){
   ctx.restore();
 }
 
+function getRenderedPos(p, now){
+  const a = anim[p.id];
+  if (!a) return { x: p.x, y: p.y };
+  const t = Math.max(0, Math.min(1, (now - a.start) / a.duration));
+  return { x: lerp(a.fromX, a.toX, t), y: lerp(a.fromY, a.toY, t) };
+}
+
 function drawPlayers(players, now){
   players.forEach(function(p){
-    const cur = { x: p.x, y: p.y };
-    const prevP = findPlayer(prevSnapshot, p.id) || p;
-    const t = interpAlpha(now);
-    const ix = lerp(prevP.x, cur.x, t);
-    const iy = lerp(prevP.y, cur.y, t);
-    const px = ix * BASE_CELL + BASE_CELL / 2;
-    const py = iy * BASE_CELL + BASE_CELL / 2;
+    const pos = getRenderedPos(p, now);
+    const px = pos.x * BASE_CELL + BASE_CELL / 2;
+    const py = pos.y * BASE_CELL + BASE_CELL / 2;
 
     if (!p.alive) return;
 
@@ -936,10 +957,6 @@ function findPlayer(snapshot, id){
   return null;
 }
 function lerp(a, b, t){ return a + (b - a) * t; }
-function interpAlpha(now){
-  const t = (now - snapshotTime) / snapshotInterval;
-  return Math.max(0, Math.min(1, t));
-}
 
 function drawExplosions(now){
   explosions = explosions.filter(function(e){ return now - e.start < 550; });
@@ -1011,40 +1028,56 @@ window.addEventListener("resize", function(){ if (mazeW) setupCanvas(); });
    STATO DI GIOCO / EVENTI
    ========================================================================= */
 function onState(msg){
+  const now = performance.now();
+
   if (msg.phase === "countdown" && lastPhase !== "countdown"){
     eatenPellets.clear();
     explosions = [];
     lastAliveMap = {};
+    anim = {};
+    lastServerPos = {};
+    lastKnownKillerId = null;
     startSiren();
     roundActive = true;
     document.getElementById("endOverlay").classList.add("hidden");
     showScreen("game");
   }
-  if (msg.phase === "playing" && lastPhase === "countdown"){
+
+  // Rivela il killer sia alla prima scelta (fine countdown) sia ogni volta
+  // che cambia durante il round (rotazione ogni KILLER_INTERVAL_SECONDS).
+  if (msg.phase === "playing" && msg.killer_id && msg.killer_id !== lastKnownKillerId){
     stopSiren();
     playKillerReveal();
-    killerBannerUntil = performance.now() + 1600;
+    killerBannerUntil = now + 1600;
     const killer = findPlayer(msg, msg.killer_id);
     document.getElementById("killerBanner").textContent =
       killer ? ("IL KILLER E' " + killer.name.toUpperCase() + "!") : "IL KILLER E' STATO SCELTO!";
+    lastKnownKillerId = msg.killer_id;
   }
 
   msg.players.forEach(function(p){
     if (lastAliveMap[p.id] === true && p.alive === false){
-      explosions.push({ x: p.x, y: p.y, color: p.is_killer ? KILLER_COLOR : (COLOR_HEX[p.color] || "#fff"), start: performance.now() });
+      explosions.push({ x: p.x, y: p.y, color: p.is_killer ? KILLER_COLOR : (COLOR_HEX[p.color] || "#fff"), start: now });
       playEliminate();
       if (p.id !== myId) showToast(p.name + " eliminato!");
     }
     lastAliveMap[p.id] = p.alive;
+
+    // Anima uno scivolamento fluido verso la nuova posizione confermata dal
+    // server, con una durata pari al tempo reale che ci mette una pedina a
+    // percorrere una cella a quella velocita' -- fluido a prescindere da
+    // quanto e' puntuale la rete.
+    const last = lastServerPos[p.id];
+    if (!last){
+      anim[p.id] = { fromX: p.x, fromY: p.y, toX: p.x, toY: p.y, start: now, duration: 1 };
+    } else if (last.x !== p.x || last.y !== p.y){
+      const from = getRenderedPos(p, now);
+      anim[p.id] = { fromX: from.x, fromY: from.y, toX: p.x, toY: p.y, start: now, duration: cellDurationMs(p.is_killer) };
+    }
+    lastServerPos[p.id] = { x: p.x, y: p.y };
   });
   lastPhase = msg.phase;
 
-  prevSnapshot = currSnapshot || msg;
-  const now = performance.now();
-  if (currSnapshot){
-    const measured = now - snapshotTime;
-    if (measured > 5 && measured < 500) snapshotInterval = measured;
-  }
   currSnapshot = msg;
   snapshotTime = now;
 
@@ -1055,10 +1088,12 @@ function onState(msg){
 function updateHud(msg){
   const timerEl = document.getElementById("hudTimer");
   if (msg.phase === "countdown"){
-    timerEl.textContent = "IL KILLER SARA' SVELATO TRA " + Math.ceil(msg.countdown) + "s";
+    timerEl.textContent = "IL KILLER SARA' SVELATO TRA " + Math.ceil(msg.countdown) + "s (puoi gia' muoverti)";
     timerEl.classList.remove("urgent");
   } else {
-    timerEl.textContent = "TEMPO: " + Math.ceil(msg.timer) + "s";
+    const nextKiller = msg.killer_timer != null ? Math.ceil(msg.killer_timer) : null;
+    timerEl.textContent = "TEMPO: " + Math.ceil(msg.timer) + "s" +
+      (nextKiller != null ? " · PROSSIMO CAMBIO KILLER TRA " + nextKiller + "s" : "");
     timerEl.classList.toggle("urgent", msg.timer <= 10);
   }
 }

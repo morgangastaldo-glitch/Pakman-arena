@@ -11,6 +11,7 @@ TICK_DT = 1.0 / TICK_HZ
 
 COUNTDOWN_SECONDS = 15
 ROUND_SECONDS = 120
+KILLER_INTERVAL_SECONDS = 15  # ogni quanto il killer cambia casualmente durante il round
 MAX_PLAYERS = 5
 MIN_PLAYERS = 2
 
