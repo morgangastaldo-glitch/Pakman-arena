@@ -87,10 +87,22 @@ class Player:
         self.connected = True
 
     def to_public(self):
+        # Posizione "continua": la griglia interna (self.x/self.y, interi)
+        # resta l'autorita' per collisioni/regole, ma al client mandiamo
+        # anche l'avanzamento reale dentro la cella corrente (move_accum),
+        # che il server gia' calcola ad ogni tick. Cosi' il client puo'
+        # mostrare la posizione VERA in tempo reale invece di scoprire "e'
+        # arrivato nella cella successiva" solo a cella completata e dover
+        # inscenare un'animazione di recupero: e' questo che rendeva il
+        # movimento degli altri giocatori percettibilmente in ritardo.
+        dx, dy = DIRECTIONS.get(self.direction, (0, 0)) if self.direction else (0, 0)
+        fx = self.x + dx * self.move_accum
+        fy = self.y + dy * self.move_accum
         return {
             "id": self.id, "name": self.name, "colors": self.colors,
             "character": self.character,
-            "host": self.host, "x": self.x, "y": self.y,
+            "host": self.host, "x": round(fx, 4), "y": round(fy, 4),
+            "direction": self.direction,
             "alive": self.alive, "is_killer": self.is_killer,
         }
 
