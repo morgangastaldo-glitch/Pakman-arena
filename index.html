@@ -197,6 +197,15 @@
   .color-swatch-btn[data-taken="1"]{ opacity:0.25; cursor:not-allowed; }
   .color-swatch-btn[data-mine="1"]{ border-color:#fff; box-shadow:0 0 12px currentColor; }
 
+  .char-grid{ display:flex; gap:8px; flex-wrap:wrap; margin:12px 0; }
+  .char-btn{
+    display:flex; flex-direction:column; align-items:center; gap:4px;
+    width:66px; padding:6px 4px; background:#04140a;
+  }
+  .char-btn canvas{ display:block; }
+  .char-btn-label{ font-size:9px; letter-spacing:0.5px; line-height:1.15; text-align:center; }
+  .char-btn.active{ border-color:var(--marquee-yellow); box-shadow:0 0 10px rgba(255,212,0,0.4); }
+
   /* ---------- game screen ---------- */
   .hud{
     display:flex; align-items:center; justify-content:space-between;
@@ -351,8 +360,11 @@
 
     <ul class="player-list" id="lobbyPlayers"></ul>
 
-    <label>Scegli colore</label>
+    <label>Scegli colore (primario + dettaglio opzionale)</label>
     <div class="color-grid" id="colorGrid"></div>
+
+    <label>Scegli personaggio</label>
+    <div class="char-grid" id="characterGrid"></div>
 
     <div class="btn-row">
       <button class="primary hidden" id="btnStart" style="flex:1">Avvia partita</button>
@@ -423,22 +435,106 @@ function cellDurationMs(isKiller){
   return 1000 / speed;
 }
 
+// Deve restare in sincronia con COLORS in common.py.
 const COLOR_HEX = {
-  azzurro: "#29d6ff",
-  giallo:  "#ffd400",
-  verde:   "#33ff77",
-  bianco:  "#f5f5f5",
-  rosa:    "#ff5fd1",
+  azzurro:    "#29d6ff",
+  giallo:     "#ffd400",
+  verde:      "#33ff77",
+  bianco:     "#f5f5f5",
+  rosa:       "#ff5fd1",
+  arancione:  "#ff9d1f",
+  rosso:      "#ff4136",
+  viola:      "#9b3bff",
+  lime:       "#c6ff3f",
+  oro:        "#ffcf40",
+  ciano:      "#22e6ff",
+  magenta:    "#ff2b9e",
+  grigio:     "#c7d0d8",
+  marrone:    "#b5651d",
+  blu_notte:  "#5b6bff",
+  corallo:    "#ff5a36",
 };
 const KILLER_COLOR = "#ff2b4e";
-const COLOR_NAMES = ["azzurro", "giallo", "verde", "bianco", "rosa"];
+const COLOR_NAMES = Object.keys(COLOR_HEX);
 const DIR_ANGLE = { right: 0, down: 90, left: 180, up: 270 };
+
+// Personaggi selezionabili: id -> etichetta mostrata in lobby. La forma di
+// ognuno viene disegnata da drawPacmanVariant() piu' sotto. Deve restare in
+// sincronia con CHARACTERS in common.py.
+const CHARACTERS = [
+  { id: "classic", label: "Classico" },
+  { id: "shark",   label: "Denti da squalo" },
+  { id: "hex",     label: "Esagonale" },
+  { id: "cyclops", label: "Occhio ciclope" },
+  { id: "angry",   label: "Occhio arrabbiato" },
+];
 
 // Tema visivo della mappa corrente (muri/pellet/sfondo): il server ne sceglie
 // uno diverso tra 10 ad ogni inizio partita (vedi round_start), cosi' ogni
 // mappa ha davvero una sua identita' cromatica e non solo una forma diversa.
 let mazeTheme = { wall: "#0a1440", edge: "#2b4bd6", glow: "#4d7bff", pellet: "#ffe9a8", bg: "#000000" };
 let mazeName = "";
+
+// Palette di trii wall/edge/glow usati per colorare a chiazze i gruppi di
+// muri connessi della mappa, un po' come le mappe arcade Pac-Man storiche
+// che alternavano settori di colori diversi invece di un unico tema piatto.
+// Puramente estetico e generato lato client (ogni giocatore vede la propria
+// combinazione casuale, non serve sincronizzarlo via rete).
+const WALL_PALETTE = [
+  { wall: "#0a1440", edge: "#2b4bd6", glow: "#4d7bff" },
+  { wall: "#3a0505", edge: "#ff3b3b", glow: "#ff7a5c" },
+  { wall: "#03301c", edge: "#12c96f", glow: "#5dffb0" },
+  { wall: "#210a3a", edge: "#9b3bff", glow: "#c68cff" },
+  { wall: "#402706", edge: "#ff9d1f", glow: "#ffc266" },
+  { wall: "#052a33", edge: "#22e6ff", glow: "#9df6ff" },
+  { wall: "#3a0524", edge: "#ff2b9e", glow: "#ff8fce" },
+  { wall: "#0c2410", edge: "#3ddc4a", glow: "#9dffa5" },
+  { wall: "#3a1005", edge: "#ff5a36", glow: "#ffb08a" },
+  { wall: "#0a0a3a", edge: "#5b6bff", glow: "#a6b0ff" },
+  { wall: "#2b1a00", edge: "#ffcf40", glow: "#ffe38a" },
+  { wall: "#001f2b", edge: "#00b8d9", glow: "#7fe8ff" },
+  { wall: "#2b0018", edge: "#ff1f7a", glow: "#ff86bb" },
+  { wall: "#0d2b06", edge: "#8fd400", glow: "#c9ff6b" },
+  { wall: "#20202b", edge: "#8f9bb3", glow: "#c6ceda" },
+  { wall: "#2b0b00", edge: "#c1440e", glow: "#ff9560" },
+];
+
+// Mappa "x,y" -> indice palette, ricalcolata ad ogni nuova mappa (vedi
+// applyMapData). Colora ogni GRUPPO di celle-muro connesse con un colore
+// scelto a caso, cosi' la mappa risulta a chiazze multicolori invece che
+// di un unico blu/verde/etc uniforme.
+let wallColorByCell = {};
+
+function computeWallColors(){
+  wallColorByCell = {};
+  const visited = new Set();
+  let lastIdx = -1;
+  for (let y = 0; y < mazeH; y++){
+    for (let x = 0; x < mazeW; x++){
+      const key = x + "," + y;
+      if (maze[y][x] !== "#" || visited.has(key)) continue;
+      // BFS sulla regione di muri 4-connessa a partire da qui.
+      let idx;
+      do { idx = Math.floor(Math.random() * WALL_PALETTE.length); }
+      while (WALL_PALETTE.length > 1 && idx === lastIdx);
+      lastIdx = idx;
+      const stack = [[x, y]];
+      visited.add(key);
+      while (stack.length){
+        const [cx, cy] = stack.pop();
+        wallColorByCell[cx + "," + cy] = idx;
+        const neighbors = [[cx+1,cy],[cx-1,cy],[cx,cy+1],[cx,cy-1]];
+        for (const [nx, ny] of neighbors){
+          if (nx < 0 || ny < 0 || nx >= mazeW || ny >= mazeH) continue;
+          const nkey = nx + "," + ny;
+          if (visited.has(nkey) || maze[ny][nx] !== "#") continue;
+          visited.add(nkey);
+          stack.push([nx, ny]);
+        }
+      }
+    }
+  }
+}
 
 /* =========================================================================
    STATO GLOBALE
@@ -461,7 +557,8 @@ let lastAliveMap = {};
 let eatenPellets = new Set();
 let explosions = []; // {x,y,color,start}
 let killerBannerUntil = 0;
-let myColor = null;
+let myColors = []; // fino a 2: [0]=primario (corpo), [1]=dettaglio (contorno/denti/occhio)
+let myCharacter = "classic";
 let lobbyPlayersCache = [];
 
 /* =========================================================================
@@ -740,6 +837,7 @@ function applyMapData(msg){
   maze = msg.maze; mazeW = msg.maze_w; mazeH = msg.maze_h;
   mazeName = msg.maze_name || "";
   if (msg.theme) mazeTheme = msg.theme;
+  computeWallColors();
   eatenPellets.clear();
   const mapEl = document.getElementById("hudMap");
   if (mapEl) mapEl.textContent = mazeName ? ("mappa: " + mazeName) : "";
@@ -789,32 +887,39 @@ function onLobbyState(msg){
   const list = document.getElementById("lobbyPlayers");
   list.innerHTML = "";
   msg.players.forEach(function(p){
+    const colors = p.colors || [];
     const li = document.createElement("li");
     li.className = "player-row";
     const sw = document.createElement("span");
     sw.className = "swatch";
-    sw.style.background = p.color ? COLOR_HEX[p.color] : "#333";
-    sw.style.color = p.color ? COLOR_HEX[p.color] : "#333";
+    const primaryHex = colors[0] ? COLOR_HEX[colors[0]] : "#333";
+    sw.style.background = primaryHex;
+    sw.style.color = primaryHex;
+    sw.style.boxShadow = colors[1] ? ("0 0 0 2px " + COLOR_HEX[colors[1]] + ", 0 0 6px currentColor") : "0 0 6px currentColor";
     li.appendChild(sw);
     const nameSpan = document.createElement("span");
     nameSpan.textContent = p.name;
     li.appendChild(nameSpan);
-    if (p.id === myId){ myColor = p.color; const t = document.createElement("span"); t.className="tag you"; t.textContent="TU"; li.appendChild(t); }
+    if (p.id === myId){
+      myColors = colors.slice(); myCharacter = p.character || "classic";
+      const t = document.createElement("span"); t.className="tag you"; t.textContent="TU"; li.appendChild(t);
+    }
     if (p.host){ const t = document.createElement("span"); t.className="tag host"; t.textContent="HOST"; li.appendChild(t); }
     const spacer = document.createElement("span"); spacer.className="spacer"; li.appendChild(spacer);
     const colTxt = document.createElement("span"); colTxt.style.fontSize="10px"; colTxt.style.color="var(--phosphor-dim)";
-    colTxt.textContent = p.color || "nessun colore";
+    colTxt.textContent = colors.length ? colors.join(" + ") : "nessun colore";
     li.appendChild(colTxt);
     list.appendChild(li);
   });
 
   renderColorGrid(msg.players);
+  renderCharacterGrid(msg.players);
 
   const me = msg.players.find(function(p){ return p.id === myId; });
   const isHost = me && me.host;
   document.getElementById("btnStart").classList.toggle("hidden", !isHost);
   document.getElementById("waitHostMsg").classList.toggle("hidden", !!isHost);
-  const allColored = msg.players.every(function(p){ return p.color; });
+  const allColored = msg.players.every(function(p){ return p.colors && p.colors.length; });
   document.getElementById("btnStart").disabled = !(isHost && msg.players.length >= msg.min_players && allColored);
 
   if (!roundActive){
@@ -823,25 +928,95 @@ function onLobbyState(msg){
   }
 }
 
+// Puoi scegliere fino a 2 colori: il primo click sceglie il PRIMARIO
+// (corpo), il secondo click il colore di DETTAGLIO (contorno/denti/occhio a
+// seconda del personaggio). Ricliccare un colore gia' scelto lo rimuove.
+// Solo il colore primario deve restare univoco tra i giocatori (vedi
+// taken_primary_colors lato server); il dettaglio si puo' condividere.
+function toggleMyColor(cname){
+  const idx = myColors.indexOf(cname);
+  if (idx !== -1){
+    myColors.splice(idx, 1);
+  } else if (myColors.length < 2){
+    myColors.push(cname);
+  } else {
+    myColors[1] = cname; // sostituisce il colore di dettaglio, tiene il primario
+  }
+  sendMsg({ type: "select_color", colors: myColors });
+}
+
 function renderColorGrid(players){
   const grid = document.getElementById("colorGrid");
   grid.innerHTML = "";
-  const takenBy = {};
-  players.forEach(function(p){ if (p.color) takenBy[p.color] = p.id; });
+  const takenPrimaryBy = {};
+  players.forEach(function(p){
+    if (p.colors && p.colors[0]) takenPrimaryBy[p.colors[0]] = p.id;
+  });
   COLOR_NAMES.forEach(function(cname){
     const btn = document.createElement("button");
     btn.className = "color-swatch-btn";
     btn.style.background = COLOR_HEX[cname];
     btn.style.color = COLOR_HEX[cname];
-    const takenByOther = takenBy[cname] && takenBy[cname] !== myId;
-    const mine = takenBy[cname] === myId;
+    const myIdx = myColors.indexOf(cname);
+    const takenByOther = takenPrimaryBy[cname] && takenPrimaryBy[cname] !== myId && myIdx === -1;
     btn.dataset.taken = takenByOther ? "1" : "0";
-    btn.dataset.mine = mine ? "1" : "0";
-    btn.title = cname;
+    btn.dataset.mine = myIdx === 0 ? "1" : "0";
+    if (myIdx === 1){
+      btn.style.outline = "2px dashed #fff";
+      btn.style.outlineOffset = "2px";
+    }
+    btn.title = cname + (myIdx === 0 ? " (primario)" : myIdx === 1 ? " (dettaglio)" : "");
     btn.disabled = !!takenByOther;
-    btn.addEventListener("click", function(){ sendMsg({ type: "select_color", color: cname }); });
+    btn.addEventListener("click", function(){ toggleMyColor(cname); });
     grid.appendChild(btn);
   });
+}
+
+function renderCharacterGrid(players){
+  const grid = document.getElementById("characterGrid");
+  if (!grid) return;
+  grid.innerHTML = "";
+  CHARACTERS.forEach(function(c){
+    const btn = document.createElement("button");
+    btn.className = "char-btn" + (myCharacter === c.id ? " active" : "");
+    btn.title = c.label;
+    const cv = document.createElement("canvas");
+    cv.width = 44; cv.height = 44;
+    const cctx = cv.getContext("2d");
+    drawCharacterPreview(cctx, c.id);
+    btn.appendChild(cv);
+    const lbl = document.createElement("div");
+    lbl.className = "char-btn-label";
+    lbl.textContent = c.label;
+    btn.appendChild(lbl);
+    btn.addEventListener("click", function(){
+      myCharacter = c.id;
+      sendMsg({ type: "select_character", character: c.id });
+    });
+    grid.appendChild(btn);
+  });
+}
+
+// Piccola anteprima statica del personaggio nella lobby, coi colori
+// attualmente selezionati (o un giallo di default se nessuno scelto).
+function drawCharacterPreview(pctx, charId){
+  const prevCtx = ctx;
+  ctx = pctx;
+  const primary = myColors[0] ? COLOR_HEX[myColors[0]] : "#ffd400";
+  const secondary = myColors[1] ? COLOR_HEX[myColors[1]] : null;
+  ctx.clearRect(0, 0, 44, 44);
+  ctx.save();
+  ctx.translate(22, 22);
+  const m = 20 * Math.PI / 180;
+  switch (charId){
+    case "hex": drawHexBody(16, m, primary, secondary, 0); break;
+    case "shark": drawSharkBody(16, m, primary, secondary, 0); break;
+    case "cyclops": drawRoundBody(16, m, primary, secondary, 0); drawSingleEye(16, secondary, false); break;
+    case "angry": drawRoundBody(16, m, primary, secondary, 0); drawSingleEye(16, secondary, true); break;
+    default: drawRoundBody(16, m, primary, secondary, 0); break;
+  }
+  ctx.restore();
+  ctx = prevCtx;
 }
 
 document.getElementById("btnStart").addEventListener("click", function(){
@@ -911,13 +1086,15 @@ function drawMaze(){
       if (maze[y][x] !== "#") continue;
       const px = x * BASE_CELL, py = y * BASE_CELL;
       const m = 1.5, r = 5;
+      const palIdx = wallColorByCell[x + "," + y];
+      const wc = palIdx != null ? WALL_PALETTE[palIdx] : mazeTheme;
       ctx.save();
-      ctx.shadowColor = mazeTheme.glow;
+      ctx.shadowColor = wc.glow;
       ctx.shadowBlur = 4;
-      ctx.fillStyle = mazeTheme.wall;
+      ctx.fillStyle = wc.wall;
       roundRectPath(px + m, py + m, BASE_CELL - 2 * m, BASE_CELL - 2 * m, r);
       ctx.fill();
-      ctx.strokeStyle = mazeTheme.edge;
+      ctx.strokeStyle = wc.edge;
       ctx.lineWidth = 1;
       ctx.stroke();
       ctx.restore();
@@ -954,19 +1131,146 @@ function drawPellets(){
   ctx.shadowBlur = 0;
 }
 
-function drawPacman(px, py, radius, mouthDeg, rotationDeg, colorHex, glowExtra){
-  ctx.save();
-  ctx.translate(px, py);
-  ctx.rotate(rotationDeg * Math.PI / 180);
-  const m = Math.max(2, mouthDeg) * Math.PI / 180;
+// ---- corpo "classico" tondo con bocca a spicchio ----
+function drawRoundBody(radius, m, primary, secondary, glowExtra){
   ctx.beginPath();
   ctx.moveTo(0, 0);
   ctx.arc(0, 0, radius, m, Math.PI * 2 - m);
   ctx.closePath();
-  ctx.fillStyle = colorHex;
-  ctx.shadowColor = colorHex;
+  ctx.fillStyle = primary;
+  ctx.shadowColor = primary;
   ctx.shadowBlur = 8 + (glowExtra || 0);
   ctx.fill();
+  ctx.shadowBlur = 0;
+  if (secondary){
+    ctx.strokeStyle = secondary;
+    ctx.lineWidth = Math.max(1.3, radius * 0.10);
+    ctx.stroke();
+  }
+}
+
+// ---- corpo esagonale, bocca ritagliata via composite ----
+function drawHexBody(radius, m, primary, secondary, glowExtra){
+  const pts = [];
+  for (let k = 0; k < 6; k++){
+    const a = k * Math.PI / 3;
+    pts.push([Math.cos(a) * radius, Math.sin(a) * radius]);
+  }
+  const path = function(){
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < 6; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.closePath();
+  };
+  path();
+  ctx.fillStyle = primary;
+  ctx.shadowColor = primary;
+  ctx.shadowBlur = 8 + (glowExtra || 0);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.save();
+  ctx.globalCompositeOperation = "destination-out";
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.arc(0, 0, radius * 1.05, m, Math.PI * 2 - m);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+  if (secondary){
+    path();
+    ctx.strokeStyle = secondary;
+    ctx.lineWidth = Math.max(1.3, radius * 0.10);
+    ctx.stroke();
+  }
+}
+
+// ---- fila di dentini triangolari lungo un bordo della bocca ----
+function drawTeethRow(x0, y0, x1, y1, color, toothLen){
+  const n = 3;
+  const dx = x1 - x0, dy = y1 - y0;
+  ctx.fillStyle = color;
+  for (let i = 0; i < n; i++){
+    const t0 = i / n, t1 = (i + 0.55) / n;
+    const bx0 = x0 + dx * t0, by0 = y0 + dy * t0;
+    const bx1 = x0 + dx * t1, by1 = y0 + dy * t1;
+    const midx = (bx0 + bx1) / 2, midy = (by0 + by1) / 2;
+    const apexY = midy - (midy === 0 ? toothLen : Math.sign(midy) * toothLen);
+    ctx.beginPath();
+    ctx.moveTo(bx0, by0);
+    ctx.lineTo(bx1, by1);
+    ctx.lineTo(midx, apexY);
+    ctx.closePath();
+    ctx.fill();
+  }
+}
+
+// ---- corpo tondo con bocca "a squalo": denti aguzzi sui due bordi ----
+function drawSharkBody(radius, m, primary, secondary, glowExtra){
+  const arcStart = [Math.cos(m) * radius, Math.sin(m) * radius];
+  const arcEnd = [Math.cos(-m) * radius, Math.sin(-m) * radius];
+  drawRoundBody(radius, m, primary, null, glowExtra);
+  const teethColor = secondary || "#f5f5f5";
+  drawTeethRow(0, 0, arcStart[0], arcStart[1], teethColor, radius * 0.22);
+  drawTeethRow(0, 0, arcEnd[0], arcEnd[1], teethColor, radius * 0.22);
+}
+
+// ---- occhio singolo (ciclope / arrabbiato), colorato col colore di
+// dettaglio scelto dal giocatore (iride), con sopracciglio per l'arrabbiato
+function drawSingleEye(radius, secondary, angry){
+  const eyeR = radius * 0.42;
+  const ex = radius * 0.12, ey = 0;
+  ctx.beginPath();
+  ctx.ellipse(ex, ey, eyeR, eyeR * 0.9, 0, 0, Math.PI * 2);
+  ctx.fillStyle = "#f5f7ff";
+  ctx.fill();
+  const iris = secondary || "#1b2440";
+  const pdx = eyeR * 0.35;
+  ctx.beginPath();
+  ctx.arc(ex + pdx, ey, eyeR * 0.5, 0, Math.PI * 2);
+  ctx.fillStyle = iris;
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(ex + pdx, ey, eyeR * 0.22, 0, Math.PI * 2);
+  ctx.fillStyle = "#000";
+  ctx.fill();
+  if (angry){
+    ctx.strokeStyle = secondary || "#1b2440";
+    ctx.lineWidth = Math.max(1.4, radius * 0.11);
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(ex - eyeR * 0.95, ey - eyeR * 1.2);
+    ctx.lineTo(ex + eyeR * 0.95, ey - eyeR * 0.5);
+    ctx.stroke();
+  }
+}
+
+// Disegna il personaggio scelto dal giocatore: corpo (secondo il tipo) +
+// colore primario/dettaglio. rotationDeg orienta l'intero personaggio nella
+// direzione di marcia, esattamente come faceva il vecchio drawPacman.
+function drawPacmanVariant(px, py, radius, mouthDeg, rotationDeg, primaryHex, secondaryHex, charId, glowExtra){
+  ctx.save();
+  ctx.translate(px, py);
+  ctx.rotate(rotationDeg * Math.PI / 180);
+  const m = Math.max(2, mouthDeg) * Math.PI / 180;
+  switch (charId){
+    case "hex":
+      drawHexBody(radius, m, primaryHex, secondaryHex, glowExtra);
+      break;
+    case "shark":
+      drawSharkBody(radius, m, primaryHex, secondaryHex, glowExtra);
+      break;
+    case "cyclops":
+      drawRoundBody(radius, m, primaryHex, secondaryHex, glowExtra);
+      drawSingleEye(radius, secondaryHex, false);
+      break;
+    case "angry":
+      drawRoundBody(radius, m, primaryHex, secondaryHex, glowExtra);
+      drawSingleEye(radius, secondaryHex, true);
+      break;
+    default:
+      drawRoundBody(radius, m, primaryHex, secondaryHex, glowExtra);
+      break;
+  }
   ctx.restore();
 }
 
@@ -1036,7 +1340,9 @@ function drawPlayers(players, now){
     const isKiller = p.is_killer;
     const chompSpeed = isKiller ? 11 : 8;
     const mouthDeg = 8 + 24 * Math.abs(Math.sin(now / 1000 * chompSpeed));
-    const baseColor = isKiller ? KILLER_COLOR : (COLOR_HEX[p.color] || "#fff");
+    const colors = p.colors || [];
+    const baseColor = isKiller ? KILLER_COLOR : (COLOR_HEX[colors[0]] || "#fff");
+    const detailColor = colors[1] ? COLOR_HEX[colors[1]] : null;
     const radius = (isKiller ? BASE_CELL * 0.50 : BASE_CELL * 0.42);
 
     if (isKiller){
@@ -1053,7 +1359,7 @@ function drawPlayers(players, now){
     if (isKiller){
       drawGhost(px, py, radius, baseColor, facing, 10);
     } else {
-      drawPacman(px, py, radius, mouthDeg, facing, baseColor, 0);
+      drawPacmanVariant(px, py, radius, mouthDeg, facing, baseColor, detailColor, p.character || "classic", 0);
     }
 
     ctx.save();
@@ -1157,6 +1463,8 @@ function onState(msg){
     anim = {};
     lastServerPos = {};
     lastKnownKillerId = null;
+    heldDirs = [];
+    lastRequestedDir = null;
     startSiren();
     roundActive = true;
     document.getElementById("endOverlay").classList.add("hidden");
@@ -1177,7 +1485,7 @@ function onState(msg){
 
   msg.players.forEach(function(p){
     if (lastAliveMap[p.id] === true && p.alive === false){
-      explosions.push({ x: p.x, y: p.y, color: p.is_killer ? KILLER_COLOR : (COLOR_HEX[p.color] || "#fff"), start: now });
+      explosions.push({ x: p.x, y: p.y, color: p.is_killer ? KILLER_COLOR : (COLOR_HEX[(p.colors && p.colors[0])] || "#fff"), start: now });
       playEliminate();
       if (p.id !== myId) showToast(p.name + " eliminato!");
     }
@@ -1238,8 +1546,12 @@ function updateGameSidebar(msg){
     li.className = "player-row" + (!p.alive ? " dead" : "") + (p.is_killer ? " killer" : "");
     const sw = document.createElement("span");
     sw.className = "swatch";
-    const c = p.is_killer ? KILLER_COLOR : (COLOR_HEX[p.color] || "#888");
+    const colors = p.colors || [];
+    const c = p.is_killer ? KILLER_COLOR : (COLOR_HEX[colors[0]] || "#888");
     sw.style.background = c; sw.style.color = c;
+    if (!p.is_killer && colors[1]){
+      sw.style.boxShadow = "0 0 0 2px " + COLOR_HEX[colors[1]] + ", 0 0 6px currentColor";
+    }
     li.appendChild(sw);
     const nameSpan = document.createElement("span");
     nameSpan.textContent = p.name;
@@ -1275,6 +1587,12 @@ function onRoundEnd(msg){
 
 /* =========================================================================
    INPUT: TASTIERA + D-PAD TOUCH
+   Il personaggio si muove SOLO mentre il tasto/pulsante e' tenuto premuto:
+   appena viene rilasciato (e nessun'altra direzione e' ancora premuta) si
+   invia "stop" al server, che ferma subito il personaggio nella cella in
+   cui si trova. Questo elimina sia il "si muove da solo" sia i problemi di
+   tempismo: il movimento segue esattamente cio' che il giocatore sta
+   facendo in quel momento.
    ========================================================================= */
 const KEY_TO_DIR = {
   ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right",
@@ -1282,42 +1600,65 @@ const KEY_TO_DIR = {
   W: "up", S: "down", A: "left", D: "right",
 };
 
+// Pila delle direzioni attualmente tenute premute: l'ultima aggiunta e'
+// quella "attiva" (se si tengono premute due frecce insieme, vince quella
+// premuta piu' di recente, e rilasciandola si torna automaticamente
+// all'altra ancora tenuta, invece di fermarsi del tutto).
+let heldDirs = [];
 let lastRequestedDir = null;
+
+function activateDir(dir){
+  heldDirs = heldDirs.filter(function(d){ return d !== dir; });
+  heldDirs.push(dir);
+  if (dir !== lastRequestedDir){ playTurn(); lastRequestedDir = dir; }
+  sendMsg({ type: "move", direction: dir });
+}
+function releaseDir(dir){
+  heldDirs = heldDirs.filter(function(d){ return d !== dir; });
+  if (heldDirs.length){
+    const next = heldDirs[heldDirs.length - 1];
+    lastRequestedDir = next;
+    sendMsg({ type: "move", direction: next });
+  } else {
+    lastRequestedDir = null;
+    sendMsg({ type: "stop" });
+  }
+}
+
 document.addEventListener("keydown", function(ev){
   if (currentScreen !== "game") return;
   const dir = KEY_TO_DIR[ev.key];
   if (dir){
-    if (dir !== lastRequestedDir){ playTurn(); lastRequestedDir = dir; }
-    sendMsg({ type: "move", direction: dir });
+    if (!ev.repeat) activateDir(dir);
     ev.preventDefault();
   }
 });
 document.addEventListener("keyup", function(ev){
   const dir = KEY_TO_DIR[ev.key];
-  if (dir && dir === lastRequestedDir) lastRequestedDir = null;
+  if (dir) releaseDir(dir);
+});
+// Se la finestra/scheda perde il focus mentre un tasto e' premuto, il
+// browser non manda sempre il keyup corrispondente: senza questo il
+// personaggio continuerebbe a muoversi "da solo" anche se non si sta piu'
+// premendo nulla. Alla perdita di focus si ferma tutto per sicurezza.
+window.addEventListener("blur", function(){
+  if (heldDirs.length){
+    heldDirs = [];
+    lastRequestedDir = null;
+    sendMsg({ type: "stop" });
+  }
 });
 
-// D-pad touch: un singolo tap invia subito la direzione (il server la mette
-// in coda e la applica appena possibile, vedi next_direction), e tenendo il
-// dito premuto la direzione viene reinviata a ripetizione, cosi' anche su
-// mobile ci si puo' muovere in modo continuo tenendo premuto, non solo a
-// colpi di singolo tocco.
+// D-pad touch: si muove solo mentre il dito resta premuto sul pulsante.
 document.querySelectorAll(".dpad button").forEach(function(btn){
   const dir = btn.dataset.dir;
-  let repeatTimer = null;
-  const fire = function(){ sendMsg({ type: "move", direction: dir }); };
   const start = function(ev){
     ev.preventDefault();
     ensureAudio();
-    if (dir !== lastRequestedDir){ playTurn(); lastRequestedDir = dir; }
-    fire();
-    clearInterval(repeatTimer);
-    repeatTimer = setInterval(fire, 90);
+    activateDir(dir);
   };
   const stop = function(){
-    clearInterval(repeatTimer);
-    repeatTimer = null;
-    if (lastRequestedDir === dir) lastRequestedDir = null;
+    releaseDir(dir);
   };
   btn.addEventListener("pointerdown", start);
   btn.addEventListener("pointerup", stop);

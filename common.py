@@ -19,8 +19,20 @@ MIN_PLAYERS = 2
 NORMAL_SPEED = 4.5          # celle al secondo
 KILLER_SPEED_MULT = 1.25    # come richiesto: killer 1.25x rispetto a 1.0 dei giocatori
 
-# Nome colore (mostrato all'utente, in italiano) -> id colore interno
-COLORS = ["azzurro", "giallo", "verde", "bianco", "rosa"]
+# Nome colore (mostrato all'utente, in italiano) -> id colore interno.
+# Elenco esteso: ogni giocatore puo' scegliere fino a 2 colori (primario +
+# dettaglio/contorno), vedi Player.colors in main.py e COLOR_HEX nel
+# client (index.html) per i valori esadecimali corrispondenti.
+COLORS = [
+    "azzurro", "giallo", "verde", "bianco", "rosa",
+    "arancione", "rosso", "viola", "lime", "oro",
+    "ciano", "magenta", "grigio", "marrone", "blu_notte", "corallo",
+]
+
+# Personaggi selezionabili in lobby. La forma/dettagli di ciascuno sono
+# disegnati lato client (index.html); qui serve solo l'elenco degli id
+# validi per la validazione server-side.
+CHARACTERS = ["classic", "shark", "hex", "cyclops", "angry"]
 
 DIRECTIONS = {
     "up": (0, -1),

@@ -34,9 +34,11 @@ import websockets
 from common import (
     TICK_DT, COUNTDOWN_SECONDS, ROUND_SECONDS, KILLER_INTERVAL_SECONDS,
     MAX_PLAYERS, MIN_PLAYERS, NORMAL_SPEED, KILLER_SPEED_MULT,
-    COLORS, DIRECTIONS, is_wall, ROOM_CODE_CHARS,
+    COLORS, CHARACTERS, DIRECTIONS, is_wall, ROOM_CODE_CHARS,
     pick_random_maze,
 )
+
+MAX_PLAYER_COLORS = 2  # colore primario + colore di dettaglio (opzionale)
 
 DEFAULT_PORT = 8765
 
@@ -62,7 +64,12 @@ class Player:
         self.id = pid
         self.name = name
         self.ws = ws
-        self.color = None
+        # Fino a 2 colori: colors[0] = colore primario (corpo, univoco tra
+        # i giocatori), colors[1] = colore di dettaglio opzionale (contorno,
+        # denti, occhio a seconda del personaggio). Lista vuota = nessun
+        # colore scelto ancora.
+        self.colors = []
+        self.character = "classic"
         self.host = False
         self.x = 0
         self.y = 0
@@ -81,7 +88,8 @@ class Player:
 
     def to_public(self):
         return {
-            "id": self.id, "name": self.name, "color": self.color,
+            "id": self.id, "name": self.name, "colors": self.colors,
+            "character": self.character,
             "host": self.host, "x": self.x, "y": self.y,
             "alive": self.alive, "is_killer": self.is_killer,
         }
@@ -131,8 +139,12 @@ class Room:
         player.host = (len(self.players) == 0)
         self.players[player.id] = player
 
-    def taken_colors(self):
-        return {p.color for p in self.players.values() if p.color}
+    def taken_primary_colors(self):
+        # Solo il colore PRIMARIO (corpo) resta univoco tra i giocatori, per
+        # non avere due pedine indistinguibili a colpo d'occhio: il colore
+        # di dettaglio (contorno/denti/occhio) puo' invece essere condiviso
+        # liberamente.
+        return {p.colors[0] for p in self.players.values() if p.colors}
 
     async def broadcast(self, obj):
         dead = []
@@ -154,7 +166,10 @@ class Room:
             "type": "lobby_state",
             "code": self.code,
             "players": [
-                {"id": p.id, "name": p.name, "color": p.color, "host": p.host}
+                {
+                    "id": p.id, "name": p.name, "colors": p.colors,
+                    "character": p.character, "host": p.host,
+                }
                 for p in self.players.values()
             ],
             "min_players": MIN_PLAYERS,
@@ -402,13 +417,37 @@ async def handle_client(ws):
             elif mtype == "select_color":
                 if not room or not player:
                     continue
-                color = msg.get("color")
-                if color not in COLORS:
+                raw = msg.get("colors")
+                if not isinstance(raw, list):
                     continue
-                if color in room.taken_colors() and player.color != color:
-                    await send_error(ws, "Colore gia' scelto da un altro giocatore.")
+                # Dedup mantenendo l'ordine (colors[0] = primario), max 2,
+                # solo nomi validi.
+                seen = []
+                for c in raw:
+                    if c in COLORS and c not in seen:
+                        seen.append(c)
+                    if len(seen) >= MAX_PLAYER_COLORS:
+                        break
+                if not seen:
                     continue
-                player.color = color
+                primary = seen[0]
+                others_primary = {
+                    p.colors[0] for p in room.players.values()
+                    if p.colors and p.id != player.id
+                }
+                if primary in others_primary:
+                    await send_error(ws, "Colore primario gia' scelto da un altro giocatore.")
+                    continue
+                player.colors = seen
+                await room.broadcast_lobby()
+
+            elif mtype == "select_character":
+                if not room or not player:
+                    continue
+                character = msg.get("character")
+                if character not in CHARACTERS:
+                    continue
+                player.character = character
                 await room.broadcast_lobby()
 
             elif mtype == "start_game":
@@ -419,7 +458,7 @@ async def handle_client(ws):
                 if len(room.players) < MIN_PLAYERS:
                     await send_error(ws, f"Servono almeno {MIN_PLAYERS} giocatori.")
                     continue
-                if any(p.color is None for p in room.players.values()):
+                if any(not p.colors for p in room.players.values()):
                     await send_error(ws, "Tutti i giocatori devono scegliere un colore.")
                     continue
                 room.loop_task = asyncio.create_task(room.run_round())
@@ -430,6 +469,18 @@ async def handle_client(ws):
                 direction = msg.get("direction")
                 if direction in DIRECTIONS:
                     player.next_direction = direction
+
+            elif mtype == "stop":
+                # Il tasto/direzione e' stato rilasciato: il personaggio si
+                # ferma subito, non continua da solo nell'ultima direzione
+                # premuta. Si ferma alla cella corrente (non completa
+                # l'eventuale scivolamento verso la cella successiva),
+                # esattamente come ci si aspetta rilasciando il tasto.
+                if not room or not player:
+                    continue
+                player.direction = None
+                player.next_direction = None
+                player.move_accum = 0.0
 
             elif mtype == "ping":
                 await ws.send(encode_text({"type": "pong"}))
