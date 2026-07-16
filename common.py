@@ -6,7 +6,7 @@ import string
 
 DEFAULT_PORT = 8765
 
-TICK_HZ = 12
+TICK_HZ = 20
 TICK_DT = 1.0 / TICK_HZ
 
 COUNTDOWN_SECONDS = 15
