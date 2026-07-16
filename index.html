@@ -1,0 +1,1089 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Pac-Man Arena 1vAll</title>
+<style>
+  :root{
+    /* ---- design tokens ----
+       Cornice UI: terminale hacker fosforescente (coerente col resto dei
+       progetti). Il MONDO di gioco (mappa/personaggi) usa invece la
+       palette arcade classica, perche' e' quello che rende "veri" i
+       personaggi Pac-Man. Il contrasto tra le due e' voluto: un cabinato
+       arcade che gira dentro un terminale verde.
+    */
+    --bg: #030305;
+    --panel: #070a08;
+    --panel-edge: #0e2a18;
+    --phosphor: #35ff8d;
+    --phosphor-dim: #14a85c;
+    --phosphor-faint: rgba(53,255,141,0.35);
+    --marquee-yellow: #ffd400;
+    --marquee-yellow-glow: #fff4b8;
+    --wall-fill: #0a1440;
+    --wall-edge: #2b4bd6;
+    --wall-glow: #4d7bff;
+    --pellet: #ffe9a8;
+    --killer: #ff2b4e;
+    --c-azzurro: #29d6ff;
+    --c-giallo: #ffd400;
+    --c-verde: #33ff77;
+    --c-bianco: #f5f5f5;
+    --c-rosa: #ff5fd1;
+    --danger: #ff4d5e;
+    --mono: ui-monospace, "SFMono-Regular", "Courier New", Consolas, monospace;
+  }
+
+  *{ box-sizing: border-box; }
+  html,body{ height:100%; }
+  body{
+    margin:0;
+    background: radial-gradient(ellipse at 50% 0%, #061006 0%, var(--bg) 60%);
+    color: var(--phosphor);
+    font-family: var(--mono);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    min-height:100%;
+    padding: 14px;
+    overflow-x:hidden;
+  }
+
+  /* ---------- CRT overlay ---------- */
+  .crt{
+    position:fixed; inset:0; pointer-events:none; z-index:50;
+    background:
+      repeating-linear-gradient(to bottom, rgba(0,0,0,0.18) 0px, rgba(0,0,0,0.18) 1px, transparent 2px, transparent 3px),
+      radial-gradient(ellipse at 50% 50%, rgba(0,0,0,0) 55%, rgba(0,0,0,0.55) 100%);
+    mix-blend-mode: multiply;
+    opacity:0.55;
+  }
+  @keyframes flicker{
+    0%,100%{ opacity:0.55; } 48%{ opacity:0.55; } 50%{ opacity:0.44; } 52%{ opacity:0.55; }
+  }
+  @media (prefers-reduced-motion: no-preference){
+    .crt{ animation: flicker 6.5s infinite; }
+  }
+
+  /* ---------- cabinet frame ---------- */
+  .cabinet{
+    position:relative;
+    width:min(640px, 100%);
+    border: 1px solid var(--panel-edge);
+    border-radius: 14px;
+    background: linear-gradient(180deg, #08110b, #050705);
+    box-shadow:
+      0 0 0 1px rgba(53,255,141,0.08),
+      0 0 40px rgba(53,255,141,0.08),
+      inset 0 0 60px rgba(0,0,0,0.6);
+    padding: 18px;
+  }
+  .cabinet::before{
+    content:"PAC-MAN ARENA :: 1vALL TERMINAL";
+    display:block;
+    font-size:10px;
+    letter-spacing:2px;
+    color: var(--phosphor-dim);
+    margin-bottom:10px;
+    opacity:0.8;
+  }
+
+  .hidden{ display:none !important; }
+
+  h1,h2,h3{ margin:0; font-family:var(--mono); }
+
+  .glow-text{ text-shadow: 0 0 6px var(--phosphor-faint), 0 0 14px var(--phosphor-faint); }
+
+  label{
+    display:block; font-size:11px; letter-spacing:1.5px; color:var(--phosphor-dim);
+    margin-bottom:4px; text-transform:uppercase;
+  }
+  input[type=text], input[type=number]{
+    width:100%;
+    background: #010402;
+    border: 1px solid var(--phosphor-dim);
+    color: var(--phosphor);
+    font-family:var(--mono);
+    font-size:15px;
+    padding: 9px 10px;
+    border-radius: 4px;
+    outline:none;
+  }
+  input:focus-visible, button:focus-visible{
+    outline: 2px solid var(--marquee-yellow);
+    outline-offset: 2px;
+  }
+  .field{ margin-bottom:12px; }
+  .row{ display:flex; gap:10px; }
+  .row > .field{ flex:1; }
+
+  button{
+    font-family:var(--mono);
+    cursor:pointer;
+    border-radius: 5px;
+    border: 1px solid var(--phosphor-dim);
+    background: #04140a;
+    color: var(--phosphor);
+    letter-spacing: 1.5px;
+    text-transform:uppercase;
+    font-size:12.5px;
+    padding: 11px 14px;
+    transition: transform 0.05s ease, box-shadow 0.15s ease;
+  }
+  button:hover{ box-shadow: 0 0 12px var(--phosphor-faint); }
+  button:active{ transform: scale(0.97); }
+  button.primary{
+    background: var(--phosphor-dim);
+    color:#04140a;
+    border-color: var(--phosphor);
+    font-weight:bold;
+  }
+  button.primary:hover{ box-shadow: 0 0 16px var(--phosphor); }
+  button.ghost{ background:transparent; }
+  button.danger{ border-color:var(--danger); color:var(--danger); }
+  button:disabled{ opacity:0.35; cursor:not-allowed; }
+  button.tab{ flex:1; }
+  button.tab.active{ background:var(--phosphor-dim); color:#04140a; }
+
+  .btn-row{ display:flex; gap:8px; margin-top:14px; flex-wrap:wrap; }
+
+  /* ---------- title / logo ---------- */
+  .title-wrap{ text-align:center; margin-bottom:18px; }
+  .title-wrap h1{
+    font-size: clamp(22px, 6vw, 32px);
+    color: var(--marquee-yellow);
+    letter-spacing: 3px;
+    text-shadow: 0 0 8px var(--marquee-yellow-glow), 0 0 22px rgba(255,212,0,0.5);
+  }
+  .title-wrap .sub{
+    font-size:11px; letter-spacing:4px; color:var(--phosphor-dim); margin-top:4px;
+  }
+  .logo-canvas{ display:block; margin: 4px auto 10px; }
+
+  .error-box{
+    margin-top:10px; font-size:12px; color:var(--danger);
+    border-left:2px solid var(--danger); padding-left:8px; min-height:1em;
+  }
+
+  /* ---------- lobby ---------- */
+  .room-code{
+    font-size: clamp(28px,7vw,38px); letter-spacing:6px; color:var(--marquee-yellow);
+    text-shadow:0 0 10px rgba(255,212,0,0.5);
+    text-align:center; margin: 6px 0 2px;
+  }
+  .room-code-label{ text-align:center; font-size:10px; letter-spacing:2px; color:var(--phosphor-dim); }
+  .player-list{ list-style:none; margin:14px 0; padding:0; display:flex; flex-direction:column; gap:6px; }
+  .player-row{
+    display:flex; align-items:center; gap:8px;
+    border:1px solid var(--panel-edge); border-radius:5px; padding:7px 10px;
+    font-size:13px; background:rgba(53,255,141,0.03);
+  }
+  .player-row.dead{ opacity:0.4; text-decoration: line-through; }
+  .player-row.killer{ border-color:var(--killer); box-shadow:0 0 10px rgba(255,43,78,0.35); }
+  .swatch{ width:13px; height:13px; border-radius:50%; flex:0 0 auto; box-shadow:0 0 6px currentColor; }
+  .tag{ font-size:10px; padding:1px 5px; border-radius:3px; letter-spacing:1px; }
+  .tag.host{ background:var(--marquee-yellow); color:#221900; }
+  .tag.you{ border:1px solid var(--phosphor-dim); color:var(--phosphor-dim); }
+  .tag.killer{ background:var(--killer); color:#2a0007; }
+  .spacer{ flex:1; }
+
+  .color-grid{ display:flex; gap:8px; flex-wrap:wrap; margin:12px 0; }
+  .color-swatch-btn{
+    width:44px; height:44px; border-radius:50%; border:2px solid transparent; cursor:pointer;
+    position:relative;
+  }
+  .color-swatch-btn[data-taken="1"]{ opacity:0.25; cursor:not-allowed; }
+  .color-swatch-btn[data-mine="1"]{ border-color:#fff; box-shadow:0 0 12px currentColor; }
+
+  /* ---------- game screen ---------- */
+  .hud{
+    display:flex; align-items:center; justify-content:space-between;
+    font-size:13px; margin-bottom:8px; letter-spacing:1px;
+  }
+  .hud .timer{ color:var(--phosphor); }
+  .hud .timer.urgent{ color:var(--danger); text-shadow:0 0 8px var(--danger); }
+  .hud .roomtag{ color:var(--phosphor-dim); font-size:11px; }
+
+  .game-area{ display:flex; gap:12px; flex-wrap:wrap; }
+  .canvas-wrap{
+    position:relative; flex:1 1 auto; min-width:0;
+    display:flex; justify-content:center;
+    border-radius:8px; overflow:hidden;
+    border:1px solid var(--wall-edge);
+    box-shadow:0 0 18px rgba(45,75,255,0.25) inset;
+    background:#000;
+  }
+  canvas{ display:block; max-width:100%; height:auto; }
+
+  .sidebar{ flex:0 0 132px; display:flex; flex-direction:column; gap:6px; }
+  .sidebar .player-row{ font-size:11.5px; padding:5px 7px; }
+
+  .killer-banner{
+    position:absolute; top:8px; left:50%; transform:translateX(-50%);
+    background:rgba(20,0,4,0.85); border:1px solid var(--killer); color:var(--killer);
+    padding:6px 14px; border-radius:5px; font-size:13px; letter-spacing:2px;
+    text-shadow:0 0 8px var(--killer); opacity:0; transition:opacity 0.3s ease;
+    pointer-events:none; white-space:nowrap;
+  }
+  .killer-banner.show{ opacity:1; }
+
+  .end-overlay{
+    position:absolute; inset:0; background:rgba(2,3,2,0.86);
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    text-align:center; gap:10px; padding:20px;
+  }
+  .end-overlay h2{ color:var(--marquee-yellow); letter-spacing:2px; text-shadow:0 0 10px rgba(255,212,0,0.5); }
+  .end-overlay .winners{ font-size:14px; }
+  .end-overlay .winners b{ color:var(--phosphor); }
+  .end-overlay .note{ font-size:11px; color:var(--phosphor-dim); margin-top:6px; }
+
+  .toast{
+    position:absolute; bottom:8px; left:50%; transform:translateX(-50%);
+    background:rgba(0,0,0,0.75); border:1px solid var(--phosphor-dim); color:var(--phosphor);
+    padding:5px 12px; border-radius:5px; font-size:11px; opacity:0; transition:opacity 0.4s ease;
+    pointer-events:none; white-space:nowrap;
+  }
+  .toast.show{ opacity:1; }
+
+  /* ---------- d-pad ---------- */
+  .controls-row{ display:flex; align-items:center; justify-content:space-between; margin-top:12px; gap:10px; flex-wrap:wrap; }
+  .hint{ font-size:10.5px; color:var(--phosphor-dim); }
+  .dpad{
+    display:grid; grid-template-columns: repeat(3, 46px); grid-template-rows: repeat(3, 46px);
+    gap:4px; user-select:none; -webkit-user-select:none;
+  }
+  .dpad button{ padding:0; font-size:16px; touch-action:manipulation; }
+  .dpad .up{ grid-column:2; grid-row:1; }
+  .dpad .left{ grid-column:1; grid-row:2; }
+  .dpad .right{ grid-column:3; grid-row:2; }
+  .dpad .down{ grid-column:2; grid-row:3; }
+
+  @media (max-width:480px){
+    .cabinet{ padding:12px; }
+    .sidebar{ flex-basis:100%; flex-direction:row; flex-wrap:wrap; }
+    .sidebar .player-row{ flex:1 1 auto; }
+  }
+</style>
+</head>
+<body>
+
+<div class="crt" aria-hidden="true"></div>
+
+<main class="cabinet">
+
+  <!-- ===================== SCHERMATA: CONNESSIONE ===================== -->
+  <section id="screen-connect" class="screen">
+    <div class="title-wrap">
+      <canvas id="logoCanvas" class="logo-canvas" width="160" height="60"></canvas>
+      <h1>PAC-MAN ARENA</h1>
+      <div class="sub">1 vs ALL &mdash; fino a 5 giocatori</div>
+    </div>
+
+    <div class="field">
+      <label for="inpName">Il tuo nome</label>
+      <input type="text" id="inpName" maxlength="16" placeholder="Player">
+    </div>
+    <div class="row">
+      <div class="field">
+        <label for="inpIp">IP del server</label>
+        <input type="text" id="inpIp" placeholder="127.0.0.1">
+      </div>
+      <div class="field" style="flex:0 0 100px">
+        <label for="inpPort">Porta</label>
+        <input type="text" id="inpPort" placeholder="8765">
+      </div>
+    </div>
+
+    <div class="btn-row">
+      <button class="tab active" id="tabCreate">Crea stanza</button>
+      <button class="tab" id="tabJoin">Unisciti</button>
+    </div>
+
+    <div class="field hidden" id="joinCodeField" style="margin-top:10px">
+      <label for="inpCode">Codice stanza</label>
+      <input type="text" id="inpCode" maxlength="6" placeholder="ABC123" style="text-transform:uppercase">
+    </div>
+
+    <div class="btn-row">
+      <button class="primary" id="btnConnect" style="flex:1">Entra in partita</button>
+    </div>
+    <div class="error-box" id="connectError"></div>
+  </section>
+
+  <!-- ===================== SCHERMATA: LOBBY ===================== -->
+  <section id="screen-lobby" class="screen hidden">
+    <div class="room-code-label">codice stanza</div>
+    <div class="room-code" id="lobbyCode">------</div>
+
+    <ul class="player-list" id="lobbyPlayers"></ul>
+
+    <label>Scegli colore</label>
+    <div class="color-grid" id="colorGrid"></div>
+
+    <div class="btn-row">
+      <button class="primary hidden" id="btnStart" style="flex:1">Avvia partita</button>
+      <span id="waitHostMsg" class="hint hidden">In attesa che l'host avvii la partita&hellip;</span>
+      <button class="ghost danger" id="btnLeaveLobby">Esci</button>
+    </div>
+    <div class="error-box" id="lobbyError"></div>
+  </section>
+
+  <!-- ===================== SCHERMATA: GIOCO ===================== -->
+  <section id="screen-game" class="screen hidden">
+    <div class="hud">
+      <span class="timer" id="hudTimer">--</span>
+      <span class="roomtag" id="hudRoom"></span>
+    </div>
+
+    <div class="game-area">
+      <div class="canvas-wrap" id="canvasWrap">
+        <canvas id="gameCanvas"></canvas>
+        <div class="killer-banner" id="killerBanner"></div>
+        <div class="toast" id="toast"></div>
+
+        <div class="end-overlay hidden" id="endOverlay">
+          <h2 id="endTitle">FINE ROUND</h2>
+          <div class="winners" id="endWinners"></div>
+          <div class="note">si torna in lobby tra pochi secondi&hellip;</div>
+        </div>
+      </div>
+
+      <ul class="sidebar player-list" id="gamePlayers"></ul>
+    </div>
+
+    <div class="controls-row">
+      <span class="hint">Frecce / WASD per muoverti</span>
+      <div class="dpad" aria-label="controlli direzionali">
+        <button class="up" data-dir="up">&#9650;</button>
+        <button class="left" data-dir="left">&#9664;</button>
+        <button class="right" data-dir="right">&#9654;</button>
+        <button class="down" data-dir="down">&#9660;</button>
+      </div>
+      <button class="ghost danger" id="btnLeaveGame">Esci</button>
+    </div>
+  </section>
+
+</main>
+
+<script>
+(function(){
+"use strict";
+
+/* =========================================================================
+   COSTANTI CONDIVISE COL SERVER (vedi common.py)
+   ========================================================================= */
+const SERVER_TICK_HZ = 30;
+const SERVER_TICK_MS = 1000 / SERVER_TICK_HZ;
+const BASE_CELL = 24; // risoluzione interna del canvas, in px per cella
+
+const COLOR_HEX = {
+  azzurro: "#29d6ff",
+  giallo:  "#ffd400",
+  verde:   "#33ff77",
+  bianco:  "#f5f5f5",
+  rosa:    "#ff5fd1",
+};
+const KILLER_COLOR = "#ff2b4e";
+const COLOR_NAMES = ["azzurro", "giallo", "verde", "bianco", "rosa"];
+const DIR_ANGLE = { right: 0, down: 90, left: 180, up: 270 };
+
+/* =========================================================================
+   STATO GLOBALE
+   ========================================================================= */
+let ws = null;
+let myId = null, roomCode = null, myName = "";
+let maze = [], mazeW = 0, mazeH = 0;
+let joinMode = false;
+
+let currSnapshot = null, prevSnapshot = null, snapshotTime = 0;
+let lastPhase = null;
+let lastAliveMap = {};
+let eatenPellets = new Set();
+let explosions = []; // {x,y,color,start}
+let killerBannerUntil = 0;
+let myColor = null;
+let lobbyPlayersCache = [];
+
+/* =========================================================================
+   AUDIO (sintetizzato, nessun file esterno)
+   ========================================================================= */
+let audioCtx = null;
+let sirenNodes = null;
+
+function ensureAudio(){
+  if (!audioCtx){
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    audioCtx = new Ctx();
+  }
+  if (audioCtx.state === "suspended") audioCtx.resume();
+}
+
+function tone(freq, duration, type, gainPeak, startDelay){
+  if (!audioCtx) return;
+  type = type || "square"; gainPeak = gainPeak || 0.15; startDelay = startDelay || 0;
+  const t0 = audioCtx.currentTime + startDelay;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, t0);
+  gain.gain.setValueAtTime(0.0001, t0);
+  gain.gain.linearRampToValueAtTime(gainPeak, t0 + 0.012);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
+  osc.connect(gain).connect(audioCtx.destination);
+  osc.start(t0);
+  osc.stop(t0 + duration + 0.03);
+}
+
+function sweep(freqStart, freqEnd, duration, type, gainPeak){
+  if (!audioCtx) return;
+  type = type || "square"; gainPeak = gainPeak || 0.15;
+  const t0 = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freqStart, t0);
+  osc.frequency.exponentialRampToValueAtTime(Math.max(freqEnd, 1), t0 + duration);
+  gain.gain.setValueAtTime(0.0001, t0);
+  gain.gain.linearRampToValueAtTime(gainPeak, t0 + 0.008);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
+  osc.connect(gain).connect(audioCtx.destination);
+  osc.start(t0);
+  osc.stop(t0 + duration + 0.03);
+}
+
+function noiseBurst(duration, gainPeak){
+  if (!audioCtx) return;
+  gainPeak = gainPeak || 0.2;
+  const n = Math.max(1, Math.floor(audioCtx.sampleRate * duration));
+  const buffer = audioCtx.createBuffer(1, n, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < n; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / n);
+  const src = audioCtx.createBufferSource();
+  src.buffer = buffer;
+  const gain = audioCtx.createGain();
+  gain.gain.setValueAtTime(gainPeak, audioCtx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + duration);
+  src.connect(gain).connect(audioCtx.destination);
+  src.start();
+}
+
+function playChomp(){ sweep(560, 190, 0.085, "square", 0.10); }
+function playTurn(){ tone(340, 0.05, "square", 0.06); }
+function playEliminate(){
+  tone(311, 0.18, "sawtooth", 0.16, 0.00);
+  tone(277, 0.18, "sawtooth", 0.16, 0.16);
+  tone(233, 0.30, "sawtooth", 0.16, 0.32);
+}
+function playVictory(){
+  [392, 523, 659, 784].forEach(function(f, i){ tone(f, 0.22, "square", 0.14, i * 0.12); });
+}
+function playGameOver(){
+  tone(220, 0.30, "sawtooth", 0.14, 0);
+  tone(160, 0.45, "sawtooth", 0.14, 0.28);
+}
+function playKillerReveal(){
+  sweep(200, 45, 0.55, "sawtooth", 0.20);
+  noiseBurst(0.35, 0.16);
+}
+
+function startSiren(){
+  if (!audioCtx || sirenNodes) return;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  const lfo = audioCtx.createOscillator();
+  const lfoGain = audioCtx.createGain();
+  osc.type = "sawtooth";
+  osc.frequency.value = 220;
+  lfo.frequency.value = 1.7;
+  lfoGain.gain.value = 55;
+  lfo.connect(lfoGain).connect(osc.frequency);
+  gain.gain.value = 0.045;
+  osc.connect(gain).connect(audioCtx.destination);
+  osc.start(); lfo.start();
+  sirenNodes = { osc: osc, lfo: lfo };
+}
+function stopSiren(){
+  if (!sirenNodes) return;
+  try { sirenNodes.osc.stop(); sirenNodes.lfo.stop(); } catch (e) { /* gia' fermo */ }
+  sirenNodes = null;
+}
+
+let lastHeartbeat = 0;
+function updateHeartbeat(dist){
+  if (dist == null || dist > 4.5) return;
+  const interval = Math.max(150, dist * 130);
+  const now = performance.now();
+  if (now - lastHeartbeat > interval){
+    const closeness = Math.max(0, (4.5 - dist) / 4.5);
+    tone(78, 0.10, "sine", 0.08 + closeness * 0.14);
+    lastHeartbeat = now;
+  }
+}
+
+/* =========================================================================
+   SCHERMATE
+   ========================================================================= */
+const screens = {
+  connect: document.getElementById("screen-connect"),
+  lobby: document.getElementById("screen-lobby"),
+  game: document.getElementById("screen-game"),
+};
+let currentScreen = "connect";
+function showScreen(name){
+  currentScreen = name;
+  Object.keys(screens).forEach(function(k){
+    screens[k].classList.toggle("hidden", k !== name);
+  });
+}
+
+function showToast(msg){
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.classList.add("show");
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(function(){ el.classList.remove("show"); }, 2600);
+}
+
+/* =========================================================================
+   CONNESSIONE / WEBSOCKET
+   ========================================================================= */
+// Se questa pagina e' servita dallo stesso server di gioco (hosting online),
+// precompila il campo IP con l'indirizzo attuale: chi apre il link non deve
+// digitare nulla. In locale (file:// o rete LAN via Termux) il campo resta
+// vuoto/con placeholder come prima.
+(function autofillServerField(){
+  if (location.protocol === "https:" && location.hostname){
+    const ipField = document.getElementById("inpIp");
+    if (ipField && !ipField.value) ipField.value = location.hostname;
+  }
+})();
+
+const connectError = document.getElementById("connectError");
+
+document.getElementById("tabCreate").addEventListener("click", function(){
+  joinMode = false;
+  document.getElementById("tabCreate").classList.add("active");
+  document.getElementById("tabJoin").classList.remove("active");
+  document.getElementById("joinCodeField").classList.add("hidden");
+  document.getElementById("btnConnect").textContent = "Crea stanza";
+});
+document.getElementById("tabJoin").addEventListener("click", function(){
+  joinMode = true;
+  document.getElementById("tabJoin").classList.add("active");
+  document.getElementById("tabCreate").classList.remove("active");
+  document.getElementById("joinCodeField").classList.remove("hidden");
+  document.getElementById("btnConnect").textContent = "Unisciti alla stanza";
+});
+
+document.getElementById("btnConnect").addEventListener("click", function(){
+  connectError.textContent = "";
+  const ip = (document.getElementById("inpIp").value || "127.0.0.1").trim();
+  const port = document.getElementById("inpPort").value.trim();
+  const name = (document.getElementById("inpName").value || "Player").trim().slice(0, 16);
+  myName = name || "Player";
+  if (joinMode && !document.getElementById("inpCode").value.trim()){
+    connectError.textContent = "Inserisci il codice della stanza.";
+    return;
+  }
+  ensureAudio();
+  connect(ip, port, function(){
+    if (joinMode){
+      const code = document.getElementById("inpCode").value.trim().toUpperCase();
+      sendMsg({ type: "join_room", code: code, name: myName });
+    } else {
+      sendMsg({ type: "create_room", name: myName });
+    }
+  });
+});
+
+function connect(ip, port, onOpen){
+  let url;
+  try {
+    // Su una pagina servita in HTTPS (es. Netlify) il browser richiede
+    // una connessione WebSocket sicura (wss://); in locale/rete LAN via
+    // HTTP resta ws:// come prima. La porta e' opzionale: se il server
+    // e' hostato (es. Render) non serve indicarla, usa quella standard
+    // dell'HTTPS/WSS (443).
+    const secure = location.protocol === "https:";
+    const scheme = secure ? "wss://" : "ws://";
+    const effectivePort = port || (secure ? "" : "8765");
+    const portPart = effectivePort ? (":" + effectivePort) : "";
+    url = scheme + ip + portPart + "/";
+  } catch (e){
+    connectError.textContent = "Indirizzo non valido.";
+    return;
+  }
+  try {
+    ws = new WebSocket(url);
+  } catch (e){
+    connectError.textContent = "Impossibile creare la connessione.";
+    return;
+  }
+  ws.onopen = function(){ onOpen(); };
+  ws.onmessage = function(ev){ handleMessage(JSON.parse(ev.data)); };
+  ws.onerror = function(){
+    connectError.textContent = "Errore di connessione al server.";
+  };
+  ws.onclose = function(){
+    if (currentScreen !== "connect"){
+      connectError.textContent = "Connessione persa con il server.";
+      showScreen("connect");
+    }
+  };
+}
+
+function sendMsg(obj){
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+}
+
+function handleMessage(msg){
+  switch (msg.type){
+    case "room_created":
+    case "joined":
+      myId = msg.player_id;
+      roomCode = msg.code;
+      maze = msg.maze; mazeW = msg.maze_w; mazeH = msg.maze_h;
+      setupCanvas();
+      document.getElementById("hudRoom").textContent = "stanza " + roomCode;
+      eatenPellets.clear();
+      break;
+    case "error":
+      if (currentScreen === "lobby") document.getElementById("lobbyError").textContent = msg.message;
+      else connectError.textContent = msg.message;
+      break;
+    case "lobby_state":
+      onLobbyState(msg);
+      break;
+    case "state":
+      onState(msg);
+      break;
+    case "round_end":
+      onRoundEnd(msg);
+      break;
+  }
+}
+
+/* =========================================================================
+   LOBBY
+   ========================================================================= */
+let roundActive = false; // true durante countdown/playing, per non interrompere la partita
+
+function onLobbyState(msg){
+  lobbyPlayersCache = msg.players;
+  document.getElementById("lobbyCode").textContent = msg.code;
+  const list = document.getElementById("lobbyPlayers");
+  list.innerHTML = "";
+  msg.players.forEach(function(p){
+    const li = document.createElement("li");
+    li.className = "player-row";
+    const sw = document.createElement("span");
+    sw.className = "swatch";
+    sw.style.background = p.color ? COLOR_HEX[p.color] : "#333";
+    sw.style.color = p.color ? COLOR_HEX[p.color] : "#333";
+    li.appendChild(sw);
+    const nameSpan = document.createElement("span");
+    nameSpan.textContent = p.name;
+    li.appendChild(nameSpan);
+    if (p.id === myId){ myColor = p.color; const t = document.createElement("span"); t.className="tag you"; t.textContent="TU"; li.appendChild(t); }
+    if (p.host){ const t = document.createElement("span"); t.className="tag host"; t.textContent="HOST"; li.appendChild(t); }
+    const spacer = document.createElement("span"); spacer.className="spacer"; li.appendChild(spacer);
+    const colTxt = document.createElement("span"); colTxt.style.fontSize="10px"; colTxt.style.color="var(--phosphor-dim)";
+    colTxt.textContent = p.color || "nessun colore";
+    li.appendChild(colTxt);
+    list.appendChild(li);
+  });
+
+  renderColorGrid(msg.players);
+
+  const me = msg.players.find(function(p){ return p.id === myId; });
+  const isHost = me && me.host;
+  document.getElementById("btnStart").classList.toggle("hidden", !isHost);
+  document.getElementById("waitHostMsg").classList.toggle("hidden", !!isHost);
+  const allColored = msg.players.every(function(p){ return p.color; });
+  document.getElementById("btnStart").disabled = !(isHost && msg.players.length >= msg.min_players && allColored);
+
+  if (!roundActive){
+    document.getElementById("lobbyError").textContent = "";
+    showScreen("lobby");
+  }
+}
+
+function renderColorGrid(players){
+  const grid = document.getElementById("colorGrid");
+  grid.innerHTML = "";
+  const takenBy = {};
+  players.forEach(function(p){ if (p.color) takenBy[p.color] = p.id; });
+  COLOR_NAMES.forEach(function(cname){
+    const btn = document.createElement("button");
+    btn.className = "color-swatch-btn";
+    btn.style.background = COLOR_HEX[cname];
+    btn.style.color = COLOR_HEX[cname];
+    const takenByOther = takenBy[cname] && takenBy[cname] !== myId;
+    const mine = takenBy[cname] === myId;
+    btn.dataset.taken = takenByOther ? "1" : "0";
+    btn.dataset.mine = mine ? "1" : "0";
+    btn.title = cname;
+    btn.disabled = !!takenByOther;
+    btn.addEventListener("click", function(){ sendMsg({ type: "select_color", color: cname }); });
+    grid.appendChild(btn);
+  });
+}
+
+document.getElementById("btnStart").addEventListener("click", function(){
+  sendMsg({ type: "start_game" });
+});
+document.getElementById("btnLeaveLobby").addEventListener("click", leaveGame);
+document.getElementById("btnLeaveGame").addEventListener("click", leaveGame);
+
+function leaveGame(){
+  if (ws) { try { ws.close(); } catch (e){} }
+  ws = null;
+  roundActive = false;
+  stopSiren();
+  showScreen("connect");
+}
+
+/* =========================================================================
+   CANVAS / RENDERING DI GIOCO
+   ========================================================================= */
+const canvas = document.getElementById("gameCanvas");
+let ctx = null;
+let dpr = window.devicePixelRatio || 1;
+
+function setupCanvas(){
+  const cssW = mazeW * BASE_CELL;
+  const cssH = mazeH * BASE_CELL;
+  dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(cssW * dpr);
+  canvas.height = Math.round(cssH * dpr);
+  canvas.style.width = cssW + "px";
+  canvas.style.height = cssH + "px";
+  ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+function isWallCell(cx, cy){
+  if (cx < 0 || cy < 0 || cy >= mazeH || cx >= mazeW) return true;
+  return maze[cy][cx] === "#";
+}
+
+function drawMaze(){
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, mazeW * BASE_CELL, mazeH * BASE_CELL);
+  for (let y = 0; y < mazeH; y++){
+    for (let x = 0; x < mazeW; x++){
+      if (maze[y][x] !== "#") continue;
+      const px = x * BASE_CELL, py = y * BASE_CELL;
+      const m = 1.5, r = 5;
+      ctx.save();
+      ctx.shadowColor = "var(--wall-glow)";
+      ctx.shadowColor = "#4d7bff";
+      ctx.shadowBlur = 4;
+      ctx.fillStyle = "#0a1440";
+      roundRectPath(px + m, py + m, BASE_CELL - 2 * m, BASE_CELL - 2 * m, r);
+      ctx.fill();
+      ctx.strokeStyle = "#2b4bd6";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+}
+
+function roundRectPath(x, y, w, h, r){
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function drawPellets(players){
+  players.forEach(function(p){
+    if (!p.alive) return;
+    eatenPellets.add(Math.round(p.x) + "," + Math.round(p.y));
+  });
+  ctx.fillStyle = "#ffe9a8";
+  ctx.shadowColor = "#ffe9a8";
+  ctx.shadowBlur = 3;
+  for (let y = 0; y < mazeH; y++){
+    for (let x = 0; x < mazeW; x++){
+      if (maze[y][x] === "#") continue;
+      if (eatenPellets.has(x + "," + y)) continue;
+      const cx = x * BASE_CELL + BASE_CELL / 2;
+      const cy = y * BASE_CELL + BASE_CELL / 2;
+      ctx.beginPath();
+      ctx.arc(cx, cy, 2.1, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  ctx.shadowBlur = 0;
+}
+
+function drawPacman(px, py, radius, mouthDeg, rotationDeg, colorHex, glowExtra){
+  ctx.save();
+  ctx.translate(px, py);
+  ctx.rotate(rotationDeg * Math.PI / 180);
+  const m = Math.max(2, mouthDeg) * Math.PI / 180;
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.arc(0, 0, radius, m, Math.PI * 2 - m);
+  ctx.closePath();
+  ctx.fillStyle = colorHex;
+  ctx.shadowColor = colorHex;
+  ctx.shadowBlur = 8 + (glowExtra || 0);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawPlayers(players, now){
+  players.forEach(function(p){
+    const cur = { x: p.x, y: p.y };
+    const prevP = findPlayer(prevSnapshot, p.id) || p;
+    const t = interpAlpha(now);
+    const ix = lerp(prevP.x, cur.x, t);
+    const iy = lerp(prevP.y, cur.y, t);
+    const px = ix * BASE_CELL + BASE_CELL / 2;
+    const py = iy * BASE_CELL + BASE_CELL / 2;
+
+    if (!p.alive) return;
+
+    const facing = p.dir ? DIR_ANGLE[p.dir] : (p._lastFacing || 0);
+    p._lastFacing = facing;
+    const isKiller = p.is_killer;
+    const chompSpeed = isKiller ? 11 : 8;
+    const mouthDeg = 8 + 24 * Math.abs(Math.sin(now / 1000 * chompSpeed));
+    const baseColor = isKiller ? KILLER_COLOR : (COLOR_HEX[p.color] || "#fff");
+    const radius = (isKiller ? BASE_CELL * 0.50 : BASE_CELL * 0.42);
+
+    if (isKiller){
+      const pulse = 4 + 3 * Math.abs(Math.sin(now / 220));
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(px, py, radius + pulse, 0, Math.PI * 2);
+      ctx.strokeStyle = "rgba(255,43,78,0.55)";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    drawPacman(px, py, radius, mouthDeg, facing, baseColor, isKiller ? 10 : 0);
+
+    ctx.save();
+    ctx.font = "8px " + getComputedStyle(document.body).fontFamily;
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#000";
+    ctx.globalAlpha = 0.7;
+    ctx.fillText(p.name, px + 0.5, py - radius - 4.5);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = isKiller ? KILLER_COLOR : baseColor;
+    ctx.fillText(p.name, px, py - radius - 5);
+    ctx.restore();
+  });
+}
+
+function findPlayer(snapshot, id){
+  if (!snapshot) return null;
+  for (let i = 0; i < snapshot.players.length; i++){
+    if (snapshot.players[i].id === id) return snapshot.players[i];
+  }
+  return null;
+}
+function lerp(a, b, t){ return a + (b - a) * t; }
+function interpAlpha(now){
+  const t = (now - snapshotTime) / SERVER_TICK_MS;
+  return Math.max(0, Math.min(1, t));
+}
+
+function drawExplosions(now){
+  explosions = explosions.filter(function(e){ return now - e.start < 550; });
+  explosions.forEach(function(e){
+    const t = (now - e.start) / 550;
+    const px = e.x * BASE_CELL + BASE_CELL / 2;
+    const py = e.y * BASE_CELL + BASE_CELL / 2;
+    ctx.save();
+    ctx.globalAlpha = 1 - t;
+    ctx.strokeStyle = e.color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(px, py, 4 + t * 16, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  });
+}
+
+function renderLoop(now){
+  requestAnimationFrame(renderLoop);
+  if (currentScreen !== "game" || !ctx || !currSnapshot) return;
+  drawMaze();
+  drawPellets(currSnapshot.players);
+  drawPlayers(currSnapshot.players, now);
+  drawExplosions(now);
+
+  const banner = document.getElementById("killerBanner");
+  if (now < killerBannerUntil) banner.classList.add("show");
+  else banner.classList.remove("show");
+
+  const me = findPlayer(currSnapshot, myId);
+  const killer = currSnapshot.killer_id ? findPlayer(currSnapshot, currSnapshot.killer_id) : null;
+  if (me && killer && me.alive && !me.is_killer && currSnapshot.phase === "playing"){
+    const dist = Math.hypot(me.x - killer.x, me.y - killer.y);
+    updateHeartbeat(dist);
+  }
+}
+requestAnimationFrame(renderLoop);
+
+window.addEventListener("resize", function(){ if (mazeW) setupCanvas(); });
+
+/* =========================================================================
+   LOGO ANIMATO (schermata di connessione)
+   ========================================================================= */
+(function animateLogo(){
+  const lc = document.getElementById("logoCanvas");
+  const lctx = lc.getContext("2d");
+  function frame(now){
+    requestAnimationFrame(frame);
+    lctx.clearRect(0, 0, lc.width, lc.height);
+    const mouth = 8 + 26 * Math.abs(Math.sin(now / 260));
+    lctx.save();
+    lctx.translate(lc.width / 2, lc.height / 2);
+    lctx.beginPath();
+    lctx.moveTo(0, 0);
+    const m = mouth * Math.PI / 180;
+    lctx.arc(0, 0, 22, m, Math.PI * 2 - m);
+    lctx.closePath();
+    lctx.fillStyle = "#ffd400";
+    lctx.shadowColor = "#ffd400";
+    lctx.shadowBlur = 16;
+    lctx.fill();
+    lctx.restore();
+  }
+  requestAnimationFrame(frame);
+})();
+
+/* =========================================================================
+   STATO DI GIOCO / EVENTI
+   ========================================================================= */
+function onState(msg){
+  if (msg.phase === "countdown" && lastPhase !== "countdown"){
+    eatenPellets.clear();
+    explosions = [];
+    lastAliveMap = {};
+    startSiren();
+    roundActive = true;
+    document.getElementById("endOverlay").classList.add("hidden");
+    showScreen("game");
+  }
+  if (msg.phase === "playing" && lastPhase === "countdown"){
+    stopSiren();
+    playKillerReveal();
+    killerBannerUntil = performance.now() + 1600;
+    const killer = findPlayer(msg, msg.killer_id);
+    document.getElementById("killerBanner").textContent =
+      killer ? ("IL KILLER E' " + killer.name.toUpperCase() + "!") : "IL KILLER E' STATO SCELTO!";
+  }
+
+  msg.players.forEach(function(p){
+    if (lastAliveMap[p.id] === true && p.alive === false){
+      explosions.push({ x: p.x, y: p.y, color: p.is_killer ? KILLER_COLOR : (COLOR_HEX[p.color] || "#fff"), start: performance.now() });
+      playEliminate();
+      if (p.id !== myId) showToast(p.name + " eliminato!");
+    }
+    lastAliveMap[p.id] = p.alive;
+  });
+  lastPhase = msg.phase;
+
+  prevSnapshot = currSnapshot || msg;
+  currSnapshot = msg;
+  snapshotTime = performance.now();
+
+  updateHud(msg);
+  updateGameSidebar(msg);
+}
+
+function updateHud(msg){
+  const timerEl = document.getElementById("hudTimer");
+  if (msg.phase === "countdown"){
+    timerEl.textContent = "IL KILLER SARA' SVELATO TRA " + Math.ceil(msg.countdown) + "s";
+    timerEl.classList.remove("urgent");
+  } else {
+    timerEl.textContent = "TEMPO: " + Math.ceil(msg.timer) + "s";
+    timerEl.classList.toggle("urgent", msg.timer <= 10);
+  }
+}
+
+function updateGameSidebar(msg){
+  const list = document.getElementById("gamePlayers");
+  list.innerHTML = "";
+  msg.players.forEach(function(p){
+    const li = document.createElement("li");
+    li.className = "player-row" + (!p.alive ? " dead" : "") + (p.is_killer ? " killer" : "");
+    const sw = document.createElement("span");
+    sw.className = "swatch";
+    const c = p.is_killer ? KILLER_COLOR : (COLOR_HEX[p.color] || "#888");
+    sw.style.background = c; sw.style.color = c;
+    li.appendChild(sw);
+    const nameSpan = document.createElement("span");
+    nameSpan.textContent = p.name;
+    li.appendChild(nameSpan);
+    if (p.id === myId){ const t = document.createElement("span"); t.className="tag you"; t.textContent="TU"; li.appendChild(t); }
+    if (p.is_killer){ const t = document.createElement("span"); t.className="tag killer"; t.textContent="KILLER"; li.appendChild(t); }
+    list.appendChild(li);
+  });
+}
+
+function onRoundEnd(msg){
+  roundActive = false;
+  stopSiren();
+  const iWon = msg.winners.indexOf(myId) !== -1;
+  if (iWon) playVictory(); else playGameOver();
+
+  const overlay = document.getElementById("endOverlay");
+  const title = document.getElementById("endTitle");
+  const winners = document.getElementById("endWinners");
+  if (msg.reason === "killer_wins") title.textContent = "IL KILLER HA VINTO";
+  else if (msg.reason === "last_survivor") title.textContent = "ULTIMO SOPRAVVISSUTO!";
+  else title.textContent = "TEMPO SCADUTO";
+
+  winners.innerHTML = "";
+  msg.winners.forEach(function(wid){
+    const div = document.createElement("div");
+    const isMe = wid === myId;
+    div.innerHTML = (isMe ? "<b>" : "") + (msg.names[wid] || wid) + (isMe ? " (TU!)</b>" : "");
+    winners.appendChild(div);
+  });
+  overlay.classList.remove("hidden");
+}
+
+/* =========================================================================
+   INPUT: TASTIERA + D-PAD TOUCH
+   ========================================================================= */
+const KEY_TO_DIR = {
+  ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right",
+  w: "up", s: "down", a: "left", d: "right",
+  W: "up", S: "down", A: "left", D: "right",
+};
+
+document.addEventListener("keydown", function(ev){
+  if (currentScreen !== "game") return;
+  const dir = KEY_TO_DIR[ev.key];
+  if (dir){
+    sendMsg({ type: "move", direction: dir });
+    ev.preventDefault();
+  }
+});
+
+document.querySelectorAll(".dpad button").forEach(function(btn){
+  const dir = btn.dataset.dir;
+  const fire = function(ev){ ev.preventDefault(); sendMsg({ type: "move", direction: dir }); };
+  btn.addEventListener("pointerdown", fire);
+});
+
+})();
+</script>
+</body>
+</html>
