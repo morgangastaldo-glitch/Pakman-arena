@@ -2,7 +2,7 @@
 <html lang="it">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Pac-Man Arena 1vAll</title>
 <style>
   :root{
@@ -269,11 +269,17 @@
     inset: 0;
     width: 100vw;
     height: 100vh;
+    height: 100dvh; /* segue la UI dinamica del browser mobile: niente barre che tagliano la mappa */
     max-width: none;
     border-radius: 0;
     padding: 10px;
+    padding-top: max(10px, env(safe-area-inset-top));
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
+    padding-left: max(10px, env(safe-area-inset-left));
+    padding-right: max(10px, env(safe-area-inset-right));
     display: flex;
     flex-direction: column;
+    z-index: 40;
   }
   .cabinet.wide::before{ display:none; }
   body.game-fullscreen{ padding:0; }
@@ -360,6 +366,7 @@
   <section id="screen-game" class="screen hidden">
     <div class="hud">
       <span class="timer" id="hudTimer">--</span>
+      <span class="roomtag" id="hudMap"></span>
       <span class="roomtag" id="hudRoom"></span>
     </div>
 
@@ -426,6 +433,12 @@ const COLOR_HEX = {
 const KILLER_COLOR = "#ff2b4e";
 const COLOR_NAMES = ["azzurro", "giallo", "verde", "bianco", "rosa"];
 const DIR_ANGLE = { right: 0, down: 90, left: 180, up: 270 };
+
+// Tema visivo della mappa corrente (muri/pellet/sfondo): il server ne sceglie
+// uno diverso tra 10 ad ogni inizio partita (vedi round_start), cosi' ogni
+// mappa ha davvero una sua identita' cromatica e non solo una forma diversa.
+let mazeTheme = { wall: "#0a1440", edge: "#2b4bd6", glow: "#4d7bff", pellet: "#ffe9a8", bg: "#000000" };
+let mazeName = "";
 
 /* =========================================================================
    STATO GLOBALE
@@ -515,8 +528,21 @@ function noiseBurst(duration, gainPeak){
   src.start();
 }
 
-function playChomp(){ sweep(560, 190, 0.085, "square", 0.10); }
-function playTurn(){ tone(340, 0.05, "square", 0.06); }
+// "Waka-waka": nel gioco originale il suono di masticazione alterna due note
+// leggermente diverse ad ogni pallino. Prima questa funzione era definita
+// ma non veniva mai richiamata da nessuna parte: i pallini sparivano in
+// silenzio. Ora e' agganciata a onState() ogni volta che il proprio
+// giocatore passa su un pallino non ancora mangiato.
+let chompToggle = false;
+function playChomp(){
+  chompToggle = !chompToggle;
+  if (chompToggle) sweep(430, 130, 0.075, "square", 0.11);
+  else sweep(300, 90, 0.075, "square", 0.11);
+}
+// Bip secco ad ogni cambio direzione richiesto: da' un riscontro sonoro
+// immediato al tasto premuto, indipendentemente da quando il server riesce
+// davvero ad applicare la svolta (vedi coda next_direction lato server).
+function playTurn(){ tone(520, 0.035, "square", 0.05); }
 function playEliminate(){
   tone(311, 0.18, "sawtooth", 0.16, 0.00);
   tone(277, 0.18, "sawtooth", 0.16, 0.16);
@@ -587,6 +613,32 @@ function showScreen(name){
   if (name === "game" && mazeW) setupCanvas();
 }
 
+/* =========================================================================
+   SCHERMO INTERO
+   ========================================================================= */
+// La Fullscreen API va richiesta in modo sincrono dentro un gestore di click
+// reale (un "gesto utente"): non si puo' invocare in un timer o dopo un
+// messaggio websocket arrivato in modo asincrono. Per questo la chiediamo
+// gia' al click su "Entra in partita"/"Unisciti" (il primo gesto sicuro che
+// l'utente compie), cosi' quando la partita parte davvero lo schermo intero
+// e' gia' attivo. Su dispositivi che non la supportano per elementi generici
+// (es. iOS Safari) la chiamata fallisce silenziosamente e resta comunque
+// attivo il fallback CSS (.cabinet.wide, posizionato fixed a copertura
+// dell'intero viewport) che funziona ovunque a prescindere dal dispositivo.
+function requestFullscreenSafe(){
+  const el = document.documentElement;
+  try {
+    const fn = el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen;
+    if (fn){
+      const p = fn.call(el);
+      if (p && p.catch) p.catch(function(){ /* negato o non supportato: ok, resta il fallback CSS */ });
+    }
+  } catch (e) { /* ok, resta il fallback CSS */ }
+}
+document.addEventListener("fullscreenchange", function(){
+  if (currentScreen === "game" && mazeW) setupCanvas();
+});
+
 function showToast(msg){
   const el = document.getElementById("toast");
   el.textContent = msg;
@@ -637,6 +689,7 @@ document.getElementById("btnConnect").addEventListener("click", function(){
     return;
   }
   ensureAudio();
+  requestFullscreenSafe();
   connect(ip, port, function(){
     if (joinMode){
       const code = document.getElementById("inpCode").value.trim().toUpperCase();
@@ -683,6 +736,16 @@ function connect(ip, port, onOpen){
   };
 }
 
+function applyMapData(msg){
+  maze = msg.maze; mazeW = msg.maze_w; mazeH = msg.maze_h;
+  mazeName = msg.maze_name || "";
+  if (msg.theme) mazeTheme = msg.theme;
+  eatenPellets.clear();
+  const mapEl = document.getElementById("hudMap");
+  if (mapEl) mapEl.textContent = mazeName ? ("mappa: " + mazeName) : "";
+  setupCanvas();
+}
+
 function sendMsg(obj){
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
 }
@@ -693,10 +756,8 @@ function handleMessage(msg){
     case "joined":
       myId = msg.player_id;
       roomCode = msg.code;
-      maze = msg.maze; mazeW = msg.maze_w; mazeH = msg.maze_h;
-      setupCanvas();
+      applyMapData(msg);
       document.getElementById("hudRoom").textContent = "stanza " + roomCode;
-      eatenPellets.clear();
       break;
     case "error":
       if (currentScreen === "lobby") document.getElementById("lobbyError").textContent = msg.message;
@@ -704,6 +765,9 @@ function handleMessage(msg){
       break;
     case "lobby_state":
       onLobbyState(msg);
+      break;
+    case "round_start":
+      applyMapData(msg);
       break;
     case "state":
       onState(msg);
@@ -781,8 +845,15 @@ function renderColorGrid(players){
 }
 
 document.getElementById("btnStart").addEventListener("click", function(){
+  requestFullscreenSafe();
   sendMsg({ type: "start_game" });
 });
+// Anche i giocatori non host (che non cliccano "Avvia partita") ottengono
+// un tentativo di schermo intero appena interagiscono con la lobby, ad
+// esempio scegliendo un colore: e' comunque un gesto utente valido.
+document.getElementById("colorGrid").addEventListener("click", function(){
+  requestFullscreenSafe();
+}, { once: false });
 document.getElementById("btnLeaveLobby").addEventListener("click", leaveGame);
 document.getElementById("btnLeaveGame").addEventListener("click", leaveGame);
 
@@ -791,6 +862,9 @@ function leaveGame(){
   ws = null;
   roundActive = false;
   stopSiren();
+  if (document.fullscreenElement){
+    try { (document.exitFullscreen || function(){}).call(document); } catch (e){}
+  }
   showScreen("connect");
 }
 
@@ -830,7 +904,7 @@ function isWallCell(cx, cy){
 }
 
 function drawMaze(){
-  ctx.fillStyle = "#000";
+  ctx.fillStyle = mazeTheme.bg || "#000";
   ctx.fillRect(0, 0, mazeW * BASE_CELL, mazeH * BASE_CELL);
   for (let y = 0; y < mazeH; y++){
     for (let x = 0; x < mazeW; x++){
@@ -838,13 +912,12 @@ function drawMaze(){
       const px = x * BASE_CELL, py = y * BASE_CELL;
       const m = 1.5, r = 5;
       ctx.save();
-      ctx.shadowColor = "var(--wall-glow)";
-      ctx.shadowColor = "#4d7bff";
+      ctx.shadowColor = mazeTheme.glow;
       ctx.shadowBlur = 4;
-      ctx.fillStyle = "#0a1440";
+      ctx.fillStyle = mazeTheme.wall;
       roundRectPath(px + m, py + m, BASE_CELL - 2 * m, BASE_CELL - 2 * m, r);
       ctx.fill();
-      ctx.strokeStyle = "#2b4bd6";
+      ctx.strokeStyle = mazeTheme.edge;
       ctx.lineWidth = 1;
       ctx.stroke();
       ctx.restore();
@@ -862,13 +935,10 @@ function roundRectPath(x, y, w, h, r){
   ctx.closePath();
 }
 
-function drawPellets(players){
-  players.forEach(function(p){
-    if (!p.alive) return;
-    eatenPellets.add(Math.round(p.x) + "," + Math.round(p.y));
-  });
-  ctx.fillStyle = "#ffe9a8";
-  ctx.shadowColor = "#ffe9a8";
+function drawPellets(){
+  const pelletColor = mazeTheme.pellet || "#ffe9a8";
+  ctx.fillStyle = pelletColor;
+  ctx.shadowColor = pelletColor;
   ctx.shadowBlur = 3;
   for (let y = 0; y < mazeH; y++){
     for (let x = 0; x < mazeW; x++){
@@ -897,6 +967,52 @@ function drawPacman(px, py, radius, mouthDeg, rotationDeg, colorHex, glowExtra){
   ctx.shadowColor = colorHex;
   ctx.shadowBlur = 8 + (glowExtra || 0);
   ctx.fill();
+  ctx.restore();
+}
+
+// Il killer non diventa piu' un "Pac-Man rosso e piu' grande": prende le
+// sembianze del classico fantasmino (cupola + gonnellino ondulato + occhi
+// che guardano nella direzione di marcia), mantenendo pero' le stesse
+// dimensioni e la stessa velocita' che aveva il Pac-Man killer.
+function drawGhost(px, py, r, colorHex, facingDeg, glowExtra){
+  ctx.save();
+  ctx.translate(px, py);
+
+  ctx.beginPath();
+  ctx.moveTo(-r, r * 0.85);
+  ctx.arc(0, 0, r, Math.PI, 0, false); // cupola superiore
+  ctx.lineTo(r, r * 0.85);
+  const scallops = 4;
+  const step = (2 * r) / scallops;
+  for (let i = 0; i < scallops; i++){
+    const xStart = r - i * step;
+    const xEnd = xStart - step;
+    const xMid = xStart - step / 2;
+    const yTip = (i % 2 === 0) ? r * 0.55 : r * 1.02;
+    ctx.quadraticCurveTo(xMid, yTip, xEnd, r * 0.85);
+  }
+  ctx.closePath();
+  ctx.fillStyle = colorHex;
+  ctx.shadowColor = colorHex;
+  ctx.shadowBlur = 8 + (glowExtra || 0);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  const eyeDX = r * 0.40, eyeDY = -r * 0.08, eyeRX = r * 0.27, eyeRY = r * 0.33;
+  [-1, 1].forEach(function(side){
+    ctx.beginPath();
+    ctx.ellipse(side * eyeDX, eyeDY, eyeRX, eyeRY, 0, 0, Math.PI * 2);
+    ctx.fillStyle = "#eef4ff";
+    ctx.fill();
+  });
+  const rad = (facingDeg || 0) * Math.PI / 180;
+  const pdx = Math.cos(rad) * eyeRX * 0.5, pdy = Math.sin(rad) * eyeRY * 0.5;
+  [-1, 1].forEach(function(side){
+    ctx.beginPath();
+    ctx.arc(side * eyeDX + pdx, eyeDY + pdy, eyeRX * 0.5, 0, Math.PI * 2);
+    ctx.fillStyle = "#1b2440";
+    ctx.fill();
+  });
   ctx.restore();
 }
 
@@ -934,7 +1050,11 @@ function drawPlayers(players, now){
       ctx.restore();
     }
 
-    drawPacman(px, py, radius, mouthDeg, facing, baseColor, isKiller ? 10 : 0);
+    if (isKiller){
+      drawGhost(px, py, radius, baseColor, facing, 10);
+    } else {
+      drawPacman(px, py, radius, mouthDeg, facing, baseColor, 0);
+    }
 
     ctx.save();
     ctx.font = "8px " + getComputedStyle(document.body).fontFamily;
@@ -979,7 +1099,7 @@ function renderLoop(now){
   requestAnimationFrame(renderLoop);
   if (currentScreen !== "game" || !ctx || !currSnapshot) return;
   drawMaze();
-  drawPellets(currSnapshot.players);
+  drawPellets();
   drawPlayers(currSnapshot.players, now);
   drawExplosions(now);
 
@@ -1062,6 +1182,18 @@ function onState(msg){
       if (p.id !== myId) showToast(p.name + " eliminato!");
     }
     lastAliveMap[p.id] = p.alive;
+
+    // Il pallino sotto la pedina viene "mangiato" al passaggio. Farlo qui
+    // (al ritmo dei tick di stato, ~20/s) invece che nel render loop
+    // permette di far scattare il classico "waka-waka" una volta sola per
+    // pallino, per il proprio giocatore.
+    if (p.alive){
+      const cellKey = Math.round(p.x) + "," + Math.round(p.y);
+      if (!eatenPellets.has(cellKey)){
+        eatenPellets.add(cellKey);
+        if (p.id === myId) playChomp();
+      }
+    }
 
     // Anima uno scivolamento fluido verso la nuova posizione confermata dal
     // server, con una durata pari al tempo reale che ci mette una pedina a
@@ -1150,19 +1282,47 @@ const KEY_TO_DIR = {
   W: "up", S: "down", A: "left", D: "right",
 };
 
+let lastRequestedDir = null;
 document.addEventListener("keydown", function(ev){
   if (currentScreen !== "game") return;
   const dir = KEY_TO_DIR[ev.key];
   if (dir){
+    if (dir !== lastRequestedDir){ playTurn(); lastRequestedDir = dir; }
     sendMsg({ type: "move", direction: dir });
     ev.preventDefault();
   }
 });
+document.addEventListener("keyup", function(ev){
+  const dir = KEY_TO_DIR[ev.key];
+  if (dir && dir === lastRequestedDir) lastRequestedDir = null;
+});
 
+// D-pad touch: un singolo tap invia subito la direzione (il server la mette
+// in coda e la applica appena possibile, vedi next_direction), e tenendo il
+// dito premuto la direzione viene reinviata a ripetizione, cosi' anche su
+// mobile ci si puo' muovere in modo continuo tenendo premuto, non solo a
+// colpi di singolo tocco.
 document.querySelectorAll(".dpad button").forEach(function(btn){
   const dir = btn.dataset.dir;
-  const fire = function(ev){ ev.preventDefault(); sendMsg({ type: "move", direction: dir }); };
-  btn.addEventListener("pointerdown", fire);
+  let repeatTimer = null;
+  const fire = function(){ sendMsg({ type: "move", direction: dir }); };
+  const start = function(ev){
+    ev.preventDefault();
+    ensureAudio();
+    if (dir !== lastRequestedDir){ playTurn(); lastRequestedDir = dir; }
+    fire();
+    clearInterval(repeatTimer);
+    repeatTimer = setInterval(fire, 90);
+  };
+  const stop = function(){
+    clearInterval(repeatTimer);
+    repeatTimer = null;
+    if (lastRequestedDir === dir) lastRequestedDir = null;
+  };
+  btn.addEventListener("pointerdown", start);
+  btn.addEventListener("pointerup", stop);
+  btn.addEventListener("pointerleave", stop);
+  btn.addEventListener("pointercancel", stop);
 });
 
 })();

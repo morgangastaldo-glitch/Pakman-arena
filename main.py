@@ -12,9 +12,10 @@ L'UNICA differenza rispetto a server.py e' il trasporto di rete:
   usa con `new WebSocket(...)`, cosi' il client web (index.html) puo'
   collegarsi davvero.
 
-In piu', questo server invia la mappa (maze/maze_w/maze_h) al momento
-della creazione/ingresso in stanza: il client da terminale la legge in
-locale da common.py, il browser invece deve riceverla via rete.
+In piu', questo server invia la mappa scelta a caso tra le 10 disponibili
+(maze/maze_w/maze_h/maze_name/theme) alla creazione della stanza e di nuovo,
+con una nuova mappa casuale, ad ogni inizio round: il client da terminale la
+legge in locale da common.py, il browser invece deve riceverla via rete.
 
 Avvio locale:      python3 server_web.py [porta]   (default 8765)
 In hosting (Render/Railway/...): la porta arriva dalla variabile
@@ -33,8 +34,8 @@ import websockets
 from common import (
     TICK_DT, COUNTDOWN_SECONDS, ROUND_SECONDS, KILLER_INTERVAL_SECONDS,
     MAX_PLAYERS, MIN_PLAYERS, NORMAL_SPEED, KILLER_SPEED_MULT,
-    COLORS, DIRECTIONS, SPAWN_POINTS, is_wall, ROOM_CODE_CHARS,
-    MAZE, MAZE_W, MAZE_H,
+    COLORS, DIRECTIONS, is_wall, ROOM_CODE_CHARS,
+    pick_random_maze,
 )
 
 DEFAULT_PORT = 8765
@@ -66,6 +67,13 @@ class Player:
         self.x = 0
         self.y = 0
         self.direction = None
+        # Direzione "richiesta" dal giocatore ma non ancora applicabile (es.
+        # muro nella cella successiva): viene tenuta in memoria e applicata
+        # in automatico nel primo tick in cui diventa possibile, esattamente
+        # come nel Pac-Man originale. Senza questa coda, premere una
+        # direzione un istante troppo presto la faceva perdere del tutto,
+        # dando la sensazione di comandi "poco precisi".
+        self.next_direction = None
         self.move_accum = 0.0
         self.alive = True
         self.is_killer = False
@@ -91,6 +99,31 @@ class Room:
         self.loop_task = None
         self.last_result = None
         self.initial_survivor_count = 0
+        # Mappa corrente della stanza: viene ripescata a caso tra le 10
+        # disponibili a OGNI inizio round (vedi run_round), cosi' ogni
+        # partita puo' capitare su una mappa diversa per forma/colore/misura.
+        map_data = pick_random_maze()
+        self.maze = map_data["maze"]
+        self.maze_w = map_data["w"]
+        self.maze_h = map_data["h"]
+        self.maze_name = map_data["name"]
+        self.spawn_points = map_data["spawn_points"]
+        self.theme = map_data["theme"]
+
+    def pick_new_map(self):
+        map_data = pick_random_maze()
+        self.maze = map_data["maze"]
+        self.maze_w = map_data["w"]
+        self.maze_h = map_data["h"]
+        self.maze_name = map_data["name"]
+        self.spawn_points = map_data["spawn_points"]
+        self.theme = map_data["theme"]
+
+    def map_payload(self):
+        return {
+            "maze": self.maze, "maze_w": self.maze_w, "maze_h": self.maze_h,
+            "maze_name": self.maze_name, "theme": self.theme,
+        }
 
     # ---------- lobby ----------
 
@@ -131,11 +164,12 @@ class Room:
     # ---------- round setup ----------
 
     def assign_spawns(self):
-        spots = SPAWN_POINTS[:]
+        spots = self.spawn_points[:]
         random.shuffle(spots)
         for p, (x, y) in zip(self.players.values(), spots):
             p.x, p.y = x, y
             p.direction = None
+            p.next_direction = None
             p.move_accum = 0.0
             p.alive = True
             p.is_killer = False
@@ -169,16 +203,39 @@ class Room:
     def update_movement(self):
         prev_positions = {p.id: (p.x, p.y) for p in self.players.values()}
         for p in self.players.values():
-            if not p.alive or p.direction is None:
+            if not p.alive:
                 continue
+
+            # Appena la direzione "in coda" diventa percorribile dalla cella
+            # attuale, diventa la direzione corrente: e' cosi' che nel
+            # Pac-Man originale una svolta premuta con un attimo di anticipo
+            # (mentre si e' ancora contro il muro sbagliato) non va persa,
+            # ma scatta un istante dopo, non appena possibile.
+            if p.next_direction is not None:
+                ndx, ndy = DIRECTIONS[p.next_direction]
+                if not is_wall(self.maze, self.maze_w, self.maze_h, p.x + ndx, p.y + ndy):
+                    p.direction = p.next_direction
+                    p.next_direction = None
+
+            if p.direction is None:
+                continue
+
+            dx, dy = DIRECTIONS[p.direction]
+            nx, ny = p.x + dx, p.y + dy
+            if is_wall(self.maze, self.maze_w, self.maze_h, nx, ny):
+                # Contro un muro: azzera l'accumulo invece di lasciarlo
+                # crescere all'infinito. Senza questo, appena la strada si
+                # liberava (es. dopo che il killer cambia e la fisica
+                # riprende) il giocatore "teletrasportava" di piu' celle in
+                # un colpo solo, altro sintomo dei comandi imprecisi.
+                p.move_accum = 0.0
+                continue
+
             speed = NORMAL_SPEED * (KILLER_SPEED_MULT if p.is_killer else 1.0)
             p.move_accum += speed * TICK_DT
             if p.move_accum >= 1.0:
                 p.move_accum -= 1.0
-                dx, dy = DIRECTIONS[p.direction]
-                nx, ny = p.x + dx, p.y + dy
-                if not is_wall(nx, ny):
-                    p.x, p.y = nx, ny
+                p.x, p.y = nx, ny
         return prev_positions
 
     def check_collisions(self, prev_positions):
@@ -227,9 +284,15 @@ class Room:
     # ---------- main loop ----------
 
     async def run_round(self):
+        # Ad ogni nuova partita si pesca a caso una delle 10 mappe: forma,
+        # colori e dimensioni cambiano, ma la giocabilita' e' garantita (ogni
+        # mappa e' verificata per connettivita' totale al momento della
+        # generazione).
+        self.pick_new_map()
         self.state = "COUNTDOWN"
         self.countdown_left = COUNTDOWN_SECONDS
         self.assign_spawns()
+        await self.broadcast({"type": "round_start", **self.map_payload()})
         await self.broadcast(self.state_snapshot())
 
         while self.state in ("COUNTDOWN", "PLAYING"):
@@ -308,7 +371,7 @@ async def handle_client(ws):
                 room.add_player(player)
                 await ws.send(encode_text({
                     "type": "room_created", "code": room.code, "player_id": player.id,
-                    "maze": MAZE, "maze_w": MAZE_W, "maze_h": MAZE_H,
+                    **room.map_payload(),
                 }))
                 await room.broadcast_lobby()
 
@@ -332,7 +395,7 @@ async def handle_client(ws):
                 room.add_player(player)
                 await ws.send(encode_text({
                     "type": "joined", "code": room.code, "player_id": player.id,
-                    "maze": MAZE, "maze_w": MAZE_W, "maze_h": MAZE_H,
+                    **room.map_payload(),
                 }))
                 await room.broadcast_lobby()
 
@@ -366,7 +429,7 @@ async def handle_client(ws):
                     continue
                 direction = msg.get("direction")
                 if direction in DIRECTIONS:
-                    player.direction = direction
+                    player.next_direction = direction
 
             elif mtype == "ping":
                 await ws.send(encode_text({"type": "pong"}))
