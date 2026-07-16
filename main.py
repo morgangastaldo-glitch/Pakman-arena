@@ -89,6 +89,7 @@ class Room:
         self.killer_id = None
         self.loop_task = None
         self.last_result = None
+        self.initial_survivor_count = 0
 
     # ---------- lobby ----------
 
@@ -146,6 +147,7 @@ class Room:
         killer_id = random.choice(alive_ids)
         self.killer_id = killer_id
         self.players[killer_id].is_killer = True
+        self.initial_survivor_count = len(alive_ids) - 1
 
     # ---------- game tick ----------
 
@@ -183,7 +185,7 @@ class Room:
         survivors = [p for p in self.players.values() if p.alive and not p.is_killer]
         if len(survivors) == 0:
             return [self.killer_id], "killer_wins"
-        if len(survivors) == 1:
+        if len(survivors) == 1 and self.initial_survivor_count > 1:
             return [survivors[0].id], "last_survivor"
         return None, None
 

@@ -70,6 +70,7 @@
   .cabinet{
     position:relative;
     width:min(640px, 100%);
+    transition: width 0.15s ease;
     border: 1px solid var(--panel-edge);
     border-radius: 14px;
     background: linear-gradient(180deg, #08110b, #050705);
@@ -258,6 +259,10 @@
   .dpad .left{ grid-column:1; grid-row:2; }
   .dpad .right{ grid-column:3; grid-row:2; }
   .dpad .down{ grid-column:2; grid-row:3; }
+
+  .cabinet.wide{
+    width: min(1100px, 96vw);
+  }
 
   @media (max-width:480px){
     .cabinet{ padding:12px; }
@@ -536,6 +541,8 @@ function showScreen(name){
   Object.keys(screens).forEach(function(k){
     screens[k].classList.toggle("hidden", k !== name);
   });
+  document.querySelector(".cabinet").classList.toggle("wide", name === "game");
+  if (name === "game" && mazeW) setupCanvas();
 }
 
 function showToast(msg){
@@ -753,15 +760,29 @@ let ctx = null;
 let dpr = window.devicePixelRatio || 1;
 
 function setupCanvas(){
-  const cssW = mazeW * BASE_CELL;
-  const cssH = mazeH * BASE_CELL;
+  const aspect = mazeW / mazeH;
+  // Spazio disponibile: quasi tutta la larghezza della cabinet "wide" e
+  // la maggior parte dell'altezza della finestra, lasciando posto a
+  // HUD/sidebar/controlli. Su schermi piccoli resta comunque contenuto.
+  const wrap = document.getElementById("canvasWrap");
+  const availW = Math.max(wrap.clientWidth || 0, 260);
+  const availH = Math.max(window.innerHeight * 0.62, 260);
+  let cssW = availW;
+  let cssH = cssW / aspect;
+  if (cssH > availH){
+    cssH = availH;
+    cssW = cssH * aspect;
+  }
+
   dpr = window.devicePixelRatio || 1;
-  canvas.width = Math.round(cssW * dpr);
-  canvas.height = Math.round(cssH * dpr);
-  canvas.style.width = cssW + "px";
-  canvas.style.height = cssH + "px";
+  const scale = (cssW * dpr) / (mazeW * BASE_CELL);
+
+  canvas.width = Math.round(mazeW * BASE_CELL * scale);
+  canvas.height = Math.round(mazeH * BASE_CELL * scale);
+  canvas.style.width = Math.round(cssW) + "px";
+  canvas.style.height = Math.round(cssH) + "px";
   ctx = canvas.getContext("2d");
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.setTransform(scale, 0, 0, scale, 0, 0);
 }
 
 function isWallCell(cx, cy){
