@@ -1883,24 +1883,52 @@ function onState(msg){
   const myServerP = findPlayer(msg, myId);
   if (myServerP){
     if (!predInited){
-      predGridX = myServerP.x;
-      predGridY = myServerP.y;
+      predGridX = Math.round(myServerP.x);
+      predGridY = Math.round(myServerP.y);
       predAccum = 0;
       predInited = true;
     } else {
-      const dx = predGridX - myServerP.x;
-      const dy = predGridY - myServerP.y;
+      // IMPORTANTE: l'errore va calcolato tra la posizione CONTINUA
+      // predetta (cella + avanzamento frazionario nella direzione corrente)
+      // e quella continua del server — non tra la sola cella intera
+      // (predGridX) e la posizione continua del server. Confrontare cella
+      // intera con posizione frazionaria produceva uno scarto "finto" quasi
+      // ad ogni pacchetto (dato che l'avanzamento frazionario e' quasi
+      // sempre diverso da zero durante il movimento), facendo scattare la
+      // correzione morbida in continuazione: e' questo che causava lo
+      // scatto/jitter percepito sul proprio personaggio.
+      const curX = predGridX + (predDir ? DIR_VEC[predDir][0] * predAccum : 0);
+      const curY = predGridY + (predDir ? DIR_VEC[predDir][1] * predAccum : 0);
+      const dx = curX - myServerP.x;
+      const dy = curY - myServerP.y;
       const errDist = Math.hypot(dx, dy);
       if (errDist > 0.6 || !myServerP.alive){
-        predGridX = myServerP.x;
-        predGridY = myServerP.y;
+        predGridX = Math.round(myServerP.x);
+        predGridY = Math.round(myServerP.y);
         predAccum = 0;
       } else if (errDist > 0.02){
         // Piccola correzione morbida (20% dello scarto per tick) invece di
         // uno snap secco: elimina la deriva accumulata nel tempo senza mai
-        // farla vedere come un salto.
-        predGridX -= dx * 0.2;
-        predGridY -= dy * 0.2;
+        // farla vedere come un salto. La correzione viene applicata alla
+        // posizione continua e poi ri-scomposta in cella+avanzamento.
+        const corrX = curX - dx * 0.2;
+        const corrY = curY - dy * 0.2;
+        if (predDir){
+          const v = DIR_VEC[predDir];
+          if (v[0] !== 0){
+            predGridX = v[0] > 0 ? Math.floor(corrX) : Math.ceil(corrX);
+            predAccum = Math.max(0, Math.min(1, (corrX - predGridX) * v[0]));
+            predGridY = Math.round(corrY);
+          } else {
+            predGridY = v[1] > 0 ? Math.floor(corrY) : Math.ceil(corrY);
+            predAccum = Math.max(0, Math.min(1, (corrY - predGridY) * v[1]));
+            predGridX = Math.round(corrX);
+          }
+        } else {
+          predGridX = Math.round(corrX);
+          predGridY = Math.round(corrY);
+          predAccum = 0;
+        }
       }
     }
   }
