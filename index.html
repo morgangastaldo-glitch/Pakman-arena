@@ -279,10 +279,6 @@
   .dpad .down{ grid-column:2; grid-row:3; }
 
   .cabinet.wide{
-    width: min(1100px, 96vw);
-  }
-
-  .cabinet.wide{
     position: fixed;
     inset: 0;
     width: 100vw;
@@ -738,7 +734,7 @@ function showScreen(name){
   document.body.classList.toggle("game-fullscreen", name === "game");
   if (name === "game"){
     lastFrameTs = null;
-    if (mazeW) setupCanvas();
+    if (mazeW) resettleCanvas();
   }
 }
 
@@ -1102,6 +1098,16 @@ let canvasScale = 1; // px canvas (device) per unita' BASE_CELL, condiviso col l
 // cambia la mappa o la dimensione dello schermo, e ad ogni frame si fa solo
 // un blit (drawImage) del bitmap gia' pronto: costa quasi nulla alla CPU/GPU.
 const mazeLayer = document.createElement("canvas");
+// I pallini, come i muri, non cambiano posizione: l'unica cosa che varia
+// e' quali sono gia' stati "mangiati". Ridisegnarli tutti con il loro
+// glow (shadowBlur, molto costoso per il canvas 2D) ad ogni frame a
+// 60fps era la causa principale degli scatti. Ora, come per la mappa,
+// vengono disegnati su un layer offscreen che viene rigenerato SOLO
+// quando un pallino viene davvero mangiato (evento raro, non 60 volte al
+// secondo) o quando cambia la mappa/dimensione schermo; ad ogni frame si
+// fa solo un blit.
+const pelletsLayer = document.createElement("canvas");
+let pelletsLayerDirty = true;
 
 function setupCanvas(){
   const aspect = mazeW / mazeH;
@@ -1115,7 +1121,7 @@ function setupCanvas(){
     cssW = cssH * aspect;
   }
 
-  dpr = window.devicePixelRatio || 1;
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
   canvasScale = (cssW * dpr) / (mazeW * BASE_CELL);
 
   canvas.width = Math.round(mazeW * BASE_CELL * canvasScale);
@@ -1126,6 +1132,9 @@ function setupCanvas(){
   ctx.setTransform(canvasScale, 0, 0, canvasScale, 0, 0);
 
   buildMazeLayer();
+  pelletsLayer.width = canvas.width;
+  pelletsLayer.height = canvas.height;
+  buildPelletsLayer();
 }
 
 function isWallCell(cx, cy){
@@ -1184,23 +1193,37 @@ function roundRectPath(targetCtx, x, y, w, h, r){
   targetCtx.closePath();
 }
 
-function drawPellets(){
+function buildPelletsLayer(){
+  if (!mazeW || !mazeH) return;
+  const pctx = pelletsLayer.getContext("2d");
+  pctx.clearRect(0, 0, pelletsLayer.width, pelletsLayer.height);
+  pctx.setTransform(canvasScale, 0, 0, canvasScale, 0, 0);
   const pelletColor = mazeTheme.pellet || "#ffe9a8";
-  ctx.fillStyle = pelletColor;
-  ctx.shadowColor = pelletColor;
-  ctx.shadowBlur = 3;
+  pctx.fillStyle = pelletColor;
+  pctx.shadowColor = pelletColor;
+  pctx.shadowBlur = 3;
   for (let y = 0; y < mazeH; y++){
     for (let x = 0; x < mazeW; x++){
       if (maze[y][x] === "#") continue;
       if (eatenPellets.has(x + "," + y)) continue;
       const cx = x * BASE_CELL + BASE_CELL / 2;
       const cy = y * BASE_CELL + BASE_CELL / 2;
-      ctx.beginPath();
-      ctx.arc(cx, cy, 2.1, 0, Math.PI * 2);
-      ctx.fill();
+      pctx.beginPath();
+      pctx.arc(cx, cy, 2.1, 0, Math.PI * 2);
+      pctx.fill();
     }
   }
-  ctx.shadowBlur = 0;
+  pctx.shadowBlur = 0;
+  pelletsLayerDirty = false;
+}
+
+function drawPellets(){
+  if (pelletsLayerDirty) buildPelletsLayer();
+  // Blit del bitmap gia' pronto: nessun ridisegno di pallini/glow a runtime.
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.drawImage(pelletsLayer, 0, 0);
+  ctx.restore();
 }
 
 // ---- corpo "classico" tondo con bocca a spicchio ----
@@ -1562,6 +1585,27 @@ requestAnimationFrame(renderLoop);
 
 window.addEventListener("resize", function(){ if (mazeW) setupCanvas(); });
 
+// ResizeObserver sul contenitore del canvas: e' il modo affidabile per
+// accorgersi che lo spazio disponibile e' cambiato in QUALSIASI
+// situazione (entrata/uscita da fullscreen, comparsa/scomparsa della
+// barra degli indirizzi su mobile, zoom, resize finestra, apertura
+// devtools...). L'evento "resize" della finestra da solo non copre tutti
+// questi casi, ed e' la causa principale del "quadratino piccolo" che
+// restava bloccato dopo il primo render.
+if (typeof ResizeObserver !== "undefined"){
+  const canvasWrapEl = document.getElementById("canvasWrap");
+  let roScheduled = false;
+  const ro = new ResizeObserver(function(){
+    if (roScheduled) return;
+    roScheduled = true;
+    requestAnimationFrame(function(){
+      roScheduled = false;
+      if (currentScreen === "game" && mazeW) setupCanvas();
+    });
+  });
+  ro.observe(canvasWrapEl);
+}
+
 /* =========================================================================
    LOGO ANIMATO (schermata di connessione)
    ========================================================================= */
@@ -1596,6 +1640,7 @@ function onState(msg){
 
   if (msg.phase === "countdown" && lastPhase !== "countdown"){
     eatenPellets.clear();
+    pelletsLayerDirty = true;
     explosions = [];
     lastAliveMap = {};
     anim = {};
@@ -1642,6 +1687,7 @@ function onState(msg){
       const cellKey = Math.round(p.x) + "," + Math.round(p.y);
       if (!eatenPellets.has(cellKey)){
         eatenPellets.add(cellKey);
+        pelletsLayerDirty = true;
         if (p.id === myId) playChomp();
       }
     }
@@ -1705,7 +1751,20 @@ function updateHud(msg){
   }
 }
 
+let lastSidebarSig = "";
 function updateGameSidebar(msg){
+  // La sidebar arriva dentro ogni pacchetto di stato (~20 volte al
+  // secondo), ma i dati che mostra (vivo/morto, chi e' il killer, nome,
+  // colori) cambiano molto di rado: posizione e movimento NON la
+  // riguardano. Ricostruire l'intera lista nel DOM ad ogni pacchetto era
+  // lavoro sprecato che contribuiva agli scatti; la si ricostruisce solo
+  // quando qualcosa di rilevante e' davvero cambiato.
+  const sig = myId + "|" + msg.players.map(function(p){
+    return p.id + ":" + p.alive + ":" + p.is_killer + ":" + p.name + ":" + (p.colors || []).join(",");
+  }).join("|");
+  if (sig === lastSidebarSig) return;
+  lastSidebarSig = sig;
+
   const list = document.getElementById("gamePlayers");
   list.innerHTML = "";
   msg.players.forEach(function(p){
