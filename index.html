@@ -559,7 +559,6 @@ let lastKnownKillerId = null;
 // Permette di disegnare uno scivolamento fluido cella-per-cella basato sulla
 // velocita' nota del gioco, invece che sull'intervallo (variabile) con cui
 // arrivano gli aggiornamenti dal server.
-let anim = {};
 let lastServerPos = {};
 
 // ---- client-side prediction del proprio personaggio ----
@@ -575,6 +574,18 @@ let lastServerPos = {};
 // uno spawn, o dopo essere stati bloccati da un muro in modo imprevisto).
 let predGridX = 0, predGridY = 0, predAccum = 0, predDir = null, predNextDir = null;
 let predInited = false;
+
+// Simulazione locale anche per TUTTI GLI ALTRI giocatori (non solo il
+// proprio): il server manda ad ogni tick di stato anche la "direction"
+// corrente di ognuno, quindi il client puo' continuare a muovere ogni
+// personaggio con le STESSE regole del server (common.py: velocita' in
+// celle/secondo, blocco sui muri) anche nei momenti in cui i pacchetti di
+// rete arrivano in ritardo o a scatti, invece di "congelarsi" in attesa
+// del prossimo pacchetto. E' lo stesso trucco usato da giochi come Clash
+// Royale per restare fluidi anche su connessioni mobile scarse: non ci si
+// limita ad ammorbidire i dati che arrivano, si continua a SIMULARE finche'
+// non arriva una correzione dal server (che resta comunque l'autorita').
+let remoteSim = {}; // { [playerId]: { gridX, gridY, accum, dir } }
 let snapshotInterpMs = 1000 / 30;
 let lastStateArrival = null;
 let lastFrameTs = null;
@@ -1480,50 +1491,76 @@ function getRenderedPos(p, now){
     return { x: predGridX + (predDir ? DIR_VEC[predDir][0] * predAccum : 0),
              y: predGridY + (predDir ? DIR_VEC[predDir][1] * predAccum : 0) };
   }
-  const a = anim[p.id];
-  if (!a) return { x: p.x, y: p.y };
-  const t = Math.max(0, Math.min(1, (now - a.start) / a.duration));
-  return { x: lerp(a.fromX, a.toX, t), y: lerp(a.fromY, a.toY, t) };
+  const s = remoteSim[p.id];
+  if (s){
+    return { x: s.gridX + (s.dir ? DIR_VEC[s.dir][0] * s.accum : 0),
+             y: s.gridY + (s.dir ? DIR_VEC[s.dir][1] * s.accum : 0) };
+  }
+  return { x: p.x, y: p.y };
 }
 
-// Avanza la simulazione locale del proprio personaggio di `dt` secondi,
-// con le stesse regole di common.py/main.py (coda di direzione "next",
-// velocita' in celle/secondo, blocco sui muri). Chiamata ad ogni frame
-// dal render loop, quindi la risposta al tasto e' visivamente immediata.
-function stepLocalPrediction(dt, isKiller){
-  if (!predInited || dt <= 0) return;
-  const speed = NORMAL_SPEED * (isKiller ? KILLER_SPEED_MULT : 1);
+// Funzione generica di avanzamento simulazione, usata sia per il proprio
+// personaggio (con coda di direzione "next", alimentata dall'input locale)
+// sia per tutti gli altri (con direzione presa dall'ultimo stato ricevuto
+// dal server). Stesse regole di common.py/main.py: velocita' in celle al
+// secondo, blocco sui muri, avanzamento a celle intere. Chiamata ad ogni
+// frame dal render loop, cosi' il movimento resta visivamente fluido anche
+// tra un pacchetto di rete e l'altro.
+function stepSim(state, dt, speed, hasNextDirQueue){
+  if (dt <= 0) return;
   let remaining = dt;
   // Se il tab e' stato in background, dt puo' essere enorme: limitiamolo
   // per evitare che il personaggio "teletrasporti" attraverso i muri.
   if (remaining > 0.25) remaining = 0.25;
 
   while (remaining > 0){
-    if (predNextDir){
-      const v = DIR_VEC[predNextDir];
-      if (!isWallCell(predGridX + v[0], predGridY + v[1])){
-        predDir = predNextDir;
-        predNextDir = null;
+    if (hasNextDirQueue && state.nextDir){
+      const v = DIR_VEC[state.nextDir];
+      if (!isWallCell(state.gridX + v[0], state.gridY + v[1])){
+        state.dir = state.nextDir;
+        state.nextDir = null;
       }
     }
-    if (!predDir){ break; }
-    const v = DIR_VEC[predDir];
-    const nx = predGridX + v[0], ny = predGridY + v[1];
+    if (!state.dir){ break; }
+    const v = DIR_VEC[state.dir];
+    const nx = state.gridX + v[0], ny = state.gridY + v[1];
     if (isWallCell(nx, ny)){
-      predAccum = 0;
+      state.accum = 0;
       break;
     }
-    const step = Math.min(remaining, (1 - predAccum) / speed);
-    predAccum += speed * step;
+    const step = Math.min(remaining, (1 - state.accum) / speed);
+    state.accum += speed * step;
     remaining -= step;
-    if (predAccum >= 1 - 1e-6){
-      predAccum = 0;
-      predGridX = nx;
-      predGridY = ny;
+    if (state.accum >= 1 - 1e-6){
+      state.accum = 0;
+      state.gridX = nx;
+      state.gridY = ny;
     } else {
       break;
     }
   }
+}
+
+// Avanza la simulazione locale del proprio personaggio (wrapper su stepSim
+// che usa le variabili globali pred* per compatibilita' col resto del
+// codice, ad es. gli handler di input che le leggono/scrivono).
+function stepLocalPrediction(dt, isKiller){
+  if (!predInited) return;
+  const speed = NORMAL_SPEED * (isKiller ? KILLER_SPEED_MULT : 1);
+  const state = { gridX: predGridX, gridY: predGridY, accum: predAccum, dir: predDir, nextDir: predNextDir };
+  stepSim(state, dt, speed, true);
+  predGridX = state.gridX; predGridY = state.gridY; predAccum = state.accum;
+  predDir = state.dir; predNextDir = state.nextDir;
+}
+
+// Avanza la simulazione "dead reckoning" di un giocatore remoto: continua
+// nella direzione riportata dall'ultimo stato del server finche' non arriva
+// una correzione, invece di restare fermo in attesa del prossimo pacchetto.
+function stepRemoteSim(p, dt){
+  const s = remoteSim[p.id];
+  if (!s || !p.alive) return;
+  const speed = NORMAL_SPEED * (p.is_killer ? KILLER_SPEED_MULT : 1);
+  stepSim(s, dt, speed, false);
 }
 
 let lastFacingMap = {};
@@ -1531,11 +1568,9 @@ function computeFacing(p){
   if (p.id === myId && predInited && predDir){
     return DIR_ANGLE[predDir];
   }
-  const a = anim[p.id];
-  if (a && (a.toX !== a.fromX || a.toY !== a.fromY)){
-    const ddx = a.toX - a.fromX, ddy = a.toY - a.fromY;
-    if (Math.abs(ddx) > Math.abs(ddy)) return ddx > 0 ? DIR_ANGLE.right : DIR_ANGLE.left;
-    if (ddy !== 0) return ddy > 0 ? DIR_ANGLE.down : DIR_ANGLE.up;
+  const s = remoteSim[p.id];
+  if (s && s.dir){
+    return DIR_ANGLE[s.dir];
   }
   return lastFacingMap[p.id] || 0;
 }
@@ -1624,6 +1659,11 @@ function renderLoop(now){
   if (me0 && me0.alive && roundActive){
     stepLocalPrediction(dt, !!me0.is_killer);
   }
+  if (roundActive){
+    currSnapshot.players.forEach(function(p){
+      if (p.id !== myId) stepRemoteSim(p, dt);
+    });
+  }
 
   drawMaze();
   drawPellets();
@@ -1637,7 +1677,12 @@ function renderLoop(now){
   const me = findPlayer(currSnapshot, myId);
   const killer = currSnapshot.killer_id ? findPlayer(currSnapshot, currSnapshot.killer_id) : null;
   if (me && killer && me.alive && !me.is_killer && currSnapshot.phase === "playing"){
-    const dist = Math.hypot(me.x - killer.x, me.y - killer.y);
+    // Usa le posizioni simulate (fluide) invece di quelle grezze
+    // dell'ultimo pacchetto, cosi' il battito cardiaco riflette la
+    // distanza reale in tempo reale anche tra un aggiornamento e l'altro.
+    const meP = getRenderedPos(me, now);
+    const killerP = getRenderedPos(killer, now);
+    const dist = Math.hypot(meP.x - killerP.x, meP.y - killerP.y);
     updateHeartbeat(dist);
   }
 }
@@ -1703,7 +1748,7 @@ function onState(msg){
     pelletsLayerDirty = true;
     explosions = [];
     lastAliveMap = {};
-    anim = {};
+    remoteSim = {};
     lastServerPos = {};
     lastFacingMap = {};
     lastKnownKillerId = null;
@@ -1752,21 +1797,69 @@ function onState(msg){
       }
     }
 
-    // Interpolazione "a scivolamento" tra la posizione precedente e quella
-    // appena ricevuta, con durata pari all'intervallo reale tra due
-    // pacchetti di stato (adattivo: si aggiusta da solo alla frequenza del
-    // server e alla rete) invece che al tempo per attraversare un'intera
-    // cella. Il server ora manda la posizione VERA e continua ad ogni tick,
-    // quindi basta "ammorbidire" il salto tra un tick e l'altro: e' questo
-    // che fa sembrare il movimento degli altri giocatori istantaneo invece
-    // che in ritardo di una cella intera.
-    const last = lastServerPos[p.id];
-    if (!last){
-      anim[p.id] = { fromX: p.x, fromY: p.y, toX: p.x, toY: p.y, start: now, duration: 1 };
-    } else if (last.x !== p.x || last.y !== p.y){
-      const from = getRenderedPos(p, now);
-      anim[p.id] = { fromX: from.x, fromY: from.y, toX: p.x, toY: p.y, start: now, duration: snapshotInterpMs };
+    // Riallinea (o inizializza) la simulazione locale di QUESTO giocatore
+    // rispetto alla posizione/direzione confermata dal server: il server
+    // resta l'autorita', ma tra un pacchetto e l'altro il client continua a
+    // muovere il personaggio da solo (stepRemoteSim, nel render loop) con
+    // le stesse regole del server, invece di restare fermo ad aspettare.
+    // Questo e' cio' che elimina i "singhiozzi"/il movimento a scatti
+    // quando la rete e' lenta o irregolare (come Clash Royale su dati
+    // mobili): non ci si limita ad ammorbidire i pacchetti, si predice.
+    if (p.id !== myId){
+      const dir = p.direction;
+      let gx, gy, ac;
+      if (dir){
+        const v = DIR_VEC[dir];
+        if (v[0] !== 0){
+          gx = v[0] > 0 ? Math.floor(p.x) : Math.ceil(p.x);
+          gy = Math.round(p.y);
+          ac = Math.max(0, Math.min(1, (p.x - gx) * v[0]));
+        } else {
+          gx = Math.round(p.x);
+          gy = v[1] > 0 ? Math.floor(p.y) : Math.ceil(p.y);
+          ac = Math.max(0, Math.min(1, (p.y - gy) * v[1]));
+        }
+      } else {
+        gx = Math.round(p.x); gy = Math.round(p.y); ac = 0;
+      }
+
+      const prev = remoteSim[p.id];
+      if (!prev || !p.alive){
+        remoteSim[p.id] = { gridX: gx, gridY: gy, accum: ac, dir: dir };
+      } else {
+        const cur = getRenderedPos(p, now);
+        const dx = cur.x - p.x, dy = cur.y - p.y;
+        const errDist = Math.hypot(dx, dy);
+        if (errDist > 0.6){
+          // Scarto grande (spawn, teletrasporto, correzione forte): snap.
+          remoteSim[p.id] = { gridX: gx, gridY: gy, accum: ac, dir: dir };
+        } else {
+          // Scarto piccolo: correzione morbida senza scatti visibili, la
+          // simulazione continua a muoversi con la direzione aggiornata.
+          prev.dir = dir;
+          if (errDist > 0.02){
+            const corrX = cur.x - dx * 0.8, corrY = cur.y - dy * 0.8;
+            if (dir){
+              const v = DIR_VEC[dir];
+              if (v[0] !== 0){
+                prev.gridX = v[0] > 0 ? Math.floor(corrX) : Math.ceil(corrX);
+                prev.gridY = Math.round(corrY);
+                prev.accum = Math.max(0, Math.min(1, (corrX - prev.gridX) * v[0]));
+              } else {
+                prev.gridX = Math.round(corrX);
+                prev.gridY = v[1] > 0 ? Math.floor(corrY) : Math.ceil(corrY);
+                prev.accum = Math.max(0, Math.min(1, (corrY - prev.gridY) * v[1]));
+              }
+            } else {
+              prev.gridX = Math.round(corrX); prev.gridY = Math.round(corrY); prev.accum = 0;
+            }
+          } else {
+            prev.gridX = gx; prev.gridY = gy; prev.accum = ac;
+          }
+        }
+      }
     }
+
     lastServerPos[p.id] = { x: p.x, y: p.y };
   });
   lastPhase = msg.phase;
