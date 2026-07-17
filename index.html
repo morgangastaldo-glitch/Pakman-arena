@@ -424,7 +424,7 @@
 /* =========================================================================
    COSTANTI CONDIVISE COL SERVER (vedi common.py)
    ========================================================================= */
-const SERVER_TICK_HZ = 20;
+const SERVER_TICK_HZ = 60; // deve restare identico a TICK_HZ in common.py
 const SERVER_TICK_MS = 1000 / SERVER_TICK_HZ;
 const BASE_CELL = 24; // risoluzione interna del canvas, in px per cella
 
@@ -595,6 +595,7 @@ let lastAliveMap = {};
 let eatenPellets = new Set();
 let explosions = []; // {x,y,color,start}
 let killerBannerUntil = 0;
+let killerBannerShown = false;
 let myColors = []; // fino a 2: [0]=primario (corpo), [1]=dettaglio (contorno/denti/occhio)
 let myCharacter = "classic";
 let lobbyPlayersCache = [];
@@ -1141,7 +1142,20 @@ function setupCanvas(){
   canvas.height = Math.round(mazeH * BASE_CELL * canvasScale);
   canvas.style.width = Math.round(cssW) + "px";
   canvas.style.height = Math.round(cssH) + "px";
-  ctx = canvas.getContext("2d");
+  if (!ctx){
+    // alpha:false - lo sfondo del canvas e' sempre completamente opaco
+    // (drawMaze ridisegna l'intero rettangolo ad ogni frame), quindi il
+    // browser non deve calcolare la trasparenza contro cio' che sta
+    // sotto: un frame in meno da comporre.
+    // desynchronized:true - chiede al browser, dove supportato, di
+    // presentare i frame del canvas il prima possibile invece di
+    // sincronizzarli con l'intero ciclo di rendering della pagina: e'
+    // l'opzione pensata apposta per giochi/app in tempo reale via
+    // Canvas2D, e riduce la latenza percepita tra un input e cio' che
+    // appare a schermo. Va creato una sola volta (ricrearlo ad ogni
+    // resize perderebbe eventuale stato del contesto).
+    ctx = canvas.getContext("2d", { alpha: false, desynchronized: true });
+  }
   ctx.setTransform(canvasScale, 0, 0, canvasScale, 0, 0);
 
   buildMazeLayer();
@@ -1575,6 +1589,10 @@ function computeFacing(p){
   return lastFacingMap[p.id] || 0;
 }
 
+// Calcolata una sola volta invece che ad ogni giocatore/frame: vedi nota
+// in drawPlayers piu' sotto.
+const PLAYER_NAME_FONT = "8px " + getComputedStyle(document.body).fontFamily;
+
 function drawPlayers(players, now){
   players.forEach(function(p){
     const pos = getRenderedPos(p, now);
@@ -1611,7 +1629,7 @@ function drawPlayers(players, now){
     }
 
     ctx.save();
-    ctx.font = "8px " + getComputedStyle(document.body).fontFamily;
+    ctx.font = PLAYER_NAME_FONT;
     ctx.textAlign = "center";
     ctx.fillStyle = "#000";
     ctx.globalAlpha = 0.7;
@@ -1670,9 +1688,11 @@ function renderLoop(now){
   drawPlayers(currSnapshot.players, now);
   drawExplosions(now);
 
-  const banner = document.getElementById("killerBanner");
-  if (now < killerBannerUntil) banner.classList.add("show");
-  else banner.classList.remove("show");
+  const bannerShouldShow = now < killerBannerUntil;
+  if (bannerShouldShow !== killerBannerShown){
+    killerBannerShown = bannerShouldShow;
+    document.getElementById("killerBanner").classList.toggle("show", bannerShouldShow);
+  }
 
   const me = findPlayer(currSnapshot, myId);
   const killer = currSnapshot.killer_id ? findPlayer(currSnapshot, currSnapshot.killer_id) : null;

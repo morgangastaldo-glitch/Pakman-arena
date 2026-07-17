@@ -26,6 +26,7 @@ import json
 import os
 import pathlib
 import random
+import socket
 import sys
 import uuid
 
@@ -379,7 +380,30 @@ async def send_error(ws, message):
     await ws.send(encode_text({"type": "error", "message": message}))
 
 
+def disable_nagle(ws):
+    """Disattiva l'algoritmo di Nagle sulla connessione TCP sottostante.
+
+    Di default il sistema operativo raggruppa i pacchetti piccoli prima di
+    inviarli, per usare la rete in modo piu' efficiente: ottimo per
+    trasferimenti di file, pessimo per un gioco in tempo reale, dove ogni
+    messaggio (mossa, stato) e' piccolo e deve arrivare il prima possibile.
+    L'interazione tra l'algoritmo di Nagle e gli ACK ritardati del sistema
+    ricevente puo' introdurre decine di millisecondi di attesa "invisibile"
+    per ogni messaggio: esattamente il tipo di latenza che va eliminato per
+    un feeling reattivo come quello richiesto (vedi commenti su TICK_HZ in
+    common.py). Va fatto per connessione, non a livello globale, quindi si
+    applica al momento in cui il client si collega.
+    """
+    try:
+        sock = ws.transport.get_extra_info("socket")
+        if sock is not None:
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except (OSError, AttributeError):
+        pass  # Piattaforme/transport senza socket TCP diretto (raro): ok, si prosegue senza
+
+
 async def handle_client(ws):
+    disable_nagle(ws)
     player = None
     room = None
     try:
@@ -530,7 +554,14 @@ async def health_check(path, request_headers):
 async def main():
     port = int(os.environ.get("PORT") or (sys.argv[1] if len(sys.argv) > 1 else DEFAULT_PORT))
     async with websockets.serve(
-        handle_client, "0.0.0.0", port, process_request=health_check
+        handle_client, "0.0.0.0", port, process_request=health_check,
+        # compression=None: i pacchetti di gioco sono piccoli (poche centinaia
+        # di byte) e frequentissimi (fino a 60/s per stanza). La compressione
+        # permessage-deflate ha un costo CPU fisso per messaggio che, su
+        # payload cosi' piccoli, supera quasi sempre il risparmio di banda
+        # ottenuto: per un gioco in tempo reale conviene spendere quella CPU
+        # per spedire prima, non per comprimere meglio.
+        compression=None,
     ):
         print(f"Pac-Man Arena (WebSocket) in ascolto sulla porta {port}")
         await asyncio.Future()  # resta acceso per sempre

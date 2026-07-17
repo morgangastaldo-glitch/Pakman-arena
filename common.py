@@ -7,7 +7,20 @@ import string
 
 DEFAULT_PORT = 8765
 
-TICK_HZ = 30
+# 60Hz invece di 30Hz: raddoppia la frequenza con cui il server calcola
+# fisica/collisioni e manda correzioni di stato ai client. Le velocita' sono
+# espresse in celle/secondo quindi il bilanciamento del gioco NON cambia
+# (a 60Hz ogni tick avanza semplicemente la meta' di spazio rispetto a
+# prima); a beneficiarne sono la precisione delle collisioni col killer
+# (la cella "attraversata" viene controllata il doppio delle volte, quindi
+# si notano meno gli "attraversamenti fantasma" ad alta velocita') e la
+# riconciliazione client-side, che deve correggere scarti piu' piccoli e
+# piu' spesso invece di scarti piu' grandi e piu' radi: e' proprio questo
+# che si traduce in un movimento remoto percepito come piu' fluido, oltre
+# ad avvicinare il tickrate del server al refresh rate tipico di un monitor
+# desktop (60/120/144Hz), a cui il client renderizza gia' via
+# requestAnimationFrame.
+TICK_HZ = 60
 TICK_DT = 1.0 / TICK_HZ
 
 COUNTDOWN_SECONDS = 15
