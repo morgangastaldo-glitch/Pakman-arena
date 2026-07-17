@@ -1772,7 +1772,6 @@ function onState(msg){
     lastServerPos = {};
     lastFacingMap = {};
     lastKnownKillerId = null;
-    heldDirs = [];
     lastRequestedDir = null;
     predInited = false;
     predDir = null;
@@ -2035,12 +2034,17 @@ function onRoundEnd(msg){
 
 /* =========================================================================
    INPUT: TASTIERA + D-PAD TOUCH
-   Il personaggio si muove SOLO mentre il tasto/pulsante e' tenuto premuto:
-   appena viene rilasciato (e nessun'altra direzione e' ancora premuta) si
-   invia "stop" al server, che ferma subito il personaggio nella cella in
-   cui si trova. Questo elimina sia il "si muove da solo" sia i problemi di
-   tempismo: il movimento segue esattamente cio' che il giocatore sta
-   facendo in quel momento.
+   Movimento "vero" alla Pac-Man: il personaggio e' SEMPRE in movimento da
+   solo (lato server, vedi update_movement in main.py: la direzione resta
+   impostata finche' non la si cambia o non si sbatte contro un muro).
+   Il tasto/pulsante NON avvia e non ferma il movimento: serve solo a
+   indicare la PROSSIMA direzione desiderata, che scatta subito se libera o
+   appena lo diventa (coda next_direction, sia server che predizione
+   client). Non si invia piu' alcun "stop" al rilascio: e' proprio quello
+   stop-and-go tra un tasto e l'altro a causare il "lag" percepito nei
+   cambi di direzione. Rilasciare un tasto quindi non fa piu' nulla: si
+   continua a muoversi finche' non si preme una direzione diversa (o si
+   sbatte contro un muro, esattamente come nel gioco originale).
    ========================================================================= */
 const KEY_TO_DIR = {
   ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right",
@@ -2048,75 +2052,34 @@ const KEY_TO_DIR = {
   W: "up", S: "down", A: "left", D: "right",
 };
 
-// Pila delle direzioni attualmente tenute premute: l'ultima aggiunta e'
-// quella "attiva" (se si tengono premute due frecce insieme, vince quella
-// premuta piu' di recente, e rilasciandola si torna automaticamente
-// all'altra ancora tenuta, invece di fermarsi del tutto).
-let heldDirs = [];
 let lastRequestedDir = null;
 
-function activateDir(dir){
-  heldDirs = heldDirs.filter(function(d){ return d !== dir; });
-  heldDirs.push(dir);
+function requestDir(dir){
   if (dir !== lastRequestedDir){ playTurn(); lastRequestedDir = dir; }
   predNextDir = dir;
   sendMsg({ type: "move", direction: dir });
-}
-function releaseDir(dir){
-  heldDirs = heldDirs.filter(function(d){ return d !== dir; });
-  if (heldDirs.length){
-    const next = heldDirs[heldDirs.length - 1];
-    lastRequestedDir = next;
-    predNextDir = next;
-    sendMsg({ type: "move", direction: next });
-  } else {
-    lastRequestedDir = null;
-    predDir = null;
-    predNextDir = null;
-    predAccum = 0;
-    sendMsg({ type: "stop" });
-  }
 }
 
 document.addEventListener("keydown", function(ev){
   if (currentScreen !== "game") return;
   const dir = KEY_TO_DIR[ev.key];
   if (dir){
-    if (!ev.repeat) activateDir(dir);
+    if (!ev.repeat) requestDir(dir);
     ev.preventDefault();
   }
 });
-document.addEventListener("keyup", function(ev){
-  const dir = KEY_TO_DIR[ev.key];
-  if (dir) releaseDir(dir);
-});
-// Se la finestra/scheda perde il focus mentre un tasto e' premuto, il
-// browser non manda sempre il keyup corrispondente: senza questo il
-// personaggio continuerebbe a muoversi "da solo" anche se non si sta piu'
-// premendo nulla. Alla perdita di focus si ferma tutto per sicurezza.
-window.addEventListener("blur", function(){
-  if (heldDirs.length){
-    heldDirs = [];
-    lastRequestedDir = null;
-    sendMsg({ type: "stop" });
-  }
-});
+// keyup: non fa piu' nulla di apposta. Il personaggio continua a muoversi
+// da solo nella direzione corrente, come nel Pac-Man originale.
 
-// D-pad touch: si muove solo mentre il dito resta premuto sul pulsante.
+// D-pad touch: un tocco imposta la direzione, esattamente come un tasto.
+// Anche qui il rilascio del dito non ferma piu' nulla.
 document.querySelectorAll(".dpad button").forEach(function(btn){
   const dir = btn.dataset.dir;
-  const start = function(ev){
+  btn.addEventListener("pointerdown", function(ev){
     ev.preventDefault();
     ensureAudio();
-    activateDir(dir);
-  };
-  const stop = function(){
-    releaseDir(dir);
-  };
-  btn.addEventListener("pointerdown", start);
-  btn.addEventListener("pointerup", stop);
-  btn.addEventListener("pointerleave", stop);
-  btn.addEventListener("pointercancel", stop);
+    requestDir(dir);
+  });
 });
 
 })();
