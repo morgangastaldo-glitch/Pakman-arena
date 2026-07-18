@@ -668,6 +668,7 @@ let swirls = [];           // effetti di teletrasporto in corso: {x,y,start,colo
 let themeFx = [];          // particelle atmosferiche a tema della mappa corrente
 let themeFxKind = null;    // tipo di effetto della mappa corrente (embers/snow/...)
 let bonusBannerUntil = 0;  // scadenza del banner "BONUS!" al centro schermo
+let assassinFxAt = -Infinity; // performance.now() dell'ultima transizione a super assassino (solo mia)
 
 /* =========================================================================
    AUDIO (sintetizzato, nessun file esterno)
@@ -1404,25 +1405,54 @@ function buildPelletsLayer(){
   pctx.clearRect(0, 0, pelletsLayer.width, pelletsLayer.height);
   pctx.setTransform(canvasScale, 0, 0, canvasScale, 0, 0);
   const pelletColor = mazeTheme.pellet || "#ffe9a8";
-  const powerColor = "#ff9d1f";
+  pctx.fillStyle = pelletColor;
+  pctx.shadowColor = pelletColor;
+  pctx.shadowBlur = 3;
   for (let y = 0; y < mazeH; y++){
     for (let x = 0; x < mazeW; x++){
       if (maze[y][x] === "#") continue;
       const key = x + "," + y;
       if (eatenPellets.has(key)) continue;
-      const isPower = powerPellets.has(key);
+      if (powerPellets.has(key)) continue;  // disegnati a parte in drawPowerPellets: piu' grossi e animati
       const cx = x * BASE_CELL + BASE_CELL / 2;
       const cy = y * BASE_CELL + BASE_CELL / 2;
-      pctx.fillStyle = isPower ? powerColor : pelletColor;
-      pctx.shadowColor = isPower ? powerColor : pelletColor;
-      pctx.shadowBlur = isPower ? 7 : 3;
       pctx.beginPath();
-      pctx.arc(cx, cy, isPower ? 5.5 : 2.1, 0, Math.PI * 2);
+      pctx.arc(cx, cy, 2.1, 0, Math.PI * 2);
       pctx.fill();
     }
   }
   pctx.shadowBlur = 0;
   pelletsLayerDirty = false;
+}
+
+// Pallini "power" (10 punti, arancioni): disegnati ogni frame, non nel
+// layer statico cache, cosi' possono pulsare ed essere inequivocabilmente
+// piu' grandi dei pallini normali (raggio quasi triplo + alone + anello).
+function drawPowerPellets(now){
+  if (!powerPellets.size) return;
+  const pulse = 1 + 0.18 * Math.sin(now / 260);
+  ctx.save();
+  powerPellets.forEach(function(key){
+    if (eatenPellets.has(key)) return;
+    const parts = key.split(",");
+    const x = parseInt(parts[0], 10), y = parseInt(parts[1], 10);
+    const cx = x * BASE_CELL + BASE_CELL / 2;
+    const cy = y * BASE_CELL + BASE_CELL / 2;
+    const r = 6.5 * pulse;
+    ctx.fillStyle = "#ff9d1f";
+    ctx.shadowColor = "#ff9d1f";
+    ctx.shadowBlur = 9;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = "rgba(255,240,210,0.9)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r + 1.5, 0, Math.PI * 2);
+    ctx.stroke();
+  });
+  ctx.restore();
 }
 
 function drawPellets(){
@@ -1783,8 +1813,15 @@ function drawPlayers(players, now){
     }
     // Super assassino visto da me stesso: leggermente trasparente + alone
     // rosso pulsante, per ricordare che sono invisibile e letale al tocco.
+    // Nei primi ~900ms dopo l'attivazione (assassinFxAt) si vede anche
+    // un'onda d'urto che si restringe e una dissolvenza graduale, cosi' si
+    // percepisce chiaramente il MOMENTO in cui si diventa invisibili.
     if (iAmAssassin){
-      ctx.globalAlpha = Math.min(ctx.globalAlpha, 0.55);
+      const sinceFx = now - assassinFxAt;
+      const transitioning = sinceFx >= 0 && sinceFx < 900;
+      const fadeT = transitioning ? Math.min(1, sinceFx / 900) : 1;
+      const startAlpha = 1.0, endAlpha = 0.55;
+      ctx.globalAlpha = Math.min(ctx.globalAlpha, startAlpha - (startAlpha - endAlpha) * fadeT);
       ctx.save();
       ctx.strokeStyle = "rgba(255,50,50,0.85)";
       ctx.lineWidth = 2;
@@ -1792,6 +1829,15 @@ function drawPlayers(players, now){
       ctx.beginPath();
       ctx.arc(px, py, radius + pulse, 0, Math.PI * 2);
       ctx.stroke();
+      if (transitioning){
+        // Onda d'urto che parte larga e si restringe fino all'alone finale.
+        ctx.globalAlpha = 1 - fadeT;
+        ctx.strokeStyle = "rgba(255,120,90,0.9)";
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.arc(px, py, radius + pulse + (1 - fadeT) * 26, 0, Math.PI * 2);
+        ctx.stroke();
+      }
       ctx.restore();
     }
 
@@ -2069,6 +2115,7 @@ function renderLoop(now){
 
   drawMaze();
   drawPellets();
+  drawPowerPellets(now);
   drawPortals(now);
   drawThemeFx(now);
   drawPlayers(currSnapshot.players, now);
@@ -2171,6 +2218,7 @@ function onState(msg){
     predAccum = 0;
     roundActive = true;
     lastCountdownSecond = null;
+    assassinFxAt = -Infinity;
     document.getElementById("endOverlay").classList.add("hidden");
     showScreen("game");
   }
@@ -2439,6 +2487,11 @@ function onGameEvent(msg){
     }
     case "assassin_on": {
       if (msg.player === myId){
+        assassinFxAt = now;
+        const me = findPlayer(currSnapshot, myId);
+        if (me){
+          explosions.push({ x: me.x, y: me.y, color: "#ff3232", start: now });
+        }
         showBonusBanner("SUPER ASSASSINO! INVISIBILE E LETALE");
         playBonus();
       } else {

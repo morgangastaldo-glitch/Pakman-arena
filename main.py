@@ -604,9 +604,12 @@ class Room:
 
     def update_lasers(self):
         """Bonus 100 punti: ogni LASER_INTERVAL_SECONDS (1 secondo) parte un
-        singolo colpo (proiettile) dal lato frontale del personaggio."""
+        singolo colpo (proiettile) dal lato frontale del personaggio. Il
+        super assassino (300 punti, invisibile agli altri) NON spara: il
+        proiettile e' visibile a tutti e rivelerebbe subito la sua
+        posizione, vanificando l'invisibilita'."""
         for p in list(self.players.values()):
-            if not p.alive or not p.has_laser:
+            if not p.alive or not p.has_laser or p.is_assassin:
                 continue
             p.laser_cd -= TICK_DT
             if p.laser_cd > 0:
