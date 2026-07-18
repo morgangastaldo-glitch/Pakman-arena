@@ -22,7 +22,7 @@ countdown iniziale il round parte direttamente, e i giocatori si eliminano
 a vicenda solo tramite i bonus ottenuti raggiungendo soglie di punti
 (laser, mine, super assassino a 300 punti).
 
-Avvio locale:      python3 server_web.py [porta]   (default 8765)
+Avvio locale:      python3 main.py [porta]   (default 8765)
 In hosting (Render/Railway/...): la porta arriva dalla variabile
 d'ambiente PORT, impostata automaticamente dalla piattaforma.
 """
@@ -41,7 +41,7 @@ from common import (
     TICK_DT, COUNTDOWN_SECONDS, ROUND_SECONDS,
     MAX_PLAYERS, MIN_PLAYERS, NORMAL_SPEED, ASSASSIN_SPEED_MULT,
     COLORS, CHARACTERS, DIRECTIONS, is_wall, ROOM_CODE_CHARS,
-    pick_random_maze, choose_power_pellet_cells,
+    pick_random_maze, choose_power_pellet_cells, bfs_path,
     BONUS_THRESHOLDS, GHOST_SECONDS,
     PELLET_POINTS, POWER_PELLET_POINTS, POWER_PELLET_COUNT,
     PELLET_RESPAWN_SECONDS, SUPER_ASSASSIN_THRESHOLD,
@@ -49,6 +49,8 @@ from common import (
     SPAWN_PROTECT_SECONDS, LASER_INTERVAL_SECONDS, LASER_FIRST_DELAY_SECONDS,
     LASER_PROJECTILE_SPEED, LASER_BOUNCE_DISTANCE, MINES_COUNT,
     PORTAL_COOLDOWN_SECONDS,
+    MISSILE_SPEED_MULT, MISSILES_COUNT, MISSILE_RETARGET_SECONDS,
+    TRAP_THRESHOLD, TRAP_DURATION_SECONDS, TRAP_RANGE,
 )
 
 MAX_PLAYER_COLORS = 2  # colore primario + colore di dettaglio (opzionale)
@@ -122,6 +124,16 @@ class Player:
         # Ultima direzione di marcia nota: e' il "lato frontale" da cui parte
         # il laser anche se in questo istante si e' fermi contro un muro.
         self.facing = "right"
+        # ---- bonus 400 punti: missile guidato (tasto "2") ----
+        self.has_missile = False
+        self.missiles_left = 0
+        # ---- bonus 500 punti: trappola (tasto "3") ----
+        self.has_trap = False          # bonus sbloccato (una volta per round)
+        self.trap_target = None        # id della vittima che QUESTO giocatore ha intrappolato
+        self.trapped_left = 0.0        # se > 0, QUESTO giocatore e' intrappolato (immobile)
+        self.trapped_by = None         # id di chi lo ha intrappolato (per pulizia alla scadenza/morte)
+        # Uccisioni fatte in questo round: ogni 2 kill si guadagna una vita extra.
+        self.kills = 0
 
     def to_public(self):
         # Posizione "continua": la griglia interna (self.x/self.y, interi)
@@ -150,6 +162,11 @@ class Player:
             "bounce": self.has_bounce,
             "mines": self.has_mines,
             "mines_left": self.mines_left,
+            "missile": self.has_missile,
+            "missiles_left": self.missiles_left,
+            "trap": self.has_trap,
+            "trapped": self.trapped_left > 0,
+            "trapped_left": round(self.trapped_left, 1) if self.trapped_left > 0 else 0,
         }
 
 
@@ -310,8 +327,16 @@ class Room:
             p.mines_left = 0
             p.portal_cd = 0.0
             p.facing = "right"
+            p.has_missile = False
+            p.missiles_left = 0
+            p.has_trap = False
+            p.trap_target = None
+            p.trapped_left = 0.0
+            p.trapped_by = None
+            p.kills = 0
         self.lasers = []
         self.mines = []
+        self.missiles = []
 
     def begin_playing(self):
         """Fine countdown iniziale: il round entra nel vivo. Non c'e' piu'
@@ -353,6 +378,20 @@ class Room:
                 if p.assassin_left <= 0 and p.is_assassin:
                     p.is_assassin = False
                     self.push_event({"kind": "assassin_off", "player": p.id})
+
+            # Bonus 500 punti (trappola): chi e' intrappolato resta bloccato
+            # sul punto esatto in cui si trovava, per TRAP_DURATION_SECONDS.
+            # Scaduto il tempo senza detonazione, torna libero da solo.
+            if p.trapped_left > 0:
+                p.trapped_left = max(0.0, p.trapped_left - TICK_DT)
+                if p.trapped_left <= 0:
+                    trapper = self.players.get(p.trapped_by)
+                    if trapper is not None and trapper.trap_target == p.id:
+                        trapper.trap_target = None
+                    p.trapped_by = None
+                    self.push_event({"kind": "trap_expired", "player": p.id})
+                # Immobile: niente movimento/pellet/portale in questo tick.
+                continue
 
             # La svolta in coda si applica SUBITO, ad ogni tick, non solo
             # quando si e' esattamente su un incrocio: aspettare l'incrocio
@@ -474,6 +513,9 @@ class Room:
             elif kind == "mines":
                 p.has_mines = True
                 p.mines_left = MINES_COUNT
+            elif kind == "missile":
+                p.has_missile = True
+                p.missiles_left = MISSILES_COUNT
             self.push_event({
                 "kind": "bonus", "player": p.id,
                 "bonus": kind, "points": threshold,
@@ -490,6 +532,20 @@ class Room:
                 "kind": "assassin_on", "player": p.id,
                 "bonus": "assassin", "points": SUPER_ASSASSIN_THRESHOLD,
             })
+        # Bonus 500 punti: sblocca la trappola e intrappola SUBITO il nemico
+        # piu' vicino (una volta sola per round, come il super assassino).
+        if (
+            p.alive
+            and p.points >= TRAP_THRESHOLD
+            and TRAP_THRESHOLD not in p.claimed
+        ):
+            p.claimed.add(TRAP_THRESHOLD)
+            p.has_trap = True
+            self.push_event({
+                "kind": "bonus", "player": p.id,
+                "bonus": "trap", "points": TRAP_THRESHOLD,
+            })
+            self.try_auto_trap(p)
 
     def try_portal(self, p):
         """Se il giocatore e' su un portale (e non e' appena arrivato da un
@@ -549,6 +605,31 @@ class Room:
                 victim.points = 0
                 killer_player.points += stolen
                 self.check_bonuses(killer_player)
+            # Ogni 2 uccisioni fatte, il killer guadagna una vita extra
+            # (indipendente dalle soglie punti: conta solo il numero di kill).
+            killer_player.kills += 1
+            if killer_player.kills % 2 == 0:
+                killer_player.lives += 1
+                self.push_event({
+                    "kind": "kill_life_bonus", "player": killer_player.id,
+                    "kills": killer_player.kills, "lives": killer_player.lives,
+                })
+        # Pulizia stato trappola: sia se la vittima era intrappolata, sia se
+        # la vittima stessa aveva qualcuno intrappolato (il bersaglio torna
+        # libero, dato che chi lo teneva e' stato eliminato).
+        if victim.trapped_by:
+            trapper = self.players.get(victim.trapped_by)
+            if trapper is not None and trapper.trap_target == victim.id:
+                trapper.trap_target = None
+            victim.trapped_by = None
+        victim.trapped_left = 0.0
+        if victim.trap_target:
+            freed = self.players.get(victim.trap_target)
+            if freed is not None and freed.trapped_by == victim.id:
+                freed.trapped_left = 0.0
+                freed.trapped_by = None
+                self.push_event({"kind": "trap_expired", "player": freed.id})
+            victim.trap_target = None
         victim.lives -= 1
         died_at = [victim.x, victim.y]
         if victim.lives > 0:
@@ -742,6 +823,134 @@ class Room:
                 remaining.append(m)
         self.mines = remaining
 
+    def nearest_alive(self, x, y, exclude_ids):
+        """Giocatore vivo piu' vicino (distanza Manhattan) a (x, y), tra
+        quelli il cui id non e' in exclude_ids. None se nessuno qualifica."""
+        candidates = [
+            q for q in self.players.values()
+            if q.alive and q.id not in exclude_ids
+        ]
+        if not candidates:
+            return None
+        return min(candidates, key=lambda q: abs(q.x - x) + abs(q.y - y))
+
+    # ---- bonus 400 punti: missile guidato (tasto "2") ----
+
+    def try_fire_missile(self, player):
+        """Spara un missile (finche' ne restano) verso il nemico piu' vicino
+        in questo istante. Il missile e' 'guidato': segue i corridoi via
+        pathfinding (vedi move_missiles), non attraversa mai i muri, e si
+        aggancia di nuovo al bersaglio piu' vicino se quello originale muore
+        prima dell'impatto."""
+        if not player.alive or not player.has_missile or player.missiles_left <= 0:
+            return
+        target = self.nearest_alive(player.x, player.y, {player.id})
+        if target is None:
+            return
+        player.missiles_left -= 1
+        missile = {
+            "id": uuid.uuid4().hex[:8],
+            "owner": player.id,
+            "x": player.x, "y": player.y,
+            "move_accum": 0.0,
+            "target": target.id,
+            "path": [],
+            "retarget_cd": 0.0,
+        }
+        self.missiles.append(missile)
+        self.push_event({
+            "kind": "missile_fire", "id": missile["id"], "owner": player.id,
+            "x": player.x, "y": player.y, "left": player.missiles_left,
+        })
+
+    def move_missiles(self):
+        """Avanza tutti i missili in volo di un tick: ognuno ricalcola il
+        percorso verso il bersaglio ad intervalli regolari (il bersaglio si
+        muove) e procede una cella alla volta lungo quel percorso, quindi non
+        si schianta mai contro un muro. Al contatto col bersaglio (o con
+        chiunque altro capiti sulla sua strada, escluso lo sparatore),
+        quella vittima perde una vita."""
+        if not self.missiles:
+            return
+        survivors = []
+        for mz in self.missiles:
+            destroyed = False
+            target = self.players.get(mz["target"])
+            if target is None or not target.alive:
+                target = self.nearest_alive(mz["x"], mz["y"], {mz["owner"]})
+                if target is None:
+                    destroyed = True
+                else:
+                    mz["target"] = target.id
+                    mz["path"] = []
+                    mz["retarget_cd"] = 0.0
+
+            if not destroyed:
+                mz["retarget_cd"] -= TICK_DT
+                if mz["retarget_cd"] <= 0 or not mz["path"]:
+                    mz["retarget_cd"] = MISSILE_RETARGET_SECONDS
+                    path = bfs_path(
+                        self.maze, self.maze_w, self.maze_h,
+                        (mz["x"], mz["y"]), (target.x, target.y),
+                    )
+                    mz["path"] = path or []
+
+                speed = NORMAL_SPEED * MISSILE_SPEED_MULT
+                mz["move_accum"] += speed * TICK_DT
+                while mz["move_accum"] >= 1.0 and mz["path"] and not destroyed:
+                    mz["move_accum"] -= 1.0
+                    nx, ny = mz["path"].pop(0)
+                    mz["x"], mz["y"] = nx, ny
+                    victims = [
+                        q for q in self.players.values()
+                        if q.alive and q.id != mz["owner"] and q.x == nx and q.y == ny
+                    ]
+                    if victims:
+                        for v in victims:
+                            self.kill_player(v, "missile", mz["owner"])
+                        destroyed = True
+
+            if destroyed:
+                self.push_event({"kind": "missile_end", "id": mz["id"], "x": mz["x"], "y": mz["y"]})
+            else:
+                survivors.append(mz)
+        self.missiles = survivors
+
+    # ---- bonus 500 punti: trappola (tasto "3") ----
+
+    def try_auto_trap(self, player):
+        """Intrappola SUBITO il nemico piu' vicino a chi ha appena sbloccato
+        il bonus (500 punti): resta bloccato sul posto per
+        TRAP_DURATION_SECONDS, finche' non viene fatto detonare in tempo
+        (try_detonate_trap) oppure la trappola scade da sola."""
+        target = self.nearest_alive(player.x, player.y, {player.id})
+        if target is None:
+            return
+        target.trapped_left = TRAP_DURATION_SECONDS
+        target.trapped_by = player.id
+        player.trap_target = target.id
+        self.push_event({
+            "kind": "trap_start", "player": player.id, "victim": target.id,
+            "seconds": TRAP_DURATION_SECONDS,
+        })
+
+    def try_detonate_trap(self, player):
+        """Tasto '3': se il nemico che questo giocatore ha intrappolato e'
+        ancora bloccato ed e' abbastanza vicino (TRAP_RANGE celle), lo
+        distrugge con una piccola esplosione (perde una vita)."""
+        if not player.alive or not player.has_trap or not player.trap_target:
+            return
+        victim = self.players.get(player.trap_target)
+        if victim is None or not victim.alive or victim.trapped_left <= 0:
+            player.trap_target = None
+            return
+        dist = max(abs(victim.x - player.x), abs(victim.y - player.y))
+        if dist > TRAP_RANGE:
+            return
+        self.push_event({"kind": "trap_boom", "x": victim.x, "y": victim.y})
+        self.kill_player(victim, "trap", player.id)
+        player.trap_target = None
+
     def check_win(self):
         """Il round finisce quando resta UN SOLO giocatore vivo: quello e'
         il vincitore. Con le vite extra e i bonus (laser, mine, super
@@ -768,6 +977,10 @@ class Room:
                 for lz in self.lasers
             ],
             "mines": [{"id": m["id"], "x": m["x"], "y": m["y"], "owner": m["owner"]} for m in self.mines],
+            "missiles": [
+                {"id": mz["id"], "x": mz["x"], "y": mz["y"], "owner": mz["owner"], "target": mz["target"]}
+                for mz in self.missiles
+            ],
         }
 
     async def drain_events(self):
@@ -784,6 +997,7 @@ class Room:
         self.events = []
         self.lasers = []
         self.mines = []
+        self.missiles = []
         for p in self.players.values():
             p.alive = True
             p.direction = None
@@ -796,6 +1010,13 @@ class Room:
             p.has_bounce = False
             p.has_mines = False
             p.mines_left = 0
+            p.has_missile = False
+            p.missiles_left = 0
+            p.has_trap = False
+            p.trap_target = None
+            p.trapped_left = 0.0
+            p.trapped_by = None
+            p.kills = 0
 
     # ---------- main loop ----------
 
@@ -832,6 +1053,7 @@ class Room:
                 self.update_lasers()  # bonus 150 punti: un colpo al secondo, dura 60s
                 self.move_lasers()    # avanza i proiettili laser in volo (con eventuale rimbalzo)
                 self.check_mines()    # bonus 200 punti: fa esplodere le mine calpestate
+                self.move_missiles()  # bonus 400 punti: avanza i missili guidati verso il bersaglio
                 winners, reason = self.check_win()
                 if winners is None and self.timer_left <= 0:
                     alive = [p for p in self.players.values() if p.alive]
@@ -1008,6 +1230,18 @@ async def handle_client(ws):
                 if not room or not player:
                     continue
                 room.try_place_mine(player)
+
+            elif mtype == "fire_missile":
+                # Bonus 400 punti: pressione del tasto "2" lato client.
+                if not room or not player:
+                    continue
+                room.try_fire_missile(player)
+
+            elif mtype == "detonate_trap":
+                # Bonus 500 punti: pressione del tasto "3" lato client.
+                if not room or not player:
+                    continue
+                room.try_detonate_trap(player)
 
             elif mtype == "stop":
                 # Il tasto/direzione e' stato rilasciato: il personaggio si
