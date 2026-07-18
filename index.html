@@ -215,6 +215,41 @@
   .hud .timer.urgent{ color:var(--danger); text-shadow:0 0 8px var(--danger); }
   .hud .roomtag{ color:var(--phosphor-dim); font-size:11px; }
 
+  /* ---- contatore punti: prima era "nascosto" dentro la stringa lunga del
+     timer (che cambia ogni tick ed e' facile perdere in mezzo al resto del
+     testo). Ora e' un blocco proprio, sempre visibile, in alto a sinistra
+     sul canvas: mostra i TUOI punti in evidenza e sotto una mini-classifica
+     con i punti di tutti gli altri giocatori. ---- */
+  .score-counter{
+    position:absolute; top:8px; left:8px; z-index:6;
+    background:rgba(2,6,3,0.72); border:1px solid var(--panel-edge);
+    border-radius:8px; padding:6px 10px; backdrop-filter: blur(2px);
+    letter-spacing:0.5px; min-width:120px;
+    pointer-events:none;
+  }
+  .score-counter .my-score{
+    font-size:16px; font-weight:bold; white-space:nowrap;
+    color:var(--marquee-yellow); text-shadow:0 0 8px rgba(255,212,0,0.35);
+  }
+  .score-counter .next-bonus{
+    display:block; margin-top:1px; font-size:10px; font-weight:normal;
+    letter-spacing:0.5px; color:var(--phosphor-dim);
+  }
+  .score-counter .score-others{
+    margin-top:5px; padding-top:5px; border-top:1px solid var(--panel-edge);
+    display:flex; flex-direction:column; gap:2px;
+  }
+  .score-counter .score-row{
+    display:flex; align-items:center; gap:6px; font-size:10.5px;
+    color:var(--phosphor-dim); white-space:nowrap;
+  }
+  .score-counter .score-row .sw{
+    width:8px; height:8px; border-radius:50%; flex:0 0 auto;
+  }
+  .score-counter .score-row .nm{ overflow:hidden; text-overflow:ellipsis; max-width:80px; }
+  .score-counter .score-row .pt{ margin-left:auto; }
+
+
   .game-area{ display:flex; min-width:0; min-height:0; }
   .canvas-wrap{
     position:relative; flex:1 1 auto; min-width:0;
@@ -247,6 +282,17 @@
   }
   .killer-banner.show{ opacity:1; }
 
+  .bonus-banner{
+    position:absolute; top:38%; left:50%; transform:translate(-50%,-50%) scale(0.9);
+    background:rgba(30,22,0,0.85); border:1px solid var(--marquee-yellow);
+    color:var(--marquee-yellow);
+    padding:8px 18px; border-radius:6px; font-size:16px; letter-spacing:2px;
+    font-weight:bold; text-shadow:0 0 10px rgba(255,212,0,0.6);
+    opacity:0; transition:opacity 0.25s ease, transform 0.25s ease;
+    pointer-events:none; white-space:nowrap; z-index:7;
+  }
+  .bonus-banner.show{ opacity:1; transform:translate(-50%,-50%) scale(1); }
+
   .end-overlay{
     position:absolute; inset:0; background:rgba(2,3,2,0.86);
     display:flex; flex-direction:column; align-items:center; justify-content:center;
@@ -256,6 +302,9 @@
   .end-overlay .winners{ font-size:14px; }
   .end-overlay .winners b{ color:var(--phosphor); }
   .end-overlay .note{ font-size:11px; color:var(--phosphor-dim); margin-top:6px; }
+  .end-scores{ font-size:12px; color:var(--phosphor); margin-top:4px; line-height:1.6; }
+  .end-scores .me{ color:var(--marquee-yellow); font-weight:bold; }
+  .end-scores .rank{ color:var(--phosphor-dim); }
 
   .toast{
     position:absolute; bottom:8px; left:50%; transform:translateX(-50%);
@@ -265,18 +314,9 @@
   }
   .toast.show{ opacity:1; }
 
-  /* ---------- d-pad ---------- */
+  /* ---------- controlli ---------- */
   .controls-row{ display:flex; align-items:center; justify-content:space-between; margin-top:12px; gap:10px; flex-wrap:wrap; }
   .hint{ font-size:10.5px; color:var(--phosphor-dim); }
-  .dpad{
-    display:grid; grid-template-columns: repeat(3, 46px); grid-template-rows: repeat(3, 46px);
-    gap:4px; user-select:none; -webkit-user-select:none;
-  }
-  .dpad button{ padding:0; font-size:16px; touch-action:manipulation; }
-  .dpad .up{ grid-column:2; grid-row:1; }
-  .dpad .left{ grid-column:1; grid-row:2; }
-  .dpad .right{ grid-column:3; grid-row:2; }
-  .dpad .down{ grid-column:2; grid-row:3; }
 
   .cabinet.wide{
     position: fixed;
@@ -392,25 +432,26 @@
       <div class="canvas-wrap" id="canvasWrap">
         <canvas id="gameCanvas"></canvas>
         <ul class="sidebar player-list" id="gamePlayers"></ul>
+        <div class="score-counter" id="scoreCounter">
+          <span class="my-score" id="myScoreLine">PUNTI 0</span>
+          <span class="next-bonus" id="scoreNextBonus"></span>
+          <div class="score-others" id="scoreOthers"></div>
+        </div>
         <div class="killer-banner" id="killerBanner"></div>
+        <div class="bonus-banner" id="bonusBanner"></div>
         <div class="toast" id="toast"></div>
 
         <div class="end-overlay hidden" id="endOverlay">
           <h2 id="endTitle">FINE ROUND</h2>
           <div class="winners" id="endWinners"></div>
+          <div class="end-scores" id="endScores"></div>
           <div class="note">si torna in lobby tra pochi secondi&hellip;</div>
         </div>
       </div>
     </div>
 
     <div class="controls-row">
-      <span class="hint">Frecce / WASD per muoverti</span>
-      <div class="dpad" aria-label="controlli direzionali">
-        <button class="up" data-dir="up">&#9650;</button>
-        <button class="left" data-dir="left">&#9664;</button>
-        <button class="right" data-dir="right">&#9654;</button>
-        <button class="down" data-dir="down">&#9660;</button>
-      </div>
+      <span class="hint">WASD / frecce tastiera · Pallini = punti · Bonus a 15/30/50/100</span>
       <button class="ghost danger" id="btnLeaveGame">Esci</button>
     </div>
   </section>
@@ -434,7 +475,16 @@ const BASE_CELL = 24; // risoluzione interna del canvas, in px per cella
 // fluida per costruzione e non dipende piu' da quanto arrivano puntuali gli
 // aggiornamenti di rete dal server.
 const NORMAL_SPEED = 4.5;
-const KILLER_SPEED_MULT = 1.25;
+const KILLER_SPEED_MULT = 1.1;  // come richiesto: killer a 1.1x
+const BOOST_MULT = 2;           // bonus 30 punti: velocita' x2 (uguale a BOOST_MULT in common.py)
+// Soglie dei bonus, per l'indicazione "prossimo bonus" nell'HUD: devono
+// restare identiche a BONUS_THRESHOLDS in common.py.
+const BONUS_STEPS = [
+  { at: 15,  label: "VITA EXTRA" },
+  { at: 30,  label: "VELOCITA' x2" },
+  { at: 50,  label: "MODALITA' FANTASMA" },
+  { at: 100, label: "LASER" },
+];
 function cellDurationMs(isKiller){
   const speed = NORMAL_SPEED * (isKiller ? KILLER_SPEED_MULT : 1);
   return 1000 / speed;
@@ -484,38 +534,45 @@ const CHARACTERS = [
 let mazeTheme = { wall: "#0a1440", edge: "#2b4bd6", glow: "#4d7bff", pellet: "#ffe9a8", bg: "#000000" };
 let mazeName = "";
 
-// Palette di trii wall/edge/glow usati per colorare a chiazze i gruppi di
-// muri connessi della mappa, un po' come le mappe arcade Pac-Man storiche
-// che alternavano settori di colori diversi invece di un unico tema piatto.
-// Puramente estetico e generato lato client (ogni giocatore vede la propria
-// combinazione casuale, non serve sincronizzarlo via rete).
-const WALL_PALETTE = [
-  { wall: "#0a1440", edge: "#2b4bd6", glow: "#4d7bff" },
-  { wall: "#3a0505", edge: "#ff3b3b", glow: "#ff7a5c" },
-  { wall: "#03301c", edge: "#12c96f", glow: "#5dffb0" },
-  { wall: "#210a3a", edge: "#9b3bff", glow: "#c68cff" },
-  { wall: "#402706", edge: "#ff9d1f", glow: "#ffc266" },
-  { wall: "#052a33", edge: "#22e6ff", glow: "#9df6ff" },
-  { wall: "#3a0524", edge: "#ff2b9e", glow: "#ff8fce" },
-  { wall: "#0c2410", edge: "#3ddc4a", glow: "#9dffa5" },
-  { wall: "#3a1005", edge: "#ff5a36", glow: "#ffb08a" },
-  { wall: "#0a0a3a", edge: "#5b6bff", glow: "#a6b0ff" },
-  { wall: "#2b1a00", edge: "#ffcf40", glow: "#ffe38a" },
-  { wall: "#001f2b", edge: "#00b8d9", glow: "#7fe8ff" },
-  { wall: "#2b0018", edge: "#ff1f7a", glow: "#ff86bb" },
-  { wall: "#0d2b06", edge: "#8fd400", glow: "#c9ff6b" },
-  { wall: "#20202b", edge: "#8f9bb3", glow: "#c6ceda" },
-  { wall: "#2b0b00", edge: "#c1440e", glow: "#ff9560" },
-];
+// Ogni mappa ha ora una VERA identita' visiva basata sul suo tema (punto 5
+// delle richieste): i gruppi di muri connessi vengono colorati "a chiazze"
+// come prima, ma con VARIANTI del tema della mappa (base, schiarita,
+// accentata) invece che con colori casuali scollegati. Cosi' "Lava Cremisi"
+// e' davvero tutta lava, "Ghiaccio Ciano" tutta ghiaccio, e cosi' via -
+// mantenendo comunque profondita' e varieta' tra le zone del labirinto.
+let themeWallVariants = [];
 
-// Mappa "x,y" -> indice palette, ricalcolata ad ogni nuova mappa (vedi
-// applyMapData). Colora ogni GRUPPO di celle-muro connesse con un colore
-// scelto a caso, cosi' la mappa risulta a chiazze multicolori invece che
-// di un unico blu/verde/etc uniforme.
+function makeThemeVariants(theme){
+  const base = { wall: theme.wall, edge: theme.edge, glow: theme.glow };
+  return [
+    base,
+    { wall: lightenHex(theme.wall, 0.10), edge: lightenHex(theme.edge, 0.14), glow: lightenHex(theme.glow, 0.12) },
+    { wall: lightenHex(theme.wall, 0.20), edge: theme.glow, glow: lightenHex(theme.glow, 0.25) },
+    { wall: mixHex(theme.wall, theme.bg || "#000000", 0.35), edge: lightenHex(theme.edge, 0.05), glow: theme.glow },
+  ];
+}
+
+// Miscela due colori esadecimali (t=0 -> a, t=1 -> b): usato per la
+// variante "scura" dei muri, tirata verso lo sfondo del tema.
+function mixHex(a, b, t){
+  const pa = a.replace("#", ""), pb = b.replace("#", "");
+  if (pa.length !== 6 || pb.length !== 6) return a;
+  const ch = function(i){
+    const va = parseInt(pa.slice(i, i + 2), 16);
+    const vb = parseInt(pb.slice(i, i + 2), 16);
+    return Math.round(va + (vb - va) * t);
+  };
+  return "rgb(" + ch(0) + "," + ch(2) + "," + ch(4) + ")";
+}
+
+// Mappa "x,y" -> indice variante, ricalcolata ad ogni nuova mappa (vedi
+// applyMapData). Colora ogni GRUPPO di celle-muro connesse con una delle
+// varianti del tema corrente.
 let wallColorByCell = {};
 
 function computeWallColors(){
   wallColorByCell = {};
+  themeWallVariants = makeThemeVariants(mazeTheme);
   const visited = new Set();
   let lastIdx = -1;
   for (let y = 0; y < mazeH; y++){
@@ -524,8 +581,8 @@ function computeWallColors(){
       if (maze[y][x] !== "#" || visited.has(key)) continue;
       // BFS sulla regione di muri 4-connessa a partire da qui.
       let idx;
-      do { idx = Math.floor(Math.random() * WALL_PALETTE.length); }
-      while (WALL_PALETTE.length > 1 && idx === lastIdx);
+      do { idx = Math.floor(Math.random() * themeWallVariants.length); }
+      while (themeWallVariants.length > 1 && idx === lastIdx);
       lastIdx = idx;
       const stack = [[x, y]];
       visited.add(key);
@@ -591,7 +648,7 @@ let lastStateArrival = null;
 let lastFrameTs = null;
 
 let lastPhase = null;
-let lastAliveMap = {};
+let lastCountdownSecond = null;  // ultimo secondo intero del countdown gia' "ticchettato"
 let eatenPellets = new Set();
 let explosions = []; // {x,y,color,start}
 let killerBannerUntil = 0;
@@ -600,11 +657,18 @@ let myColors = []; // fino a 2: [0]=primario (corpo), [1]=dettaglio (contorno/de
 let myCharacter = "classic";
 let lobbyPlayersCache = [];
 
+// ---- stato dei nuovi elementi (portali, laser, teletrasporto, particelle) ----
+let portals = [];          // [[x,y],[x,y]] ricevuti dal server con la mappa
+let beams = [];            // colpi di laser in corso: {from,to,dir,start}
+let swirls = [];           // effetti di teletrasporto in corso: {x,y,start,color}
+let themeFx = [];          // particelle atmosferiche a tema della mappa corrente
+let themeFxKind = null;    // tipo di effetto della mappa corrente (embers/snow/...)
+let bonusBannerUntil = 0;  // scadenza del banner "BONUS!" al centro schermo
+
 /* =========================================================================
    AUDIO (sintetizzato, nessun file esterno)
    ========================================================================= */
 let audioCtx = null;
-let sirenNodes = null;
 
 function ensureAudio(){
   if (!audioCtx){
@@ -691,32 +755,45 @@ function playGameOver(){
   tone(220, 0.30, "sawtooth", 0.14, 0);
   tone(160, 0.45, "sawtooth", 0.14, 0.28);
 }
+// Fine countdown iniziale / rivelazione killer: prima era un sweep acuto
+// verso il basso + rumore bianco (tipo sirena d'allarme), giudicato troppo
+// fastidioso. Sostituito con un "tic-tac" da orologio: due click secchi e
+// puliti, uno acuto (tic) e uno leggermente piu' grave (tac).
+// Fine countdown iniziale / rivelazione killer: prima era un sweep acuto
+// verso il basso + rumore bianco (tipo sirena d'allarme), giudicato troppo
+// fastidioso. Sostituito con un "tic-tac" da orologio: due click secchi e
+// puliti, uno acuto (tic) e uno leggermente piu' grave (tac).
 function playKillerReveal(){
-  sweep(200, 45, 0.55, "sawtooth", 0.20);
-  noiseBurst(0.35, 0.16);
+  tone(1400, 0.03, "square", 0.11, 0.00);
+  tone(1000, 0.04, "square", 0.13, 0.16);
+}
+// Singolo "tic" secco, richiamato una volta per ogni secondo del countdown
+// iniziale (vedi onState): da' la sensazione di un vero orologio che
+// scandisce l'attesa, invece del silenzio fino allo scatto finale.
+function playClockTick(){
+  tone(1800, 0.02, "square", 0.07);
+}
+// Arpeggio brillante quando SI raggiunge un proprio traguardo-bonus.
+function playBonus(){
+  [523, 659, 784, 1047].forEach(function(f, i){ tone(f, 0.14, "square", 0.13, i * 0.06); });
+}
+// Colpo di laser: sweep acuto e secco verso il basso.
+function playLaser(){
+  sweep(1200, 260, 0.16, "square", 0.14);
+  tone(180, 0.10, "sawtooth", 0.10, 0.02);
+}
+// Teletrasporto attraverso un portale: piccolo "whoosh" ascendente.
+function playTeleport(){
+  sweep(240, 760, 0.18, "sine", 0.12);
 }
 
-function startSiren(){
-  if (!audioCtx || sirenNodes) return;
-  const osc = audioCtx.createOscillator();
-  const gain = audioCtx.createGain();
-  const lfo = audioCtx.createOscillator();
-  const lfoGain = audioCtx.createGain();
-  osc.type = "sawtooth";
-  osc.frequency.value = 220;
-  lfo.frequency.value = 1.7;
-  lfoGain.gain.value = 55;
-  lfo.connect(lfoGain).connect(osc.frequency);
-  gain.gain.value = 0.045;
-  osc.connect(gain).connect(audioCtx.destination);
-  osc.start(); lfo.start();
-  sirenNodes = { osc: osc, lfo: lfo };
-}
-function stopSiren(){
-  if (!sirenNodes) return;
-  try { sirenNodes.osc.stop(); sirenNodes.lfo.stop(); } catch (e) { /* gia' fermo */ }
-  sirenNodes = null;
-}
+// Punto 6 delle richieste: la sirena del countdown del killer e' stata
+// RIMOSSA perche' fastidiosa. Le due funzioni restano come "no-op" cosi' i
+// punti del codice che le chiamavano continuano a funzionare senza modifiche,
+// ma non producono piu' alcun suono. Restano attivi tutti gli altri effetti
+// sonori (masticazione, rivelazione killer, vittoria, eliminazione, ecc.).
+function startSiren(){ /* sirena rimossa: no-op */ }
+function stopSiren(){ /* sirena rimossa: no-op */ }
 
 let lastHeartbeat = 0;
 function updateHeartbeat(dist){
@@ -892,11 +969,46 @@ function applyMapData(msg){
   maze = msg.maze; mazeW = msg.maze_w; mazeH = msg.maze_h;
   mazeName = msg.maze_name || "";
   if (msg.theme) mazeTheme = msg.theme;
+  portals = Array.isArray(msg.portals) ? msg.portals : [];  // punto 4: due portali
   computeWallColors();
   eatenPellets.clear();
+  beams = []; swirls = [];
+  initThemeFx();  // punto 5: particelle atmosferiche a tema
   const mapEl = document.getElementById("hudMap");
   if (mapEl) mapEl.textContent = mazeName ? ("mappa: " + mazeName) : "";
   setupCanvas();
+}
+
+// Punto 5 (dettagli grafici a tema): ogni mappa ha un tipo di particella
+// atmosferica diverso (braci che salgono per la lava, neve che scende per il
+// ghiaccio, foglie, bollicine, stelle, ecc.), indicato da theme.fx. Le
+// particelle sono decorative, si muovono in coordinate-cella e sono poche
+// (limite 36) per non pesare sul rendering: nessun shadowBlur.
+const THEME_FX_COUNT = 36;
+function initThemeFx(){
+  themeFxKind = (mazeTheme && mazeTheme.fx) || null;
+  themeFx = [];
+  if (!themeFxKind || !mazeW || !mazeH) return;
+  for (let i = 0; i < THEME_FX_COUNT; i++){
+    themeFx.push(spawnFxParticle(true));
+  }
+}
+function spawnFxParticle(anywhere){
+  // Posizione in coordinate-cella (0..mazeW, 0..mazeH); anywhere=true la
+  // sparge su tutta la mappa (init), altrimenti la fa (ri)entrare dal bordo.
+  const p = { x: Math.random() * mazeW, y: Math.random() * mazeH,
+              phase: Math.random() * Math.PI * 2, seed: Math.random() };
+  if (!anywhere){
+    switch (themeFxKind){
+      case "embers": case "hearts": case "bubbles": case "neon":
+        p.y = mazeH + Math.random() * 1.5; break;   // entrano dal basso (salgono)
+      case "snow": case "leaves": case "sand":
+        p.y = -Math.random() * 1.5; break;          // entrano dall'alto (scendono)
+      default:
+        p.x = Math.random() * mazeW; p.y = Math.random() * mazeH; // vagano
+    }
+  }
+  return p;
 }
 
 function sendMsg(obj){
@@ -924,6 +1036,9 @@ function handleMessage(msg){
       break;
     case "state":
       onState(msg);
+      break;
+    case "event":
+      onGameEvent(msg);
       break;
     case "round_end":
       onRoundEnd(msg);
@@ -1204,7 +1319,7 @@ function paintMaze(targetCtx){
       const px = x * BASE_CELL, py = y * BASE_CELL;
       const m = 1.5, r = 5;
       const palIdx = wallColorByCell[x + "," + y];
-      const wc = palIdx != null ? WALL_PALETTE[palIdx] : mazeTheme;
+      const wc = (palIdx != null && themeWallVariants[palIdx]) ? themeWallVariants[palIdx] : mazeTheme;
 
       targetCtx.save();
       targetCtx.shadowColor = wc.glow;
@@ -1558,9 +1673,10 @@ function stepSim(state, dt, speed, hasNextDirQueue){
 // Avanza la simulazione locale del proprio personaggio (wrapper su stepSim
 // che usa le variabili globali pred* per compatibilita' col resto del
 // codice, ad es. gli handler di input che le leggono/scrivono).
-function stepLocalPrediction(dt, isKiller){
+function stepLocalPrediction(dt, isKiller, hasBoost){
   if (!predInited) return;
-  const speed = NORMAL_SPEED * (isKiller ? KILLER_SPEED_MULT : 1);
+  let speed = NORMAL_SPEED * (isKiller ? KILLER_SPEED_MULT : 1);
+  if (hasBoost) speed *= BOOST_MULT;  // bonus 30 punti: velocita' x2
   const state = { gridX: predGridX, gridY: predGridY, accum: predAccum, dir: predDir, nextDir: predNextDir };
   stepSim(state, dt, speed, true);
   predGridX = state.gridX; predGridY = state.gridY; predAccum = state.accum;
@@ -1573,7 +1689,8 @@ function stepLocalPrediction(dt, isKiller){
 function stepRemoteSim(p, dt){
   const s = remoteSim[p.id];
   if (!s || !p.alive) return;
-  const speed = NORMAL_SPEED * (p.is_killer ? KILLER_SPEED_MULT : 1);
+  let speed = NORMAL_SPEED * (p.is_killer ? KILLER_SPEED_MULT : 1);
+  if (p.boost) speed *= BOOST_MULT;
   stepSim(s, dt, speed, false);
 }
 
@@ -1604,13 +1721,58 @@ function drawPlayers(players, now){
     const facing = computeFacing(p);
     lastFacingMap[p.id] = facing;
     const isKiller = p.is_killer;
+
+    // ---- MODALITA' FANTASMA (bonus 50 punti) ----
+    // Chi e' in modalita' fantasma e' invisibile agli ALTRI giocatori
+    // (nome incluso); a SE STESSO si vede semitrasparente con un alone
+    // tratteggiato, per sapere che il bonus e' attivo. Il killer in carica
+    // non e' mai "ghost" (il server azzera il bonus finche' e' killer).
+    const iAmGhost = p.ghost && !isKiller;
+    if (iAmGhost && p.id !== myId) return;  // invisibile agli altri
+
     const chompSpeed = isKiller ? 11 : 8;
     const mouthDeg = 8 + 24 * Math.abs(Math.sin(now / 1000 * chompSpeed));
     const colors = p.colors || [];
     const baseColor = isKiller ? KILLER_COLOR : (COLOR_HEX[colors[0]] || "#fff");
     const detailColor = colors[1] ? COLOR_HEX[colors[1]] : null;
-    const radius = (isKiller ? BASE_CELL * 0.50 : BASE_CELL * 0.42);
+    const radius = BASE_CELL * 0.42;  // killer stessa dimensione dei giocatori (punto 1)
 
+    ctx.save();
+
+    // Protezione post-respawn (vita extra): lampeggia.
+    if (p.prot){
+      ctx.globalAlpha = 0.35 + 0.35 * Math.abs(Math.sin(now / 120));
+    }
+    // Fantasma visto da me stesso: molto trasparente + aura tratteggiata.
+    if (iAmGhost){
+      ctx.globalAlpha = Math.min(ctx.globalAlpha, 0.40);
+      ctx.save();
+      ctx.setLineDash([3, 3]);
+      ctx.strokeStyle = "rgba(200,220,255,0.7)";
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.arc(px, py, radius + 3, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Scia del bonus velocita' x2 (economica: qualche segmento dietro, niente shadowBlur).
+    if (p.boost && facing != null){
+      const rad = facing * Math.PI / 180;
+      ctx.save();
+      ctx.strokeStyle = baseColor;
+      for (let i = 1; i <= 3; i++){
+        ctx.globalAlpha = (0.22 / i);
+        ctx.lineWidth = radius * (1.1 - i * 0.2);
+        ctx.beginPath();
+        ctx.moveTo(px - Math.cos(rad) * (i * 4), py - Math.sin(rad) * (i * 4));
+        ctx.lineTo(px - Math.cos(rad) * (i * 4 + 5), py - Math.sin(rad) * (i * 4 + 5));
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    // Anello pulsante del killer.
     if (isKiller){
       const pulse = 4 + 3 * Math.abs(Math.sin(now / 220));
       ctx.save();
@@ -1628,16 +1790,33 @@ function drawPlayers(players, now){
       drawPacmanVariant(px, py, radius, mouthDeg, facing, baseColor, detailColor, p.character || "classic", 0);
     }
 
-    ctx.save();
-    ctx.font = PLAYER_NAME_FONT;
-    ctx.textAlign = "center";
-    ctx.fillStyle = "#000";
-    ctx.globalAlpha = 0.7;
-    ctx.fillText(p.name, px + 0.5, py - radius - 4.5);
-    ctx.globalAlpha = 1;
-    ctx.fillStyle = isKiller ? KILLER_COLOR : baseColor;
-    ctx.fillText(p.name, px, py - radius - 5);
+    // Laser sbloccato (bonus 100 punti): puntino rosso davanti alla bocca.
+    if (p.laser && facing != null){
+      const rad = facing * Math.PI / 180;
+      ctx.save();
+      ctx.globalAlpha = 0.85;
+      ctx.fillStyle = "#ff3b5c";
+      ctx.beginPath();
+      ctx.arc(px + Math.cos(rad) * (radius + 3), py + Math.sin(rad) * (radius + 3), 2.4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
     ctx.restore();
+
+    // Nome (il fantasma visto da se' non mostra il nome, per non ingombrare).
+    if (!iAmGhost){
+      ctx.save();
+      ctx.font = PLAYER_NAME_FONT;
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#000";
+      ctx.globalAlpha = 0.7;
+      ctx.fillText(p.name, px + 0.5, py - radius - 4.5);
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = isKiller ? KILLER_COLOR : baseColor;
+      ctx.fillText(p.name, px, py - radius - 5);
+      ctx.restore();
+    }
   });
 }
 
@@ -1649,6 +1828,135 @@ function findPlayer(snapshot, id){
   return null;
 }
 function lerp(a, b, t){ return a + (b - a) * t; }
+
+// Punto 4: i due portali. Doppio anello controrotante nei colori del tema,
+// con un piccolo vortice interno. Economico (nessun shadowBlur).
+function drawPortals(now){
+  if (!portals || portals.length < 2) return;
+  const colA = mazeTheme.edge || "#4d7bff";
+  const colB = mazeTheme.glow || "#9df6ff";
+  portals.forEach(function(pt, idx){
+    const cx = pt[0] * BASE_CELL + BASE_CELL / 2;
+    const cy = pt[1] * BASE_CELL + BASE_CELL / 2;
+    const r = BASE_CELL * 0.42;
+    const spin = now / 1000 * (idx === 0 ? 1 : -1);
+    ctx.save();
+    ctx.translate(cx, cy);
+    for (let ring = 0; ring < 2; ring++){
+      ctx.rotate(spin * (ring ? -1.6 : 1.2));
+      ctx.strokeStyle = ring ? colB : colA;
+      ctx.globalAlpha = 0.85 - ring * 0.25;
+      ctx.lineWidth = 2;
+      for (let a = 0; a < 3; a++){
+        const start = a * (Math.PI * 2 / 3);
+        ctx.beginPath();
+        ctx.arc(0, 0, r - ring * 3, start, start + Math.PI / 2);
+        ctx.stroke();
+      }
+    }
+    // nucleo
+    ctx.globalAlpha = 0.5 + 0.3 * Math.abs(Math.sin(now / 300));
+    ctx.fillStyle = colB;
+    ctx.beginPath();
+    ctx.arc(0, 0, r * 0.28, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  });
+}
+
+// Punto 3 (laser): il raggio disegnato per ~260ms. Linea spessa translucida
+// rossa + nucleo bianco sottile + scintilla sull'estremita'.
+function drawBeams(now){
+  beams = beams.filter(function(b){ return now - b.start < 260; });
+  beams.forEach(function(b){
+    const t = (now - b.start) / 260;
+    const x0 = b.from[0] * BASE_CELL + BASE_CELL / 2;
+    const y0 = b.from[1] * BASE_CELL + BASE_CELL / 2;
+    const x1 = b.to[0] * BASE_CELL + BASE_CELL / 2;
+    const y1 = b.to[1] * BASE_CELL + BASE_CELL / 2;
+    ctx.save();
+    ctx.lineCap = "round";
+    ctx.globalAlpha = (1 - t) * 0.8;
+    ctx.strokeStyle = "#ff3b5c";
+    ctx.lineWidth = 6 * (1 - t) + 2;
+    ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+    ctx.globalAlpha = (1 - t);
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+    ctx.globalAlpha = (1 - t) * 0.9;
+    ctx.fillStyle = "#ffd0d8";
+    ctx.beginPath(); ctx.arc(x1, y1, 3 * (1 - t) + 1.5, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  });
+}
+
+// Effetto di teletrasporto (punto 4): anelli che si espandono dai due portali.
+function drawSwirls(now){
+  swirls = swirls.filter(function(s){ return now - s.start < 420; });
+  swirls.forEach(function(s){
+    const t = (now - s.start) / 420;
+    const cx = s.x * BASE_CELL + BASE_CELL / 2;
+    const cy = s.y * BASE_CELL + BASE_CELL / 2;
+    ctx.save();
+    ctx.globalAlpha = 1 - t;
+    ctx.strokeStyle = s.color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 2 + t * 14, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  });
+}
+
+// Punto 5: particelle atmosferiche a tema. Movimento in coordinate-cella,
+// riciclate quando escono dallo schermo. Poche e leggere.
+function updateThemeFx(dt){
+  if (!themeFxKind || !themeFx.length) return;
+  const d = Math.min(dt, 0.1);
+  themeFx.forEach(function(p, i){
+    p.phase += d * (1 + p.seed);
+    switch (themeFxKind){
+      case "embers":   p.y -= d * (1.2 + p.seed);     p.x += Math.sin(p.phase) * d * 0.4; break;
+      case "neon":     p.y -= d * (2.0 + p.seed * 2); break;
+      case "hearts":   p.y -= d * (0.8 + p.seed);     p.x += Math.sin(p.phase) * d * 0.5; break;
+      case "bubbles":  p.y -= d * (1.0 + p.seed);     p.x += Math.sin(p.phase) * d * 0.3; break;
+      case "snow":     p.y += d * (0.9 + p.seed);     p.x += Math.sin(p.phase) * d * 0.4; break;
+      case "leaves":   p.y += d * (0.9 + p.seed);     p.x += Math.sin(p.phase) * d * 0.9; break;
+      case "sand":     p.x += d * (1.2 + p.seed);     p.y += Math.sin(p.phase) * d * 0.25; break;
+      case "fireflies":p.x += Math.cos(p.phase) * d * 0.6; p.y += Math.sin(p.phase * 1.3) * d * 0.6; break;
+      case "sparkle": case "stars": default: /* fermi, solo twinkle via phase */ break;
+    }
+    // riciclo ai bordi
+    if (p.y < -1 || p.y > mazeH + 1 || p.x < -1 || p.x > mazeW + 1){
+      themeFx[i] = spawnFxParticle(false);
+    }
+  });
+}
+function drawThemeFx(now){
+  if (!themeFxKind || !themeFx.length) return;
+  const col = mazeTheme.glow || "#ffffff";
+  ctx.save();
+  themeFx.forEach(function(p){
+    const cx = p.x * BASE_CELL, cy = p.y * BASE_CELL;
+    const tw = 0.4 + 0.6 * Math.abs(Math.sin(p.phase));
+    ctx.globalAlpha = 0.5 * tw;
+    if (themeFxKind === "hearts"){
+      ctx.fillStyle = "#ff8fce";
+      ctx.beginPath(); ctx.arc(cx, cy, 1.8, 0, Math.PI * 2); ctx.fill();
+    } else if (themeFxKind === "leaves"){
+      ctx.fillStyle = col;
+      ctx.fillRect(cx - 1.4, cy - 1.4, 2.8, 2.8);
+    } else if (themeFxKind === "stars" || themeFxKind === "sparkle"){
+      ctx.fillStyle = "#ffffff";
+      ctx.beginPath(); ctx.arc(cx, cy, 1.2 * tw + 0.4, 0, Math.PI * 2); ctx.fill();
+    } else {
+      ctx.fillStyle = col;
+      ctx.beginPath(); ctx.arc(cx, cy, 1.5, 0, Math.PI * 2); ctx.fill();
+    }
+  });
+  ctx.restore();
+}
 
 function drawExplosions(now){
   explosions = explosions.filter(function(e){ return now - e.start < 550; });
@@ -1675,18 +1983,23 @@ function renderLoop(now){
   lastFrameTs = now;
   const me0 = findPlayer(currSnapshot, myId);
   if (me0 && me0.alive && roundActive){
-    stepLocalPrediction(dt, !!me0.is_killer);
+    stepLocalPrediction(dt, !!me0.is_killer, !!me0.boost);
   }
   if (roundActive){
     currSnapshot.players.forEach(function(p){
       if (p.id !== myId) stepRemoteSim(p, dt);
     });
   }
+  updateThemeFx(dt);
 
   drawMaze();
   drawPellets();
+  drawPortals(now);
+  drawThemeFx(now);
   drawPlayers(currSnapshot.players, now);
+  drawBeams(now);
   drawExplosions(now);
+  drawSwirls(now);
 
   const bannerShouldShow = now < killerBannerUntil;
   if (bannerShouldShow !== killerBannerShown){
@@ -1767,7 +2080,8 @@ function onState(msg){
     eatenPellets.clear();
     pelletsLayerDirty = true;
     explosions = [];
-    lastAliveMap = {};
+    beams = [];
+    swirls = [];
     remoteSim = {};
     lastServerPos = {};
     lastFacingMap = {};
@@ -1777,10 +2091,22 @@ function onState(msg){
     predDir = null;
     predNextDir = null;
     predAccum = 0;
-    startSiren();
     roundActive = true;
+    lastCountdownSecond = null;
     document.getElementById("endOverlay").classList.add("hidden");
     showScreen("game");
+  }
+
+  // Tic-tac da orologio per ogni secondo del countdown iniziale: un click
+  // breve e pulito ad ogni cambio di secondo, cosi' l'attesa prima che il
+  // killer venga rivelato suona davvero come un orologio che scandisce il
+  // tempo, invece di restare in silenzio fino allo scatto finale.
+  if (msg.phase === "countdown"){
+    const sec = Math.ceil(msg.countdown);
+    if (sec !== lastCountdownSecond && sec > 0){
+      lastCountdownSecond = sec;
+      playClockTick();
+    }
   }
 
   // Rivela il killer sia alla prima scelta (fine countdown) sia ogni volta
@@ -1796,25 +2122,10 @@ function onState(msg){
   }
 
   msg.players.forEach(function(p){
-    if (lastAliveMap[p.id] === true && p.alive === false){
-      explosions.push({ x: p.x, y: p.y, color: p.is_killer ? KILLER_COLOR : (COLOR_HEX[(p.colors && p.colors[0])] || "#fff"), start: now });
-      playEliminate();
-      if (p.id !== myId) showToast(p.name + " eliminato!");
-    }
-    lastAliveMap[p.id] = p.alive;
-
-    // Il pallino sotto la pedina viene "mangiato" al passaggio. Farlo qui
-    // (al ritmo dei tick di stato, ~20/s) invece che nel render loop
-    // permette di far scattare il classico "waka-waka" una volta sola per
-    // pallino, per il proprio giocatore.
-    if (p.alive){
-      const cellKey = Math.round(p.x) + "," + Math.round(p.y);
-      if (!eatenPellets.has(cellKey)){
-        eatenPellets.add(cellKey);
-        pelletsLayerDirty = true;
-        if (p.id === myId) playChomp();
-      }
-    }
+    // NB: morti, pallini mangiati, bonus, laser e teletrasporti NON si
+    // deducono piu' confrontando gli snapshot: arrivano come eventi espliciti
+    // dal server (vedi onGameEvent), che e' l'autorita' unica. Qui restano
+    // solo posizione/direzione per la simulazione fluida dei remoti.
 
     // Riallinea (o inizializza) la simulazione locale di QUESTO giocatore
     // rispetto alla posizione/direzione confermata dal server: il server
@@ -1959,6 +2270,87 @@ function onState(msg){
   updateGameSidebar(msg);
 }
 
+// Eventi puntuali dal server (autorita' unica): pallini, bonus, uccisioni,
+// laser, teletrasporti. Ognuno pilota effetto grafico + suono senza dover
+// indovinare nulla dallo stato.
+function onGameEvent(msg){
+  const now = performance.now();
+  switch (msg.kind){
+    case "pellet": {
+      // Uno o piu' pallini mangiati: aggiorna il layer e fa "waka" se sono io.
+      let changed = false;
+      (msg.cells || []).forEach(function(c){
+        const key = c[0] + "," + c[1];
+        if (!eatenPellets.has(key)){ eatenPellets.add(key); changed = true; }
+      });
+      if (changed){
+        pelletsLayerDirty = true;
+        if (msg.by === myId) playChomp();
+      }
+      break;
+    }
+    case "bonus": {
+      const labels = {
+        extra_life: "VITA EXTRA! \u2665",
+        speed:      "VELOCITA' \u00d72 (15s)",
+        ghost:      "MODALITA' FANTASMA (10s)",
+        laser:      "LASER SBLOCCATO!",
+      };
+      const txt = labels[msg.bonus] || "BONUS!";
+      if (msg.player === myId){
+        showBonusBanner(txt);
+        playBonus();
+      } else {
+        const who = findPlayer(currSnapshot, msg.player);
+        showToast((who ? who.name : "Un giocatore") + ": " + txt);
+      }
+      break;
+    }
+    case "kill": {
+      const victim = findPlayer(currSnapshot, msg.victim);
+      const at = msg.at || (victim ? [victim.x, victim.y] : [0, 0]);
+      const col = (victim && victim.is_killer) ? KILLER_COLOR
+                : (victim ? (COLOR_HEX[(victim.colors && victim.colors[0])] || "#fff") : "#fff");
+      explosions.push({ x: at[0], y: at[1], color: col, start: now });
+      playEliminate();
+      const byLaser = msg.cause === "laser";
+      if (msg.victim === myId){
+        showBonusBanner(msg.respawn ? ("HAI PERSO UNA VITA \u2665" + msg.lives) : "SEI STATO ELIMINATO");
+      } else if (victim){
+        showToast(victim.name + (msg.respawn ? " colpito!" : " eliminato") + (byLaser ? " dal laser" : ""));
+      }
+      break;
+    }
+    case "laser": {
+      beams.push({ from: msg.from, to: msg.to, dir: msg.dir, start: now });
+      playLaser();
+      break;
+    }
+    case "teleport": {
+      const col = mazeTheme.glow || "#9df6ff";
+      swirls.push({ x: msg.from[0], y: msg.from[1], start: now, color: col });
+      swirls.push({ x: msg.to[0],   y: msg.to[1],   start: now, color: col });
+      playTeleport();
+      // Se sono io a teletrasportarmi, aggancio subito la predizione locale
+      // alla cella di arrivo per non "scivolare" verso il portale vecchio.
+      if (msg.player === myId){
+        predGridX = msg.to[0]; predGridY = msg.to[1]; predAccum = 0;
+      }
+      break;
+    }
+  }
+}
+
+function showBonusBanner(text){
+  const el = document.getElementById("bonusBanner");
+  if (!el) return;
+  el.textContent = text;
+  el.classList.add("show");
+  bonusBannerUntil = performance.now() + 1600;
+  clearTimeout(showBonusBanner._t);
+  showBonusBanner._t = setTimeout(function(){ el.classList.remove("show"); }, 1600);
+}
+
 function updateHud(msg){
   const timerEl = document.getElementById("hudTimer");
   if (msg.phase === "countdown"){
@@ -1967,45 +2359,118 @@ function updateHud(msg){
   } else {
     const nextKiller = msg.killer_timer != null ? Math.ceil(msg.killer_timer) : null;
     timerEl.textContent = "TEMPO: " + Math.ceil(msg.timer) + "s" +
-      (nextKiller != null ? " · PROSSIMO CAMBIO KILLER TRA " + nextKiller + "s" : "");
+      (nextKiller != null ? " · KILLER CAMBIA TRA " + nextKiller + "s" : "");
     timerEl.classList.toggle("urgent", msg.timer <= 10);
   }
+  updateScoreCounter(msg);
+}
+
+// Contatore punti dedicato (vedi .score-counter in alto a sinistra):
+// prima il punteggio era scritto in coda alla stringa del timer, che cambia
+// ogni tick ed e' lunga (fase, secondi, cambio killer...): il numero dei
+// punti finiva "perso" in mezzo al testo e passava inosservato. Ora ha un
+// box tutto suo, sempre nello stesso posto: i TUOI punti in evidenza sopra,
+// e sotto una mini-classifica con i punti di TUTTI gli altri giocatori.
+let scoreOthersSig = "";
+function updateScoreCounter(msg){
+  const myLine = document.getElementById("myScoreLine");
+  const nextEl = document.getElementById("scoreNextBonus");
+  const othersEl = document.getElementById("scoreOthers");
+  if (!myLine || !nextEl || !othersEl) return;
+
+  const me = findPlayer(msg, myId);
+  const pts = me ? (me.points || 0) : 0;
+  const lives = me ? (me.lives || 1) : 1;
+  myLine.textContent = "PUNTI " + pts + " · \u2665" + lives;
+  const next = BONUS_STEPS.find(function(s){ return pts < s.at; });
+  nextEl.textContent = next
+    ? ("prossimo bonus: " + next.label + " a " + next.at + " pt (mancano " + (next.at - pts) + ")")
+    : "tutti i bonus sbloccati";
+
+  // Classifica degli altri giocatori, ordinata per punti decrescenti.
+  const others = (msg.players || [])
+    .filter(function(p){ return p.id !== myId; })
+    .sort(function(a, b){ return (b.points || 0) - (a.points || 0); });
+
+  const sig = others.map(function(p){ return p.id + ":" + p.name + ":" + (p.colors||[]).join(","); }).join("|");
+  if (sig !== scoreOthersSig){
+    scoreOthersSig = sig;
+    othersEl.innerHTML = "";
+    others.forEach(function(p){
+      const row = document.createElement("div");
+      row.className = "score-row";
+      const sw = document.createElement("span");
+      sw.className = "sw";
+      const c = p.is_killer ? KILLER_COLOR : (COLOR_HEX[(p.colors || [])[0]] || "#888");
+      sw.style.background = c;
+      row.appendChild(sw);
+      const nm = document.createElement("span");
+      nm.className = "nm";
+      nm.textContent = p.name;
+      row.appendChild(nm);
+      const pt = document.createElement("span");
+      pt.className = "pt";
+      row.appendChild(pt);
+      othersEl.appendChild(row);
+      row._ptEl = pt;
+      row._id = p.id;
+    });
+  }
+  Array.from(othersEl.children).forEach(function(row){
+    const p = others.find(function(o){ return o.id === row._id; });
+    if (p && row._ptEl) row._ptEl.textContent = (p.points || 0) + "p";
+  });
 }
 
 let lastSidebarSig = "";
+let sidebarRefs = {};   // id -> {score, tags} per aggiornare punti/vite senza rebuild
 function updateGameSidebar(msg){
-  // La sidebar arriva dentro ogni pacchetto di stato (~20 volte al
-  // secondo), ma i dati che mostra (vivo/morto, chi e' il killer, nome,
-  // colori) cambiano molto di rado: posizione e movimento NON la
-  // riguardano. Ricostruire l'intera lista nel DOM ad ogni pacchetto era
-  // lavoro sprecato che contribuiva agli scatti; la si ricostruisce solo
-  // quando qualcosa di rilevante e' davvero cambiato.
+  // La struttura della lista (chi c'e', vivo/morto, chi e' killer, fantasma,
+  // laser) cambia di rado: si ricostruisce il DOM solo su questi cambi
+  // (signature). Punti e vite invece cambiano spesso: si aggiornano scrivendo
+  // direttamente nello <span> gia' esistente, senza ricostruire nulla (perf).
   const sig = myId + "|" + msg.players.map(function(p){
-    return p.id + ":" + p.alive + ":" + p.is_killer + ":" + p.name + ":" + (p.colors || []).join(",");
+    return p.id + ":" + p.alive + ":" + p.is_killer + ":" + p.name +
+           ":" + (p.colors || []).join(",") + ":" + (p.ghost ? "g" : "") + (p.laser ? "l" : "");
   }).join("|");
-  if (sig === lastSidebarSig) return;
-  lastSidebarSig = sig;
 
-  const list = document.getElementById("gamePlayers");
-  list.innerHTML = "";
+  if (sig !== lastSidebarSig){
+    lastSidebarSig = sig;
+    sidebarRefs = {};
+    const list = document.getElementById("gamePlayers");
+    list.innerHTML = "";
+    msg.players.forEach(function(p){
+      const li = document.createElement("li");
+      li.className = "player-row" + (!p.alive ? " dead" : "") + (p.is_killer ? " killer" : "");
+      const sw = document.createElement("span");
+      sw.className = "swatch";
+      const colors = p.colors || [];
+      const c = p.is_killer ? KILLER_COLOR : (COLOR_HEX[colors[0]] || "#888");
+      sw.style.background = c; sw.style.color = c;
+      if (!p.is_killer && colors[1]){
+        sw.style.boxShadow = "0 0 0 2px " + COLOR_HEX[colors[1]] + ", 0 0 6px currentColor";
+      }
+      li.appendChild(sw);
+      const nameSpan = document.createElement("span");
+      nameSpan.textContent = p.name;
+      li.appendChild(nameSpan);
+      if (p.id === myId){ const t = document.createElement("span"); t.className="tag you"; t.textContent="TU"; li.appendChild(t); }
+      if (p.is_killer){ const t = document.createElement("span"); t.className="tag killer"; t.textContent="KILLER"; li.appendChild(t); }
+      if (p.ghost && !p.is_killer){ const t = document.createElement("span"); t.className="tag you"; t.textContent="FANTASMA"; li.appendChild(t); }
+      if (p.laser){ const t = document.createElement("span"); t.className="tag killer"; t.textContent="LASER"; li.appendChild(t); }
+      const spacer = document.createElement("span"); spacer.className = "spacer"; li.appendChild(spacer);
+      const score = document.createElement("span");
+      score.style.fontSize = "10px"; score.style.color = "var(--phosphor-dim)";
+      li.appendChild(score);
+      list.appendChild(li);
+      sidebarRefs[p.id] = score;
+    });
+  }
+
+  // aggiornamento leggero di punti/vite
   msg.players.forEach(function(p){
-    const li = document.createElement("li");
-    li.className = "player-row" + (!p.alive ? " dead" : "") + (p.is_killer ? " killer" : "");
-    const sw = document.createElement("span");
-    sw.className = "swatch";
-    const colors = p.colors || [];
-    const c = p.is_killer ? KILLER_COLOR : (COLOR_HEX[colors[0]] || "#888");
-    sw.style.background = c; sw.style.color = c;
-    if (!p.is_killer && colors[1]){
-      sw.style.boxShadow = "0 0 0 2px " + COLOR_HEX[colors[1]] + ", 0 0 6px currentColor";
-    }
-    li.appendChild(sw);
-    const nameSpan = document.createElement("span");
-    nameSpan.textContent = p.name;
-    li.appendChild(nameSpan);
-    if (p.id === myId){ const t = document.createElement("span"); t.className="tag you"; t.textContent="TU"; li.appendChild(t); }
-    if (p.is_killer){ const t = document.createElement("span"); t.className="tag killer"; t.textContent="KILLER"; li.appendChild(t); }
-    list.appendChild(li);
+    const el = sidebarRefs[p.id];
+    if (el) el.textContent = (p.points || 0) + "p · \u2665" + (p.lives || 1);
   });
 }
 
@@ -2029,6 +2494,21 @@ function onRoundEnd(msg){
     div.innerHTML = (isMe ? "<b>" : "") + (msg.names[wid] || wid) + (isMe ? " (TU!)</b>" : "");
     winners.appendChild(div);
   });
+
+  // Classifica punti (dal messaggio round_end.scores), ordine decrescente.
+  const scoresEl = document.getElementById("endScores");
+  scoresEl.innerHTML = "";
+  if (msg.scores){
+    const rows = Object.keys(msg.scores).map(function(id){
+      return { id: id, name: (msg.names && msg.names[id]) || id, pts: msg.scores[id] };
+    }).sort(function(a, b){ return b.pts - a.pts; });
+    rows.forEach(function(r, i){
+      const div = document.createElement("div");
+      div.className = (r.id === myId) ? "me" : "";
+      div.innerHTML = '<span class="rank">' + (i + 1) + '.</span> ' + r.name + " — " + r.pts + " punti";
+      scoresEl.appendChild(div);
+    });
+  }
   overlay.classList.remove("hidden");
 }
 
@@ -2071,16 +2551,10 @@ document.addEventListener("keydown", function(ev){
 // keyup: non fa piu' nulla di apposta. Il personaggio continua a muoversi
 // da solo nella direzione corrente, come nel Pac-Man originale.
 
-// D-pad touch: un tocco imposta la direzione, esattamente come un tasto.
-// Anche qui il rilascio del dito non ferma piu' nulla.
-document.querySelectorAll(".dpad button").forEach(function(btn){
-  const dir = btn.dataset.dir;
-  btn.addEventListener("pointerdown", function(ev){
-    ev.preventDefault();
-    ensureAudio();
-    requestDir(dir);
-  });
-});
+// D-pad touch rimosso su richiesta (le frecce sotto lo schermo davano
+// fastidio): il movimento resta disponibile da tastiera (WASD/frecce).
+// NB: su mobile senza tastiera fisica il gioco non e' piu' controllabile
+// da touch — se serve, si puo' reintrodurre uno swipe-gesture sul canvas.
 
 })();
 </script>

@@ -30,7 +30,24 @@ MAX_PLAYERS = 5
 MIN_PLAYERS = 2
 
 NORMAL_SPEED = 4.5          # celle al secondo
-KILLER_SPEED_MULT = 1.25    # come richiesto: killer 1.25x rispetto a 1.0 dei giocatori
+KILLER_SPEED_MULT = 1.1     # come richiesto: killer 1.1x rispetto a 1.0 dei giocatori
+
+# ---- sistema punti e bonus a traguardi ----
+# Ogni pallino della mappa vale 1 punto. Al raggiungimento di ogni soglia
+# (una sola volta per round) scatta il bonus corrispondente.
+BONUS_THRESHOLDS = [
+    (15,  "extra_life"),   # +1 vita: se il killer ti prende, respawni invece di uscire
+    (30,  "speed"),        # velocita' x2 per 15 secondi
+    (50,  "ghost"),        # modalita' fantasma: invisibile e non catturabile dal killer
+    (100, "laser"),        # laser frontale a intermittenza, elimina chiunque (fantasmi inclusi)
+]
+BOOST_MULT = 2.0               # moltiplicatore del bonus velocita'
+BOOST_SECONDS = 15.0           # durata del bonus velocita'
+GHOST_SECONDS = 10.0           # durata della modalita' fantasma
+SPAWN_PROTECT_SECONDS = 3.0    # invulnerabilita' (solo dal killer) dopo un respawn
+LASER_INTERVAL_SECONDS = 3.0   # ogni quanto il laser spara un colpo, una volta sbloccato
+LASER_FIRST_DELAY_SECONDS = 1.0  # attesa del primo colpo dopo lo sblocco
+PORTAL_COOLDOWN_SECONDS = 1.2  # anti ping-pong: dopo un teletrasporto i portali si ignorano per un attimo
 
 # Nome colore (mostrato all'utente, in italiano) -> id colore interno.
 # Elenco esteso: ogni giocatore puo' scegliere fino a 2 colori (primario +
@@ -82,7 +99,7 @@ MAZES = [
             '###############################',
         ],
         "spawn_points": [[1, 1], [29, 1], [1, 13], [29, 13], [15, 7]],
-        "theme": {'wall': '#0a1440', 'edge': '#2b4bd6', 'glow': '#4d7bff', 'pellet': '#ffe9a8', 'bg': '#000000'},
+        "theme": {'wall': '#0a1440', 'edge': '#2b4bd6', 'glow': '#4d7bff', 'pellet': '#ffe9a8', 'bg': '#000000', 'fx': 'neon'},
     },
     {
         "name": 'Lava Cremisi',
@@ -106,7 +123,7 @@ MAZES = [
             '#################################',
         ],
         "spawn_points": [[1, 1], [31, 1], [1, 15], [31, 15], [16, 7]],
-        "theme": {'wall': '#3a0505', 'edge': '#ff3b3b', 'glow': '#ff7a5c', 'pellet': '#ffd166', 'bg': '#0a0000'},
+        "theme": {'wall': '#3a0505', 'edge': '#ff3b3b', 'glow': '#ff7a5c', 'pellet': '#ffd166', 'bg': '#0a0000', 'fx': 'embers'},
     },
     {
         "name": 'Giungla Smeraldo',
@@ -128,7 +145,7 @@ MAZES = [
             '#############################',
         ],
         "spawn_points": [[1, 1], [27, 1], [1, 13], [27, 13], [14, 7]],
-        "theme": {'wall': '#03301c', 'edge': '#12c96f', 'glow': '#5dffb0', 'pellet': '#e8ff8f', 'bg': '#000e08'},
+        "theme": {'wall': '#03301c', 'edge': '#12c96f', 'glow': '#5dffb0', 'pellet': '#e8ff8f', 'bg': '#000e08', 'fx': 'leaves'},
     },
     {
         "name": 'Violetto Regale',
@@ -154,7 +171,7 @@ MAZES = [
             '#####################################',
         ],
         "spawn_points": [[1, 1], [35, 1], [1, 17], [35, 17], [18, 9]],
-        "theme": {'wall': '#210a3a', 'edge': '#9b3bff', 'glow': '#c68cff', 'pellet': '#ffe2f7', 'bg': '#08000f'},
+        "theme": {'wall': '#210a3a', 'edge': '#9b3bff', 'glow': '#c68cff', 'pellet': '#ffe2f7', 'bg': '#08000f', 'fx': 'sparkle'},
     },
     {
         "name": 'Sabbia Ambra',
@@ -176,7 +193,7 @@ MAZES = [
             '###########################',
         ],
         "spawn_points": [[1, 1], [25, 1], [1, 13], [25, 13], [13, 7]],
-        "theme": {'wall': '#402706', 'edge': '#ff9d1f', 'glow': '#ffc266', 'pellet': '#fff3c4', 'bg': '#0d0700'},
+        "theme": {'wall': '#402706', 'edge': '#ff9d1f', 'glow': '#ffc266', 'pellet': '#fff3c4', 'bg': '#0d0700', 'fx': 'sand'},
     },
     {
         "name": 'Ghiaccio Ciano',
@@ -200,7 +217,7 @@ MAZES = [
             '###################################',
         ],
         "spawn_points": [[1, 1], [33, 1], [1, 15], [33, 15], [17, 8]],
-        "theme": {'wall': '#052a33', 'edge': '#22e6ff', 'glow': '#9df6ff', 'pellet': '#ffffff', 'bg': '#000a0d'},
+        "theme": {'wall': '#052a33', 'edge': '#22e6ff', 'glow': '#9df6ff', 'pellet': '#ffffff', 'bg': '#000a0d', 'fx': 'snow'},
     },
     {
         "name": 'Rosa Arcade',
@@ -224,7 +241,7 @@ MAZES = [
             '###############################',
         ],
         "spawn_points": [[1, 1], [29, 1], [1, 15], [29, 15], [15, 8]],
-        "theme": {'wall': '#3a0524', 'edge': '#ff2b9e', 'glow': '#ff8fce', 'pellet': '#fff0f8', 'bg': '#0d0009'},
+        "theme": {'wall': '#3a0524', 'edge': '#ff2b9e', 'glow': '#ff8fce', 'pellet': '#fff0f8', 'bg': '#0d0009', 'fx': 'hearts'},
     },
     {
         "name": 'Foresta Notte',
@@ -246,7 +263,7 @@ MAZES = [
             '#################################',
         ],
         "spawn_points": [[1, 1], [31, 1], [1, 13], [31, 13], [15, 7]],
-        "theme": {'wall': '#0c2410', 'edge': '#3ddc4a', 'glow': '#9dffa5', 'pellet': '#f4ffb8', 'bg': '#020a03'},
+        "theme": {'wall': '#0c2410', 'edge': '#3ddc4a', 'glow': '#9dffa5', 'pellet': '#f4ffb8', 'bg': '#020a03', 'fx': 'fireflies'},
     },
     {
         "name": 'Corallo Tramonto',
@@ -272,7 +289,7 @@ MAZES = [
             '#######################################',
         ],
         "spawn_points": [[1, 1], [37, 1], [1, 17], [37, 17], [19, 9]],
-        "theme": {'wall': '#3a1005', 'edge': '#ff5a36', 'glow': '#ffb08a', 'pellet': '#ffe3c2', 'bg': '#0d0300'},
+        "theme": {'wall': '#3a1005', 'edge': '#ff5a36', 'glow': '#ffb08a', 'pellet': '#ffe3c2', 'bg': '#0d0300', 'fx': 'bubbles'},
     },
     {
         "name": 'Indaco Profondo',
@@ -298,7 +315,7 @@ MAZES = [
             '###################################',
         ],
         "spawn_points": [[1, 1], [33, 1], [1, 17], [33, 17], [17, 9]],
-        "theme": {'wall': '#0a0a3a', 'edge': '#5b6bff', 'glow': '#a6b0ff', 'pellet': '#e6e9ff', 'bg': '#020214'},
+        "theme": {'wall': '#0a0a3a', 'edge': '#5b6bff', 'glow': '#a6b0ff', 'pellet': '#e6e9ff', 'bg': '#020214', 'fx': 'stars'},
     },
 ]
 

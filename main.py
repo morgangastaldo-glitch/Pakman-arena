@@ -37,6 +37,9 @@ from common import (
     MAX_PLAYERS, MIN_PLAYERS, NORMAL_SPEED, KILLER_SPEED_MULT,
     COLORS, CHARACTERS, DIRECTIONS, is_wall, ROOM_CODE_CHARS,
     pick_random_maze,
+    BONUS_THRESHOLDS, BOOST_MULT, BOOST_SECONDS, GHOST_SECONDS,
+    SPAWN_PROTECT_SECONDS, LASER_INTERVAL_SECONDS, LASER_FIRST_DELAY_SECONDS,
+    PORTAL_COOLDOWN_SECONDS,
 )
 
 MAX_PLAYER_COLORS = 2  # colore primario + colore di dettaglio (opzionale)
@@ -86,6 +89,19 @@ class Player:
         self.alive = True
         self.is_killer = False
         self.connected = True
+        # ---- sistema punti / bonus (azzerato ad ogni round) ----
+        self.points = 0
+        self.lives = 1                 # a 15 punti diventa 2: il killer non elimina, fa respawnare
+        self.claimed = set()           # soglie bonus gia' riscattate in questo round
+        self.boost_left = 0.0          # secondi rimanenti di velocita' x2 (bonus 30 punti)
+        self.ghost_left = 0.0          # secondi rimanenti di modalita' fantasma (bonus 50 punti)
+        self.prot_left = 0.0           # invulnerabilita' dal killer dopo un respawn
+        self.has_laser = False         # bonus 100 punti: laser frontale a intermittenza
+        self.laser_cd = 0.0            # countdown al prossimo colpo di laser
+        self.portal_cd = 0.0           # anti ping-pong dopo un teletrasporto
+        # Ultima direzione di marcia nota: e' il "lato frontale" da cui parte
+        # il laser anche se in questo istante si e' fermi contro un muro.
+        self.facing = "right"
 
     def to_public(self):
         # Posizione "continua": la griglia interna (self.x/self.y, interi)
@@ -105,6 +121,12 @@ class Player:
             "host": self.host, "x": round(fx, 4), "y": round(fy, 4),
             "direction": self.direction,
             "alive": self.alive, "is_killer": self.is_killer,
+            # ---- nuovi campi per HUD/rendering ----
+            "points": self.points, "lives": self.lives,
+            "ghost": self.ghost_left > 0,
+            "boost": self.boost_left > 0,
+            "prot": self.prot_left > 0,
+            "laser": self.has_laser,
         }
 
 
@@ -119,7 +141,15 @@ class Room:
         self.killer_timer = 0.0
         self.loop_task = None
         self.last_result = None
-        self.initial_survivor_count = 0
+        # Il killer NON e' piu' l'unica causa di morte (c'e' anche il laser)
+        # e la vittoria e' "ultimo giocatore vivo": per decidere il titolo di
+        # fine round teniamo traccia di com'e' avvenuta l'ultima eliminazione.
+        self.last_kill = None
+        # Eventi una-tantum (uccisioni, bonus, laser, teletrasporti, pallini
+        # mangiati) accumulati durante il tick e trasmessi subito dopo: sono
+        # cio' che permette al client effetti/suoni precisi senza dover
+        # "indovinare" confrontando snapshot consecutivi.
+        self.events = []
         # Mappa corrente della stanza: viene ripescata a caso tra le 10
         # disponibili a OGNI inizio round (vedi run_round), cosi' ogni
         # partita puo' capitare su una mappa diversa per forma/colore/misura.
@@ -130,6 +160,8 @@ class Room:
         self.maze_name = map_data["name"]
         self.spawn_points = map_data["spawn_points"]
         self.theme = map_data["theme"]
+        self.compute_portals()
+        self.reset_pellets()
 
     def pick_new_map(self):
         map_data = pick_random_maze()
@@ -139,11 +171,46 @@ class Room:
         self.maze_name = map_data["name"]
         self.spawn_points = map_data["spawn_points"]
         self.theme = map_data["theme"]
+        self.compute_portals()
+        self.reset_pellets()
+
+    def reset_pellets(self):
+        """Ricrea l'insieme dei pallini: ogni cella libera della mappa ne
+        contiene uno e vale 1 punto. Il server e' l'autorita' (prima erano
+        solo decorativi lato client): cosi' i punti sono uguali per tutti."""
+        self.pellets = {
+            (x, y)
+            for y, row in enumerate(self.maze)
+            for x, ch in enumerate(row)
+            if ch == "."
+        }
+
+    def compute_portals(self):
+        """Due portali ai lati opposti della mappa: per ciascuna colonna
+        interna estrema (x=1 a sinistra, x=w-2 a destra) sceglie la cella
+        libera piu' vicina alla meta' verticale. Entrare in uno teletrasporta
+        all'altro (vedi try_portal)."""
+        def best_open_y(x):
+            best = None
+            mid = self.maze_h // 2
+            for y in range(1, self.maze_h - 1):
+                if self.maze[y][x] == ".":
+                    d = abs(y - mid)
+                    if best is None or d < best[0]:
+                        best = (d, y)
+            return best[1] if best else None
+        left_y = best_open_y(1)
+        right_y = best_open_y(self.maze_w - 2)
+        if left_y is not None and right_y is not None:
+            self.portals = [(1, left_y), (self.maze_w - 2, right_y)]
+        else:
+            self.portals = []
 
     def map_payload(self):
         return {
             "maze": self.maze, "maze_w": self.maze_w, "maze_h": self.maze_h,
             "maze_name": self.maze_name, "theme": self.theme,
+            "portals": [list(p) for p in self.portals],
         }
 
     # ---------- lobby ----------
@@ -201,6 +268,17 @@ class Room:
             p.move_accum = 0.0
             p.alive = True
             p.is_killer = False
+            # reset del sistema punti/bonus per il nuovo round
+            p.points = 0
+            p.lives = 1
+            p.claimed = set()
+            p.boost_left = 0.0
+            p.ghost_left = 0.0
+            p.prot_left = 0.0
+            p.has_laser = False
+            p.laser_cd = 0.0
+            p.portal_cd = 0.0
+            p.facing = "right"
         self.killer_id = None
 
     def start_killer_phase(self):
@@ -210,12 +288,15 @@ class Room:
         killer_id = random.choice(alive_ids)
         self.killer_id = killer_id
         self.players[killer_id].is_killer = True
-        self.initial_survivor_count = len(alive_ids) - 1
+        # Un killer invisibile sarebbe ingiocabile per gli altri: se il
+        # prescelto era in modalita' fantasma, il fantasma svanisce.
+        self.players[killer_id].ghost_left = 0.0
         self.killer_timer = KILLER_INTERVAL_SECONDS
 
     def rotate_killer(self):
         """Sceglie un nuovo killer casuale tra i giocatori vivi. Chiamato
-        ogni KILLER_INTERVAL_SECONDS per tutta la durata del round."""
+        ogni KILLER_INTERVAL_SECONDS per tutta la durata del round, e subito
+        se il killer in carica viene eliminato dal laser."""
         alive_ids = [p.id for p in self.players.values() if p.alive]
         if not alive_ids:
             return
@@ -224,15 +305,31 @@ class Room:
         new_killer_id = random.choice(alive_ids)
         self.killer_id = new_killer_id
         self.players[new_killer_id].is_killer = True
+        self.players[new_killer_id].ghost_left = 0.0  # il killer e' sempre visibile
         self.killer_timer = KILLER_INTERVAL_SECONDS
 
     # ---------- game tick ----------
+
+    def push_event(self, ev):
+        """Accoda un evento una-tantum da trasmettere a fine tick."""
+        self.events.append({"type": "event", **ev})
 
     def update_movement(self):
         prev_positions = {p.id: (p.x, p.y) for p in self.players.values()}
         for p in self.players.values():
             if not p.alive:
                 continue
+
+            # Timer personali dei bonus/protezioni: scorrono qui, una volta
+            # per tick, cosi' restano sincronizzati con la fisica.
+            if p.boost_left > 0:
+                p.boost_left = max(0.0, p.boost_left - TICK_DT)
+            if p.ghost_left > 0:
+                p.ghost_left = max(0.0, p.ghost_left - TICK_DT)
+            if p.prot_left > 0:
+                p.prot_left = max(0.0, p.prot_left - TICK_DT)
+            if p.portal_cd > 0:
+                p.portal_cd = max(0.0, p.portal_cd - TICK_DT)
 
             # Appena la direzione "in coda" diventa percorribile dalla cella
             # attuale, diventa la direzione corrente: e' cosi' che nel
@@ -245,48 +342,212 @@ class Room:
                     p.direction = p.next_direction
                     p.next_direction = None
 
-            if p.direction is None:
-                continue
+            if p.direction is not None:
+                # Il "lato frontale" del personaggio (da cui parte il laser)
+                # e' l'ultima direzione di marcia, anche da fermi.
+                p.facing = p.direction
+                dx, dy = DIRECTIONS[p.direction]
+                nx, ny = p.x + dx, p.y + dy
+                if is_wall(self.maze, self.maze_w, self.maze_h, nx, ny):
+                    # Contro un muro: azzera l'accumulo invece di lasciarlo
+                    # crescere all'infinito (evita "teletrasporti" quando la
+                    # strada si libera).
+                    p.move_accum = 0.0
+                else:
+                    speed = NORMAL_SPEED
+                    if p.is_killer:
+                        speed *= KILLER_SPEED_MULT
+                    if p.boost_left > 0:
+                        speed *= BOOST_MULT  # bonus 30 punti: velocita' x2
+                    p.move_accum += speed * TICK_DT
+                    if p.move_accum >= 1.0:
+                        p.move_accum -= 1.0
+                        p.x, p.y = nx, ny
 
-            dx, dy = DIRECTIONS[p.direction]
-            nx, ny = p.x + dx, p.y + dy
-            if is_wall(self.maze, self.maze_w, self.maze_h, nx, ny):
-                # Contro un muro: azzera l'accumulo invece di lasciarlo
-                # crescere all'infinito. Senza questo, appena la strada si
-                # liberava (es. dopo che il killer cambia e la fisica
-                # riprende) il giocatore "teletrasportava" di piu' celle in
-                # un colpo solo, altro sintomo dei comandi imprecisi.
-                p.move_accum = 0.0
-                continue
-
-            speed = NORMAL_SPEED * (KILLER_SPEED_MULT if p.is_killer else 1.0)
-            p.move_accum += speed * TICK_DT
-            if p.move_accum >= 1.0:
-                p.move_accum -= 1.0
-                p.x, p.y = nx, ny
+            # Pallini e portali si valutano sulla cella in cui ci si trova
+            # ORA (anche da fermi: copre lo spawn su un pallino).
+            self.eat_pellet(p)
+            self.try_portal(p)
         return prev_positions
+
+    def eat_pellet(self, p):
+        cell = (p.x, p.y)
+        if cell not in self.pellets:
+            return
+        self.pellets.discard(cell)
+        p.points += 1
+        self.push_event({"kind": "pellet", "cells": [[p.x, p.y]], "by": p.id})
+        self.check_bonuses(p)
+
+    def check_bonuses(self, p):
+        """Riscatta i traguardi appena superati (una volta sola per round)."""
+        for threshold, kind in BONUS_THRESHOLDS:
+            if p.points < threshold or threshold in p.claimed:
+                continue
+            p.claimed.add(threshold)
+            if kind == "extra_life":
+                p.lives += 1
+            elif kind == "speed":
+                p.boost_left = BOOST_SECONDS
+            elif kind == "ghost":
+                # Il killer in carica resta comunque visibile lato client;
+                # per lui il bonus e' di fatto "in pausa" finche' e' killer
+                # (vedi rotate_killer, che azzera ghost_left al passaggio).
+                p.ghost_left = GHOST_SECONDS
+            elif kind == "laser":
+                p.has_laser = True
+                p.laser_cd = LASER_FIRST_DELAY_SECONDS
+            self.push_event({
+                "kind": "bonus", "player": p.id,
+                "bonus": kind, "points": threshold,
+            })
+
+    def try_portal(self, p):
+        """Se il giocatore e' su un portale (e non e' appena arrivato da un
+        teletrasporto), lo sposta al portale opposto mantenendo la direzione."""
+        if not self.portals or p.portal_cd > 0:
+            return
+        pos = (p.x, p.y)
+        if pos == self.portals[0]:
+            dest = self.portals[1]
+        elif pos == self.portals[1]:
+            dest = self.portals[0]
+        else:
+            return
+        src = pos
+        p.x, p.y = dest
+        p.move_accum = 0.0
+        p.portal_cd = PORTAL_COOLDOWN_SECONDS
+        self.push_event({
+            "kind": "teleport", "player": p.id,
+            "from": [src[0], src[1]], "to": [dest[0], dest[1]],
+        })
+
+    def respawn_player(self, p):
+        """Rimette in gioco chi aveva una vita extra: nello spawn piu'
+        lontano dal killer, con qualche secondo di protezione."""
+        killer = self.players.get(self.killer_id)
+        spots = self.spawn_points[:]
+        if killer and killer.alive:
+            spots.sort(key=lambda s: -(abs(s[0] - killer.x) + abs(s[1] - killer.y)))
+            x, y = spots[0]
+        else:
+            x, y = random.choice(spots)
+        p.x, p.y = x, y
+        p.direction = None
+        p.next_direction = None
+        p.move_accum = 0.0
+        p.prot_left = SPAWN_PROTECT_SECONDS
+        p.portal_cd = 0.5  # se lo spawn fosse vicino a un portale, niente teletrasporto istantaneo
+
+    def kill_player(self, victim, cause, shooter_id=None):
+        """Unica via per togliere una vita: usata sia dal tocco del killer
+        sia dal laser. Con vite extra si respawna, altrimenti si e' fuori.
+        Se il laser elimina il killer in carica, ne viene scelto subito uno
+        nuovo tra i vivi."""
+        self.last_kill = {"cause": cause, "killer": self.killer_id}
+        victim.lives -= 1
+        died_at = [victim.x, victim.y]
+        if victim.lives > 0:
+            self.respawn_player(victim)
+            respawned = True
+        else:
+            victim.alive = False
+            victim.direction = None
+            victim.next_direction = None
+            victim.move_accum = 0.0
+            respawned = False
+            if victim.id == self.killer_id:
+                self.rotate_killer()
+        self.push_event({
+            "kind": "kill", "victim": victim.id, "cause": cause,
+            "by": shooter_id, "at": died_at,
+            "respawn": respawned, "lives": max(victim.lives, 0),
+        })
 
     def check_collisions(self, prev_positions):
         killer = self.players.get(self.killer_id)
         if not killer or not killer.alive:
             return
-        for p in self.players.values():
+        for p in list(self.players.values()):
             if p.id == killer.id or not p.alive:
+                continue
+            # Il tocco del killer non puo' nulla contro la modalita' fantasma
+            # (bonus 50 punti) ne' contro la protezione post-respawn. Il
+            # laser invece ignora entrambe (vedi fire_laser).
+            if p.ghost_left > 0 or p.prot_left > 0:
                 continue
             same_cell = (p.x == killer.x and p.y == killer.y)
             swapped = (
-                prev_positions[p.id] == (killer.x, killer.y)
-                and prev_positions[killer.id] == (p.x, p.y)
+                prev_positions.get(p.id) == (killer.x, killer.y)
+                and prev_positions.get(killer.id) == (p.x, p.y)
             )
             if same_cell or swapped:
-                p.alive = False
+                self.kill_player(p, "killer")
+
+    def update_lasers(self):
+        """Bonus 100 punti: ogni LASER_INTERVAL_SECONDS parte un colpo dal
+        lato frontale del personaggio."""
+        for p in list(self.players.values()):
+            if not p.alive or not p.has_laser:
+                continue
+            p.laser_cd -= TICK_DT
+            if p.laser_cd > 0:
+                continue
+            p.laser_cd = LASER_INTERVAL_SECONDS
+            self.fire_laser(p)
+
+    def fire_laser(self, shooter):
+        """Raggio istantaneo: percorre tutta la distanza libera davanti al
+        giocatore e si infrange sul primo muro o sul primo giocatore colpito.
+        Elimina QUALSIASI giocatore (fantasmi e protetti inclusi)."""
+        dx, dy = DIRECTIONS.get(shooter.facing, (1, 0))
+        x, y = shooter.x, shooter.y
+        last_free = (shooter.x, shooter.y)
+        hit = []
+        while True:
+            x += dx
+            y += dy
+            if is_wall(self.maze, self.maze_w, self.maze_h, x, y):
+                break
+            last_free = (x, y)
+            victims = [
+                q for q in self.players.values()
+                if q.alive and q.id != shooter.id and q.x == x and q.y == y
+            ]
+            if victims:
+                hit = victims
+                break
+        self.push_event({
+            "kind": "laser", "shooter": shooter.id,
+            "from": [shooter.x, shooter.y],
+            "to": [last_free[0], last_free[1]],
+            "dir": shooter.facing,
+            "hit": [v.id for v in hit],
+        })
+        for v in hit:
+            self.kill_player(v, "laser", shooter.id)
 
     def check_win(self):
-        survivors = [p for p in self.players.values() if p.alive and not p.is_killer]
-        if len(survivors) == 0:
-            return [self.killer_id], "killer_wins"
-        if len(survivors) == 1 and self.initial_survivor_count > 1:
-            return [survivors[0].id], "last_survivor"
+        """FIX richiesto: il round NON finisce piu' alla prima eliminazione.
+        Si continua finche' resta UN SOLO giocatore vivo: quello e' il
+        vincitore (che sia l'ultimo fuggitivo o il killer che ha eliminato
+        tutti). Con le vite extra e il laser chiunque puo' essere eliminato,
+        quindi il conteggio giusto e' sui vivi totali, non sui fuggitivi."""
+        alive = [p for p in self.players.values() if p.alive]
+        if len(alive) == 0:
+            # Puo' capitare solo in casi limite (es. disconnessioni):
+            # si chiude il round senza vincitori "veri".
+            winners = [self.killer_id] if self.killer_id in self.players else []
+            return winners, "killer_wins"
+        if len(alive) == 1:
+            w = alive[0]
+            lk = self.last_kill
+            if lk and lk["cause"] == "killer" and w.id == lk["killer"]:
+                reason = "killer_wins"
+            else:
+                reason = "last_survivor"
+            return [w.id], reason
         return None, None
 
     def state_snapshot(self):
@@ -300,14 +561,28 @@ class Room:
             "players": [p.to_public() for p in self.players.values()],
         }
 
+    async def drain_events(self):
+        """Invia (e svuota) la coda degli eventi accumulati nel tick."""
+        if not self.events:
+            return
+        pending, self.events = self.events, []
+        for ev in pending:
+            await self.broadcast(ev)
+
     def reset_to_lobby(self):
         self.state = "LOBBY"
         self.killer_id = None
         self.killer_timer = 0.0
+        self.last_kill = None
+        self.events = []
         for p in self.players.values():
             p.alive = True
             p.is_killer = False
             p.direction = None
+            p.boost_left = 0.0
+            p.ghost_left = 0.0
+            p.prot_left = 0.0
+            p.has_laser = False
 
     # ---------- main loop ----------
 
@@ -341,6 +616,7 @@ class Room:
             elif self.state == "PLAYING":
                 self.timer_left -= TICK_DT
                 self.killer_timer -= TICK_DT
+                self.update_lasers()  # bonus 100 punti: colpi a intermittenza
                 if self.killer_timer <= 0:
                     self.rotate_killer()
                 winners, reason = self.check_win()
@@ -352,15 +628,18 @@ class Room:
                 if winners is not None:
                     self.state = "ENDED"
                     self.last_result = {"winners": winners, "reason": reason}
+                    await self.drain_events()
                     await self.broadcast(self.state_snapshot())
                     await self.broadcast({
                         "type": "round_end",
                         "winners": winners,
                         "reason": reason,
                         "names": {p.id: p.name for p in self.players.values()},
+                        "scores": {p.id: p.points for p in self.players.values()},
                     })
                     break
 
+            await self.drain_events()
             await self.broadcast(self.state_snapshot())
 
         await asyncio.sleep(8)
