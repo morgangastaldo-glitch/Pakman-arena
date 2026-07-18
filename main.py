@@ -498,15 +498,14 @@ class Room:
     def check_bonuses(self, p):
         """Riscatta i traguardi appena superati (una volta sola per round).
 
-        Il super assassino/ninja (300 punti) e la trappola (500 punti) sono
-        traguardi a parte rispetto a BONUS_THRESHOLDS (soglie fisse, non
-        configurabili per-mappa). Allo sblocco NON si attivano da soli:
-        segnano solo che il bonus e' disponibile (has_ninja / has_trap).
-        L'attivazione vera e propria scatta solo quando il giocatore preme
-        il tasto corrispondente (vedi try_activate_ninja e
-        try_activate_trap), e resta disponibile per tutto il round (si puo'
-        riattivare piu' volte, a differenza di laser/mine/missili che si
-        consumano)."""
+        Il ninja (300 punti) e la trappola (500 punti) sono traguardi a
+        parte rispetto a BONUS_THRESHOLDS (soglie fisse, non configurabili
+        per-mappa). Allo sblocco NON si attivano da soli: segnano solo che
+        il bonus e' disponibile (has_ninja / has_trap). L'attivazione vera
+        e propria scatta solo quando il giocatore preme il tasto
+        corrispondente (vedi try_activate_ninja e try_activate_trap), e
+        resta disponibile per tutto il round (si puo' riattivare piu'
+        volte, a differenza di laser/mine/missili che si consumano)."""
         for threshold, kind in BONUS_THRESHOLDS:
             if p.points < threshold or threshold in p.claimed:
                 continue
@@ -958,8 +957,6 @@ class Room:
         if not player.alive or not player.has_trap:
             return
 
-        # Caso 1: c'e' gia' una vittima intrappolata da questo giocatore
-        # -> il tasto 4 prova a farla detonare.
         if player.trap_target:
             victim = self.players.get(player.trap_target)
             if victim is not None and victim.alive and victim.trapped_left > 0:
@@ -969,15 +966,9 @@ class Room:
                     self.kill_player(victim, "trap", player.id)
                     player.trap_target = None
                     return
-                # Troppo lontano per detonare adesso: non fare nulla,
-                # il giocatore puo' riprovare avvicinandosi.
                 return
-            # La vittima precedente e' scappata/morta/scaduta: libera lo
-            # slot cosi' il prossimo tasto 4 puo' intrappolare di nuovo.
             player.trap_target = None
 
-        # Caso 2: nessuna vittima attiva -> il tasto 4 intrappola SUBITO
-        # il nemico piu' vicino.
         target = self.nearest_alive(player.x, player.y, {player.id})
         if target is None:
             return
@@ -1019,8 +1010,6 @@ class Room:
                 {
                     "id": mz["id"], "x": mz["x"], "y": mz["y"],
                     "owner": mz["owner"], "target": mz["target"],
-                    # Prossima cella del percorso (se nota): serve al client
-                    # solo per orientare graficamente la fiamma del missile.
                     "next": list(mz["path"][0]) if mz["path"] else None,
                 }
                 for mz in self.missiles
