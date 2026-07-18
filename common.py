@@ -32,20 +32,6 @@ MIN_PLAYERS = 2
 NORMAL_SPEED = 4.5          # celle al secondo
 ASSASSIN_SPEED_MULT = 1.1   # il super assassino (bonus 300 punti) e' 1.1x rispetto a 1.0 dei giocatori normali
 
-# ---- finestra di tolleranza per il cambio direzione ----
-# Prima, ogni pressione tasto veniva sempre messa in coda (next_direction) e
-# applicata al primo istante utile, anche con parecchio anticipo o ritardo
-# rispetto al centro cella/incrocio. Con piu' tasti premuti in rapida
-# successione questo faceva "sovrapporre" i comandi: la pressione restava in
-# coda e scattava un attimo dopo, dando la sensazione di un input in
-# ritardo ("lag") anche se la rete non c'entrava nulla.
-# Ora una svolta viene accettata SOLO se il tasto arriva entro questa
-# finestra di tolleranza attorno al centro della cella corrente (move_accum
-# vicino a 0.0, l'istante dell'incrocio nel Pac-Man originale). Fuori da
-# questa finestra la pressione viene scartata (non messa in coda): bisogna
-# premere di nuovo, con un tempismo piu' vicino alla curva.
-TURN_WINDOW = 0.40  # frazione di cella (0.0-1.0) di tolleranza attorno al centro cella
-
 # ---- sistema punti e bonus a traguardi ----
 # Ogni pallino normale vale 1 punto. In 10 punti (angoli/estremita') della
 # mappa si trovano pallini piu' grossi e arancioni che valgono 10 punti.
