@@ -54,7 +54,12 @@ from common import (
     MISSILE_SPEED_MULT, MISSILES_COUNT, MISSILE_RETARGET_SECONDS,
     TRAP_THRESHOLD, TRAP_DURATION_SECONDS, TRAP_RANGE, TRAP_MAX_USES,
     TURRET_THRESHOLD, TURRET_FIRE_INTERVAL_SECONDS,
+    TURRET_RANGE_CELLS, KILL_STEAL_FRACTION,
 )
+
+# Direzione opposta di ciascuna direzione: serve per l'inversione di marcia
+# istantanea a meta' cella (stile Pac-Man originale, vedi update_movement).
+OPPOSITE_DIR = {"up": "down", "down": "up", "left": "right", "right": "left"}
 
 MAX_PLAYER_COLORS = 2  # colore primario + colore di dettaglio (opzionale)
 
@@ -165,6 +170,7 @@ class Player:
             "alive": self.alive,
             # ---- nuovi campi per HUD/rendering ----
             "points": self.points, "lives": self.lives,
+            "kills": self.kills,
             "ghost": self.ghost_left > 0,
             "assassin": self.is_assassin,
             "ninja": self.has_ninja,
@@ -443,15 +449,48 @@ class Room:
             # uno scatto piccolo e deterministico (identico su client e
             # server), non il grosso teletrasporto dovuto al disallineamento
             # di rete.
-            if p.next_direction is not None:
-                ndx, ndy = DIRECTIONS[p.next_direction]
-                if not is_wall(self.maze, self.maze_w, self.maze_h, p.x + ndx, p.y + ndy):
-                    if p.direction != p.next_direction:
-                        p.move_accum = 0.0
-                    p.direction = p.next_direction
-                    p.next_direction = None
-
-            if p.direction is not None:
+            # ---- MOVIMENTO "VERO PAC-MAN" (automa a sotto-passi) ----
+            # Il tick viene consumato a sotto-passi, fermandosi ESATTAMENTE
+            # sul confine di ogni cella. Regole (identiche a stepSim nel
+            # client, cosi' predizione e server non divergono mai):
+            #  1. Inversione di marcia (direzione opposta): applicata
+            #     SUBITO, anche a meta' cella, senza scatti - la posizione
+            #     continua viene conservata ribaltando l'avanzamento
+            #     (accum -> 1-accum sulla cella successiva).
+            #  2. Svolta perpendicolare in coda: applicata solo AL CENTRO
+            #     della cella (accum == 0), come nel Pac-Man originale.
+            #     Niente piu' azzeramento dell'accum a meta' cella: sparisce
+            #     il piccolo "scatto all'indietro" ad ogni curva.
+            #  3. Se la svolta e' bloccata da un muro, la coda RESTA in
+            #     attesa e scatta da sola al primo incrocio utile.
+            speed = NORMAL_SPEED
+            if p.is_assassin:
+                # Il super assassino (300 punti) e' piu' veloce dei
+                # giocatori normali (stesso moltiplicatore 1.0 -> 1.1).
+                speed *= ASSASSIN_SPEED_MULT
+            remaining = TICK_DT
+            while remaining > 1e-9:
+                if p.next_direction is not None:
+                    if (p.direction is not None
+                            and p.next_direction == OPPOSITE_DIR[p.direction]
+                            and p.move_accum > 1e-9):
+                        # Inversione istantanea a meta' cella: la posizione
+                        # continua resta identica (x+dx*a == nx-dx*(1-a)).
+                        dx, dy = DIRECTIONS[p.direction]
+                        p.x += dx
+                        p.y += dy
+                        p.move_accum = 1.0 - p.move_accum
+                        p.direction = p.next_direction
+                        p.next_direction = None
+                    elif p.move_accum <= 1e-9:
+                        ndx, ndy = DIRECTIONS[p.next_direction]
+                        if not is_wall(self.maze, self.maze_w, self.maze_h,
+                                       p.x + ndx, p.y + ndy):
+                            p.direction = p.next_direction
+                            p.next_direction = None
+                        # se e' muro: la coda resta in memoria (regola 3)
+                if p.direction is None:
+                    break
                 # Il "lato frontale" del personaggio (da cui parte il laser)
                 # e' l'ultima direzione di marcia, anche da fermi.
                 p.facing = p.direction
@@ -462,19 +501,18 @@ class Room:
                     # crescere all'infinito (evita "teletrasporti" quando la
                     # strada si libera).
                     p.move_accum = 0.0
+                    break
+                step = min(remaining, (1.0 - p.move_accum) / speed)
+                p.move_accum += speed * step
+                remaining -= step
+                if p.move_accum >= 1.0 - 1e-6:
+                    # Confine di cella attraversato: ci si ferma esattamente
+                    # al centro (accum = 0) e si ricontrolla subito la coda
+                    # delle svolte al giro successivo del while.
+                    p.move_accum = 0.0
+                    p.x, p.y = nx, ny
                 else:
-                    speed = NORMAL_SPEED
-                    if p.is_assassin:
-                        # Il super assassino (300 punti) e' piu' veloce dei
-                        # giocatori normali (stesso moltiplicatore 1.0 -> 1.1).
-                        speed *= ASSASSIN_SPEED_MULT
-                    p.move_accum += speed * TICK_DT
-                    if p.move_accum >= 1.0:
-                        p.move_accum -= 1.0
-                        p.x, p.y = nx, ny
-                        # La svolta in coda, se presente, viene gia' gestita
-                        # a inizio tick (vedi sopra): qui non serve
-                        # riapplicarla, resta solo l'avanzamento di cella.
+                    break
 
             # Pallini e portali si valutano sulla cella in cui ci si trova
             # ORA (anche da fermi: copre lo spawn su un pallino).
@@ -651,16 +689,16 @@ class Room:
         assassino, dal laser e dalle mine. Con vite extra si respawna,
         altrimenti si e' fuori.
 
-        Chi uccide ruba tutti i punti della vittima, che vengono sommati ai
-        propri (vedi richiesta: "ogni volta che un avversario uccide
-        qualcuno gli ruba i punti")."""
+        Chi uccide ruba il 50% dei punti della vittima (KILL_STEAL_FRACTION,
+        arrotondato per difetto): la vittima CONSERVA l'altra meta' delle
+        sue risorse - un'eliminazione fa male ma non azzera piu' tutto."""
         self.last_kill = {"cause": cause, "by": shooter_id}
         killer_player = self.players.get(shooter_id) if shooter_id else None
         stolen = 0
         if killer_player is not None and killer_player.id != victim.id:
-            stolen = victim.points
+            stolen = int(victim.points * KILL_STEAL_FRACTION)
             if stolen > 0:
-                victim.points = 0
+                victim.points -= stolen
                 killer_player.points += stolen
                 self.check_bonuses(killer_player)
             # Ogni 2 uccisioni fatte, il killer guadagna una vita extra
@@ -1072,18 +1110,41 @@ class Room:
         if not self.turrets:
             return
         for t in self.turrets:
+            # Tracciamento continuo: ad OGNI tick la torretta individua il
+            # nemico vivo piu' vicino e, se e' entro TURRET_RANGE_CELLS (10
+            # caselle, distanza Manhattan), gli punta contro la canna. La
+            # mira (t["aim"]) finisce nello snapshot cosi' il client la
+            # disegna che ruota verso il bersaglio in tempo reale.
+            target = self.nearest_alive(t["x"], t["y"], {t["owner"]})
+            in_range = (
+                target is not None
+                and abs(target.x - t["x"]) + abs(target.y - t["y"]) <= TURRET_RANGE_CELLS
+            )
+            t["aim"] = [target.x, target.y] if in_range else None
             t["cd"] -= TICK_DT
             if t["cd"] > 0:
                 continue
-            t["cd"] = TURRET_FIRE_INTERVAL_SECONDS
-            target = self.nearest_alive(t["x"], t["y"], {t["owner"]})
-            if target is None:
+            if not in_range:
+                # Nessuno nel raggio: la torretta resta carica (cd fermo a
+                # zero) e spara ISTANTANEAMENTE appena qualcuno entra nelle
+                # 10 caselle, invece di sprecare colpi a vuoto.
+                t["cd"] = 0.0
                 continue
+            t["cd"] = TURRET_FIRE_INTERVAL_SECONDS
             ddx, ddy = target.x - t["x"], target.y - t["y"]
-            if abs(ddx) >= abs(ddy):
-                dx, dy = (1, 0) if ddx >= 0 else (-1, 0)
-            else:
-                dx, dy = (0, 1) if ddy >= 0 else (0, -1)
+            # Scelta della direzione di fuoco: prima l'asse con lo scarto
+            # maggiore, ma se quella canna e' subito contro un muro si prova
+            # l'altro asse (il colpo esce nel corridoio libero invece di
+            # morire sul muro adiacente).
+            cand = []
+            horiz = (1, 0) if ddx >= 0 else (-1, 0)
+            vert = (0, 1) if ddy >= 0 else (0, -1)
+            cand = [horiz, vert] if abs(ddx) >= abs(ddy) else [vert, horiz]
+            dx, dy = cand[0]
+            if is_wall(self.maze, self.maze_w, self.maze_h, t["x"] + dx, t["y"] + dy) \
+                    and not is_wall(self.maze, self.maze_w, self.maze_h,
+                                    t["x"] + cand[1][0], t["y"] + cand[1][1]):
+                dx, dy = cand[1]
             dir_name = next((k for k, v in DIRECTIONS.items() if v == (dx, dy)), "right")
             laser = {
                 "id": uuid.uuid4().hex[:8],
@@ -1125,7 +1186,11 @@ class Room:
                 for lz in self.lasers
             ],
             "mines": [{"id": m["id"], "x": m["x"], "y": m["y"], "owner": m["owner"]} for m in self.mines],
-            "turrets": [{"id": t["id"], "x": t["x"], "y": t["y"], "owner": t["owner"]} for t in self.turrets],
+            "turrets": [
+                {"id": t["id"], "x": t["x"], "y": t["y"], "owner": t["owner"],
+                 "aim": t.get("aim")}
+                for t in self.turrets
+            ],
             "portal_on": self.portal_on,
             "portal_cycle_left": round(max(self.portal_cycle_left, 0), 1),
             "missiles": [

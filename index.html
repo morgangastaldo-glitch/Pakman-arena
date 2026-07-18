@@ -221,32 +221,51 @@
      con i punti di tutti gli altri giocatori. ---- */
   .score-counter{
     position:absolute; top:8px; left:8px; z-index:6;
-    background:rgba(2,6,3,0.72); border:1px solid var(--panel-edge);
-    border-radius:8px; padding:6px 10px; backdrop-filter: blur(2px);
-    letter-spacing:0.5px; min-width:120px;
+    background:linear-gradient(180deg, rgba(6,12,7,0.88), rgba(2,6,3,0.78));
+    border:1px solid var(--panel-edge);
+    border-radius:10px; padding:7px 11px; backdrop-filter: blur(3px);
+    letter-spacing:0.5px; min-width:150px;
+    box-shadow:0 0 14px rgba(255,212,0,0.10), 0 2px 8px rgba(0,0,0,0.45);
     pointer-events:none;
   }
   .score-counter .my-score{
-    font-size:16px; font-weight:bold; white-space:nowrap;
-    color:var(--marquee-yellow); text-shadow:0 0 8px rgba(255,212,0,0.35);
+    font-size:17px; font-weight:bold; white-space:nowrap;
+    color:var(--marquee-yellow); text-shadow:0 0 10px rgba(255,212,0,0.45);
   }
   .score-counter .next-bonus{
-    display:block; margin-top:1px; font-size:10px; font-weight:normal;
+    display:block; margin-top:2px; font-size:10px; font-weight:normal;
     letter-spacing:0.5px; color:var(--phosphor-dim);
   }
+  .score-counter .next-bonus .bar{
+    display:block; height:3px; margin-top:3px; border-radius:2px;
+    background:rgba(255,255,255,0.08); overflow:hidden;
+  }
+  .score-counter .next-bonus .bar i{
+    display:block; height:100%; border-radius:2px;
+    background:linear-gradient(90deg, var(--marquee-yellow), #ffef9e);
+    box-shadow:0 0 6px rgba(255,212,0,0.6);
+    transition:width 0.25s ease;
+  }
   .score-counter .score-others{
-    margin-top:5px; padding-top:5px; border-top:1px solid var(--panel-edge);
-    display:flex; flex-direction:column; gap:2px;
+    margin-top:6px; padding-top:5px; border-top:1px solid var(--panel-edge);
+    display:flex; flex-direction:column; gap:0;
   }
   .score-counter .score-row{
     display:flex; align-items:center; gap:6px; font-size:10.5px;
     color:var(--phosphor-dim); white-space:nowrap;
+    padding:2px 4px; border-radius:5px;
   }
+  .score-counter .score-row:nth-child(odd){ background:rgba(255,255,255,0.035); }
+  .score-counter .score-row.leader{ color:var(--phosphor); }
+  .score-counter .score-row.leader .pt{ color:var(--marquee-yellow); text-shadow:0 0 6px rgba(255,212,0,0.4); }
+  .score-counter .score-row .rk{ flex:0 0 auto; width:12px; text-align:right; opacity:0.8; }
   .score-counter .score-row .sw{
     width:8px; height:8px; border-radius:50%; flex:0 0 auto;
+    box-shadow:0 0 5px currentColor;
   }
   .score-counter .score-row .nm{ overflow:hidden; text-overflow:ellipsis; max-width:80px; }
-  .score-counter .score-row .pt{ margin-left:auto; }
+  .score-counter .score-row .pt{ margin-left:auto; font-weight:bold; }
+  .score-counter .score-row .lv{ flex:0 0 auto; opacity:0.85; }
 
 
   .game-area{ display:flex; min-width:0; min-height:0; }
@@ -273,13 +292,19 @@
   .sidebar .player-row{ font-size:10.5px; padding:4px 6px; white-space:nowrap; }
 
   .bonus-banner{
-    position:absolute; top:38%; left:50%; transform:translate(-50%,-50%) scale(0.9);
-    background:rgba(30,22,0,0.85); border:1px solid var(--marquee-yellow);
+    position:absolute; top:38%; left:50%; transform:translate(-50%,-50%) scale(0.72);
+    background:linear-gradient(180deg, rgba(52,38,0,0.92), rgba(26,19,0,0.88));
+    border:1px solid var(--marquee-yellow);
     color:var(--marquee-yellow);
-    padding:8px 18px; border-radius:6px; font-size:16px; letter-spacing:2px;
-    font-weight:bold; text-shadow:0 0 10px rgba(255,212,0,0.6);
-    opacity:0; transition:opacity 0.25s ease, transform 0.25s ease;
+    padding:10px 22px; border-radius:10px; font-size:17px; letter-spacing:2px;
+    font-weight:bold; text-shadow:0 0 12px rgba(255,212,0,0.7);
+    box-shadow:0 0 22px rgba(255,212,0,0.30), inset 0 0 14px rgba(255,212,0,0.10);
+    opacity:0; transition:opacity 0.18s ease, transform 0.22s cubic-bezier(0.2,1.6,0.4,1);
     pointer-events:none; white-space:nowrap; z-index:7;
+  }
+  .bonus-banner .sub{
+    display:block; margin-top:3px; font-size:10.5px; font-weight:normal;
+    letter-spacing:1px; color:var(--phosphor); text-shadow:none; opacity:0.9;
   }
   .bonus-banner.show{ opacity:1; transform:translate(-50%,-50%) scale(1); }
 
@@ -297,12 +322,16 @@
   .end-scores .rank{ color:var(--phosphor-dim); }
 
   .toast{
-    position:absolute; bottom:8px; left:50%; transform:translateX(-50%);
-    background:rgba(0,0,0,0.75); border:1px solid var(--phosphor-dim); color:var(--phosphor);
-    padding:5px 12px; border-radius:5px; font-size:11px; opacity:0; transition:opacity 0.4s ease;
+    position:absolute; bottom:10px; left:50%; transform:translate(-50%, 8px);
+    background:linear-gradient(180deg, rgba(8,14,9,0.92), rgba(0,0,0,0.82));
+    border:1px solid var(--phosphor-dim); border-left:3px solid var(--phosphor);
+    color:var(--phosphor);
+    padding:6px 14px; border-radius:7px; font-size:11.5px; letter-spacing:0.5px;
+    box-shadow:0 4px 12px rgba(0,0,0,0.5), 0 0 10px rgba(64,255,128,0.10);
+    opacity:0; transition:opacity 0.3s ease, transform 0.3s ease;
     pointer-events:none; white-space:nowrap;
   }
-  .toast.show{ opacity:1; }
+  .toast.show{ opacity:1; transform:translate(-50%, 0); }
 
   /* ---------- controlli ---------- */
   .controls-row{ display:flex; align-items:center; justify-content:space-between; margin-top:12px; gap:10px; flex-wrap:wrap; }
@@ -511,6 +540,9 @@ const DIR_ANGLE = { right: 0, down: 90, left: 180, up: 270 };
 // locale (client-side prediction) per muovere SUBITO il proprio personaggio
 // alla pressione di un tasto, senza aspettare il giro di rete col server.
 const DIR_VEC = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
+// Direzione opposta: serve per l'inversione di marcia istantanea a meta'
+// cella (stessa regola di OPPOSITE_DIR in main.py).
+const OPPOSITE_DIR = { up: "down", down: "up", left: "right", right: "left" };
 
 // Personaggi selezionabili: id -> etichetta mostrata in lobby. La forma di
 // ognuno viene disegnata da drawPacmanVariant() piu' sotto. Deve restare in
@@ -1618,12 +1650,28 @@ function stepSim(state, dt, speed, hasNextDirQueue){
     // movimento nella nuova direzione riparte pulito dal centro della
     // cella corrente - uno scatto piccolo e deterministico, identico su
     // client e server, non piu' un grosso teletrasporto di rete.
+    // Regole "vero Pac-Man" (identiche a update_movement in main.py):
+    //  1. inversione di marcia: SUBITO, anche a meta' cella, conservando
+    //     la posizione continua (nessuno scatto);
+    //  2. svolta perpendicolare: solo AL CENTRO della cella (accum == 0),
+    //     come nell'arcade originale - niente piu' azzeramento dell'accum
+    //     a meta' cella, quindi niente scattino all'indietro in curva;
+    //  3. svolta bloccata da un muro: resta in coda e scatta da sola al
+    //     primo incrocio utile.
     if (hasNextDirQueue && state.nextDir){
-      const v = DIR_VEC[state.nextDir];
-      if (!isWallCell(state.gridX + v[0], state.gridY + v[1])){
-        if (state.dir !== state.nextDir) state.accum = 0;
+      if (state.dir && OPPOSITE_DIR[state.dir] === state.nextDir && state.accum > 1e-9){
+        const v0 = DIR_VEC[state.dir];
+        state.gridX += v0[0];
+        state.gridY += v0[1];
+        state.accum = 1 - state.accum;
         state.dir = state.nextDir;
         state.nextDir = null;
+      } else if (state.accum <= 1e-9){
+        const v = DIR_VEC[state.nextDir];
+        if (!isWallCell(state.gridX + v[0], state.gridY + v[1])){
+          state.dir = state.nextDir;
+          state.nextDir = null;
+        }
       }
     }
     if (!state.dir){ break; }
@@ -1945,6 +1993,9 @@ function drawMines(now){
 // mine e' visibile a TUTTI (e' un piazzamento permanente, non una trappola
 // nascosta). Disegnata come un piccolo "cannoncino" fisso con un nucleo
 // pulsante nel colore del proprietario.
+// Ultimo angolo della canna di ogni torretta (id -> radianti): serve per
+// far ruotare la canna in modo fluido verso il bersaglio agganciato.
+const turretAim = {};
 function drawTurrets(now){
   const list = (currSnapshot && currSnapshot.turrets) || [];
   if (!list.length) return;
@@ -1954,17 +2005,66 @@ function drawTurrets(now){
     const cy = t.y * BASE_CELL + BASE_CELL / 2;
     const owner = findPlayer(currSnapshot, t.owner);
     const col = (owner && COLOR_HEX[(owner.colors || [])[0]]) || "#ff3b5c";
-    const pulse = 0.6 + 0.4 * Math.abs(Math.sin(now / 260));
-    ctx.globalAlpha = 0.28;
+    const tracking = !!t.aim;
+    const pulse = 0.6 + 0.4 * Math.abs(Math.sin(now / (tracking ? 140 : 320)));
+
+    // Anello del raggio d'azione (10 caselle): visibile solo al
+    // proprietario, molto tenue, per capire da dove la torretta copre.
+    if (t.owner === myId){
+      ctx.globalAlpha = 0.10;
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 6]);
+      ctx.beginPath(); ctx.arc(cx, cy, 10 * BASE_CELL, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // Angolo della canna: se sta tracciando un nemico ruota verso di lui
+    // (con memoria dell'ultimo angolo per una rotazione fluida), altrimenti
+    // resta sull'ultima mira o gira lentamente in "pattugliamento".
+    let targetAng = null;
+    if (tracking){
+      targetAng = Math.atan2(t.aim[1] - t.y, t.aim[0] - t.x);
+    }
+    turretAim[t.id] = turretAim[t.id] === undefined ? (targetAng !== null ? targetAng : now / 900) : turretAim[t.id];
+    if (targetAng !== null){
+      // interpolazione angolare morbida (gestisce il wrap a +/-PI)
+      let d = targetAng - turretAim[t.id];
+      while (d > Math.PI) d -= Math.PI * 2;
+      while (d < -Math.PI) d += Math.PI * 2;
+      turretAim[t.id] += d * 0.25;
+    } else {
+      turretAim[t.id] += 0.012; // pattugliamento lento
+    }
+    const ang = turretAim[t.id];
+
+    // Base: alone + piastra ottagonale
+    ctx.globalAlpha = tracking ? 0.34 : 0.22;
     ctx.fillStyle = col;
     ctx.beginPath(); ctx.arc(cx, cy, 9, 0, Math.PI * 2); ctx.fill();
     ctx.globalAlpha = 0.95;
     ctx.strokeStyle = col;
     ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.rect(cx - 5, cy - 5, 10, 10); ctx.stroke();
+    ctx.beginPath();
+    for (let i = 0; i < 8; i++){
+      const a = ang / 3 + i * Math.PI / 4;
+      const px2 = cx + Math.cos(a) * 6, py2 = cy + Math.sin(a) * 6;
+      if (i === 0) ctx.moveTo(px2, py2); else ctx.lineTo(px2, py2);
+    }
+    ctx.closePath(); ctx.stroke();
+    // Canna orientata verso il bersaglio
+    ctx.lineWidth = 3;
+    ctx.lineCap = "round";
+    ctx.strokeStyle = tracking ? "#fff" : col;
+    ctx.beginPath();
+    ctx.moveTo(cx + Math.cos(ang) * 2, cy + Math.sin(ang) * 2);
+    ctx.lineTo(cx + Math.cos(ang) * 10, cy + Math.sin(ang) * 10);
+    ctx.stroke();
+    ctx.lineCap = "butt";
+    // Nucleo: rosso pulsante quando ha agganciato un bersaglio
     ctx.globalAlpha = pulse;
-    ctx.fillStyle = "#fff";
-    ctx.beginPath(); ctx.arc(cx, cy, 2, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = tracking ? "#ff5b5b" : "#fff";
+    ctx.beginPath(); ctx.arc(cx, cy, 2.2, 0, Math.PI * 2); ctx.fill();
   });
   ctx.restore();
 }
@@ -2377,18 +2477,21 @@ function onGameEvent(msg){
       break;
     }
     case "bonus": {
+      // Titolo grande + sottotitolo piccolo (istruzioni d'uso): il banner
+      // resta leggibile a colpo d'occhio anche in piena azione.
       const labels = {
-        extra_life:   "VITA EXTRA! \u2665",
-        laser:        "LASER SBLOCCATO! (1 min)",
-        mines:        "MINE SBLOCCATE! (2, tasto 1)",
-        ninja:        "NINJA SBLOCCATO! (invisibilit\u00e0, tasto 2)",
-        missile:      "MISSILE GUIDATO SBLOCCATO! (tasto 3)",
-        trap:         "TRAPPOLA SBLOCCATA! (3s, 3 usi, tasto 4)",
-        turret:       "TORRETTA AUTOMATICA SBLOCCATA! (permanente, tasto 5)",
+        extra_life:   ["VITA EXTRA! \u2665", ""],
+        laser:        ["LASER SBLOCCATO!", "spara da solo per 1 minuto"],
+        mines:        ["MINE SBLOCCATE!", "2 mine \u00b7 premi 1 per posarle"],
+        ninja:        ["NINJA SBLOCCATO!", "invisibilit\u00e0 \u00b7 premi 2 per attivarla"],
+        missile:      ["MISSILE GUIDATO!", "premi 3 per lanciarlo"],
+        trap:         ["TRAPPOLA SBLOCCATA!", "3 secondi \u00b7 3 usi \u00b7 premi 4"],
+        turret:       ["TORRETTA SBLOCCATA!", "raggio 10 caselle \u00b7 premi 5 per piazzarla"],
       };
-      const txt = labels[msg.bonus] || "BONUS!";
+      const lb = labels[msg.bonus] || ["BONUS!", ""];
+      const txt = lb[0] + (lb[1] ? " \u00b7 " + lb[1] : "");
       if (msg.player === myId){
-        showBonusBanner(txt);
+        showBonusBanner(lb[0], lb[1]);
         playBonus();
       } else {
         const who = findPlayer(currSnapshot, msg.player);
@@ -2417,7 +2520,7 @@ function onGameEvent(msg){
         showToast(victim.name + (msg.respawn ? " colpito!" : " eliminato") + causeTxt + stolenTxt);
       }
       if (msg.stolen && msg.by === myId){
-        showToast("Hai rubato " + msg.stolen + " punti!");
+        showToast("Hai rubato " + msg.stolen + " punti (il 50% delle sue risorse)!");
       }
       break;
     }
@@ -2536,12 +2639,18 @@ function onGameEvent(msg){
   }
 }
 
-function showBonusBanner(text){
+function showBonusBanner(text, subtitle){
   // Durata fissata a 1 secondo (richiesta esplicita): il messaggio che
   // annuncia il bonus appena sbloccato resta a schermo esattamente 1000ms.
   const el = document.getElementById("bonusBanner");
   if (!el) return;
   el.textContent = text;
+  if (subtitle){
+    const sub = document.createElement("span");
+    sub.className = "sub";
+    sub.textContent = subtitle;
+    el.appendChild(sub);
+  }
   el.classList.add("show");
   bonusBannerUntil = performance.now() + 1000;
   clearTimeout(showBonusBanner._t);
@@ -2576,11 +2685,26 @@ function updateScoreCounter(msg){
   const me = findPlayer(msg, myId);
   const pts = me ? (me.points || 0) : 0;
   const lives = me ? (me.lives || 1) : 1;
-  myLine.textContent = "PUNTI " + pts + " · \u2665" + lives + (me && me.assassin ? " · ASSASSINO" : "");
+  const kills = me ? (me.kills || 0) : 0;
+  myLine.textContent = "PUNTI " + pts + " · \u2665" + lives +
+    (kills ? " · \u2694" + kills : "") +
+    (me && me.assassin ? " · ASSASSINO" : "");
+  // Prossimo bonus con barra di avanzamento: si vede a colpo d'occhio
+  // quanto manca alla prossima soglia.
   const next = BONUS_STEPS.find(function(s){ return pts < s.at; });
-  nextEl.textContent = next
-    ? ("prossimo bonus: " + next.label + " a " + next.at + " pt (mancano " + (next.at - pts) + ")")
-    : "tutti i bonus sbloccati";
+  if (next){
+    const prevAt = BONUS_STEPS.filter(function(s){ return s.at <= pts; })
+                              .reduce(function(m, s){ return Math.max(m, s.at); }, 0);
+    const frac = Math.max(0, Math.min(1, (pts - prevAt) / (next.at - prevAt)));
+    nextEl.innerHTML = "";
+    nextEl.appendChild(document.createTextNode(
+      "prossimo: " + next.label + " a " + next.at + " pt (mancano " + (next.at - pts) + ")"));
+    const bar = document.createElement("span"); bar.className = "bar";
+    const fill = document.createElement("i"); fill.style.width = Math.round(frac * 100) + "%";
+    bar.appendChild(fill); nextEl.appendChild(bar);
+  } else {
+    nextEl.textContent = "tutti i bonus sbloccati";
+  }
 
   // Classifica degli altri giocatori, ordinata per punti decrescenti.
   const others = (msg.players || [])
@@ -2591,29 +2715,44 @@ function updateScoreCounter(msg){
   if (sig !== scoreOthersSig){
     scoreOthersSig = sig;
     othersEl.innerHTML = "";
-    others.forEach(function(p){
+    others.forEach(function(p, idx){
       const row = document.createElement("div");
       row.className = "score-row";
+      const rk = document.createElement("span");
+      rk.className = "rk";
+      rk.textContent = (idx + 1) + ".";
+      row.appendChild(rk);
       const sw = document.createElement("span");
       sw.className = "sw";
       const c = COLOR_HEX[(p.colors || [])[0]] || "#888";
-      sw.style.background = c;
+      sw.style.background = c; sw.style.color = c;
       row.appendChild(sw);
       const nm = document.createElement("span");
       nm.className = "nm";
       nm.textContent = p.name;
       row.appendChild(nm);
+      const lv = document.createElement("span");
+      lv.className = "lv";
+      row.appendChild(lv);
       const pt = document.createElement("span");
       pt.className = "pt";
       row.appendChild(pt);
       othersEl.appendChild(row);
       row._ptEl = pt;
+      row._lvEl = lv;
       row._id = p.id;
     });
   }
+  // Il capolista va calcolato sui punti ATTUALI: le righe DOM vengono
+  // ricostruite solo quando cambia la composizione (signature), non
+  // quando cambiano i punteggi.
+  const leaderId = others.length && (others[0].points || 0) > 0 ? others[0].id : null;
   Array.from(othersEl.children).forEach(function(row){
     const p = others.find(function(o){ return o.id === row._id; });
-    if (p && row._ptEl) row._ptEl.textContent = (p.points || 0) + "p";
+    if (!p) return;
+    if (row._ptEl) row._ptEl.textContent = (p.points || 0) + "p";
+    if (row._lvEl) row._lvEl.textContent = "\u2665" + (p.lives || 1);
+    row.classList.toggle("leader", p.id === leaderId);
   });
 }
 
@@ -2679,7 +2818,8 @@ function updateGameSidebar(msg){
   // aggiornamento leggero di punti/vite
   msg.players.forEach(function(p){
     const el = sidebarRefs[p.id];
-    if (el) el.textContent = (p.points || 0) + "p · \u2665" + (p.lives || 1);
+    if (el) el.textContent = (p.points || 0) + "p · \u2665" + (p.lives || 1) +
+                             ((p.kills || 0) > 0 ? " · \u2694" + p.kills : "");
   });
 }
 
@@ -2743,26 +2883,12 @@ const KEY_TO_DIR = {
 
 let lastRequestedDir = null;
 
-// Finestra di tolleranza per il tempismo della svolta: DEVE restare
-// identica a TURN_WINDOW in common.py, altrimenti client e server
-// "decidono" cose diverse sulla stessa pressione e si torna al problema
-// del teletrasporto da correzione. Il tasto prende solo se premuto vicino
-// al centro cella (predAccum vicino a 0.0 o vicino a 1.0): altrimenti
-// viene scartato subito, invece di restare in coda a sovrapporsi al
-// prossimo comando.
-const TURN_WINDOW = 0.40;
-
 function requestDir(dir){
-  // Da fermi, o se si conferma la direzione gia' in corso, il tempismo
-  // non conta: si accetta sempre (altrimenti non si potrebbe nemmeno
-  // partire dallo spawn, e "andare dritti" non e' mai una svolta).
-  const onTime = (predAccum <= TURN_WINDOW) || (predAccum >= 1 - TURN_WINDOW);
-  if (predDir !== null && dir !== predDir && !onTime){
-    // Fuori tempo rispetto alla curva: ignorato. Niente coda, niente
-    // suono di svolta, niente invio al server: bisogna ripremere il
-    // tasto un po' piu' vicino all'incrocio.
-    return;
-  }
+  // NIENTE piu' finestra di tempismo (TURN_WINDOW): come nel Pac-Man
+  // originale OGNI pressione viene accettata e messa in coda. Le
+  // inversioni di marcia scattano subito, le svolte perpendicolari
+  // scattano da sole al primo centro-cella/incrocio utile (vedi stepSim
+  // qui e update_movement sul server): i comandi non si "perdono" mai.
   if (dir !== lastRequestedDir){ playTurn(); lastRequestedDir = dir; }
   predNextDir = dir;
   sendMsg({ type: "move", direction: dir });

@@ -96,6 +96,13 @@ TRAP_MAX_USES = 3              # la trappola si puo' innescare al massimo 3 volt
 # proiettili laser (stessa velocita', si ferma sul primo muro).
 TURRET_THRESHOLD = 600
 TURRET_FIRE_INTERVAL_SECONDS = LASER_INTERVAL_SECONDS  # stessa cadenza di fuoco del laser
+# Raggio d'azione della torretta: traccia e spara SOLO ai nemici entro
+# questa distanza (in caselle, distanza Manhattan). Fuori raggio la
+# torretta resta in attesa e riprende a sparare appena qualcuno rientra.
+TURRET_RANGE_CELLS = 10
+# Percentuale di punti che chi uccide ruba alla vittima (50%): la vittima
+# NON perde piu' tutto, conserva l'altra meta' delle sue risorse.
+KILL_STEAL_FRACTION = 0.5
 
 # Nome colore (mostrato all'utente, in italiano) -> id colore interno.
 # Elenco esteso: ogni giocatore puo' scegliere fino a 2 colori (primario +
