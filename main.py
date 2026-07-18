@@ -104,15 +104,18 @@ class Player:
         self.lives = 1                 # a 50 punti diventa 2: un'eliminazione non ti fa uscire, fa respawnare
         self.claimed = set()           # soglie bonus gia' riscattate in questo round
         self.ghost_left = 0.0          # (bonus fantasma rimosso dal gioco: resta sempre a 0)
-        # A SUPER_ASSASSIN_THRESHOLD punti (300): invisibile agli altri,
-        # piu' veloce (1.1x rispetto a 1.0 dei giocatori normali) e uccide
-        # chiunque al solo contatto. Si attiva una sola volta per round
-        # (vedi check_bonuses) e dura solo SUPER_ASSASSIN_DURATION_SECONDS
-        # (30s), poi si spegne da sola (vedi il countdown in
-        # update_movement); si spegne anche prima se il giocatore viene
-        # ucciso (vedi kill_player).
-        self.is_assassin = False
-        self.assassin_left = 0.0       # secondi rimanenti da super assassino (bonus 300 punti, dura 30s)
+        # A SUPER_ASSASSIN_THRESHOLD punti (300): sblocca la modalita' ninja
+        # (tasto "2"), attivabile a comando finche' il round e' in corso.
+        # Una volta attivata: invisibile agli altri, piu' veloce (1.1x
+        # rispetto a 1.0 dei giocatori normali) e uccide chiunque al solo
+        # contatto. Dura solo SUPER_ASSASSIN_DURATION_SECONDS (30s) poi si
+        # disattiva da sola (vedi il countdown in update_movement); si
+        # disattiva anche prima se il giocatore viene ucciso (vedi
+        # kill_player). Puo' essere riattivata piu' volte nello stesso
+        # round (a differenza di laser/mine/missili che si consumano).
+        self.has_ninja = False         # bonus sbloccato (una volta per round)
+        self.is_assassin = False       # True mentre la modalita' ninja e' ATTIVA in questo istante
+        self.assassin_left = 0.0       # secondi rimanenti da modalita' ninja attiva
         self.prot_left = 0.0           # invulnerabilita' temporanea dopo un respawn
         self.has_laser = False         # bonus 150 punti: laser frontale a intermittenza (1 colpo/secondo)
         self.laser_cd = 0.0            # countdown al prossimo colpo di laser
@@ -157,6 +160,7 @@ class Player:
             "points": self.points, "lives": self.lives,
             "ghost": self.ghost_left > 0,
             "assassin": self.is_assassin,
+            "ninja": self.has_ninja,
             "prot": self.prot_left > 0,
             "laser": self.has_laser,
             "bounce": self.has_bounce,
@@ -315,6 +319,7 @@ class Room:
             p.points = 0
             p.lives = 1
             p.claimed = set()
+            p.has_ninja = False
             p.is_assassin = False
             p.assassin_left = 0.0
             p.ghost_left = 0.0
@@ -493,13 +498,15 @@ class Room:
     def check_bonuses(self, p):
         """Riscatta i traguardi appena superati (una volta sola per round).
 
-        Il super assassino (300 punti) e' un traguardo a parte rispetto a
-        BONUS_THRESHOLDS (soglia fissa SUPER_ASSASSIN_THRESHOLD, non
-        configurabile per-mappa), ma segue la stessa regola "una volta sola
-        per round": viene riscattato qui insieme agli altri, si attiva per
-        SUPER_ASSASSIN_DURATION_SECONDS e poi si spegne da solo (vedi il
-        countdown in update_movement), senza piu' riattivarsi anche se i
-        punti restano sopra soglia."""
+        Il super assassino/ninja (300 punti) e la trappola (500 punti) sono
+        traguardi a parte rispetto a BONUS_THRESHOLDS (soglie fisse, non
+        configurabili per-mappa). Allo sblocco NON si attivano da soli:
+        segnano solo che il bonus e' disponibile (has_ninja / has_trap).
+        L'attivazione vera e propria scatta solo quando il giocatore preme
+        il tasto corrispondente (vedi try_activate_ninja e
+        try_activate_trap), e resta disponibile per tutto il round (si puo'
+        riattivare piu' volte, a differenza di laser/mine/missili che si
+        consumano)."""
         for threshold, kind in BONUS_THRESHOLDS:
             if p.points < threshold or threshold in p.claimed:
                 continue
@@ -520,20 +527,22 @@ class Room:
                 "kind": "bonus", "player": p.id,
                 "bonus": kind, "points": threshold,
             })
+        # Bonus 300 punti: sblocca la modalita' ninja (invisibilita' +
+        # velocita' + uccisione al contatto), ma NON la attiva. Si attiva
+        # a comando col tasto "2" (vedi try_activate_ninja).
         if (
             p.alive
             and p.points >= SUPER_ASSASSIN_THRESHOLD
             and SUPER_ASSASSIN_THRESHOLD not in p.claimed
         ):
             p.claimed.add(SUPER_ASSASSIN_THRESHOLD)
-            p.is_assassin = True
-            p.assassin_left = SUPER_ASSASSIN_DURATION_SECONDS
+            p.has_ninja = True
             self.push_event({
-                "kind": "assassin_on", "player": p.id,
-                "bonus": "assassin", "points": SUPER_ASSASSIN_THRESHOLD,
+                "kind": "bonus", "player": p.id,
+                "bonus": "ninja", "points": SUPER_ASSASSIN_THRESHOLD,
             })
-        # Bonus 500 punti: sblocca la trappola e intrappola SUBITO il nemico
-        # piu' vicino (una volta sola per round, come il super assassino).
+        # Bonus 500 punti: sblocca la trappola, ma NON intrappola subito
+        # nessuno. Si attiva a comando col tasto "4" (vedi try_activate_trap).
         if (
             p.alive
             and p.points >= TRAP_THRESHOLD
@@ -545,7 +554,6 @@ class Room:
                 "kind": "bonus", "player": p.id,
                 "bonus": "trap", "points": TRAP_THRESHOLD,
             })
-            self.try_auto_trap(p)
 
     def try_portal(self, p):
         """Se il giocatore e' su un portale (e non e' appena arrivato da un
@@ -834,7 +842,24 @@ class Room:
             return None
         return min(candidates, key=lambda q: abs(q.x - x) + abs(q.y - y))
 
-    # ---- bonus 400 punti: missile guidato (tasto "2") ----
+    # ---- bonus 300 punti: modalita' ninja (tasto "2") ----
+
+    def try_activate_ninja(self, player):
+        """Tasto '2': se il bonus e' sbloccato (300 punti), attiva la
+        modalita' ninja per SUPER_ASSASSIN_DURATION_SECONDS (invisibile
+        agli altri, 1.1x piu' veloce, uccide chiunque tocchi). Si puo'
+        riattivare piu' volte nello stesso round (a differenza di
+        mine/missili che si consumano), ma solo se non e' gia' attiva."""
+        if not player.alive or not player.has_ninja or player.is_assassin:
+            return
+        player.is_assassin = True
+        player.assassin_left = SUPER_ASSASSIN_DURATION_SECONDS
+        self.push_event({
+            "kind": "assassin_on", "player": player.id,
+            "bonus": "ninja", "points": SUPER_ASSASSIN_THRESHOLD,
+        })
+
+    # ---- bonus 400 punti: missile guidato (tasto "3") ----
 
     def try_fire_missile(self, player):
         """Spara un missile (finche' ne restano) verso il nemico piu' vicino
@@ -916,13 +941,43 @@ class Room:
                 survivors.append(mz)
         self.missiles = survivors
 
-    # ---- bonus 500 punti: trappola (tasto "3") ----
+    # ---- bonus 500 punti: trappola (tasto "4") ----
 
-    def try_auto_trap(self, player):
-        """Intrappola SUBITO il nemico piu' vicino a chi ha appena sbloccato
-        il bonus (500 punti): resta bloccato sul posto per
-        TRAP_DURATION_SECONDS, finche' non viene fatto detonare in tempo
-        (try_detonate_trap) oppure la trappola scade da sola."""
+    def try_activate_trap(self, player):
+        """Tasto '4': un solo tasto per tutto il meccanismo della trappola.
+
+        - Se questo giocatore non ha ancora nessuno intrappolato (o la sua
+          vittima precedente e' scappata/scaduta), intrappola SUBITO il
+          nemico piu' vicino: resta bloccato sul posto per
+          TRAP_DURATION_SECONDS.
+        - Se invece ha gia' una vittima intrappolata ed e' abbastanza
+          vicino (TRAP_RANGE celle), la fa detonare con una piccola
+          esplosione (perde una vita).
+        Puo' essere riattivata piu' volte nello stesso round: non si
+        consuma come mine/missili."""
+        if not player.alive or not player.has_trap:
+            return
+
+        # Caso 1: c'e' gia' una vittima intrappolata da questo giocatore
+        # -> il tasto 4 prova a farla detonare.
+        if player.trap_target:
+            victim = self.players.get(player.trap_target)
+            if victim is not None and victim.alive and victim.trapped_left > 0:
+                dist = max(abs(victim.x - player.x), abs(victim.y - player.y))
+                if dist <= TRAP_RANGE:
+                    self.push_event({"kind": "trap_boom", "x": victim.x, "y": victim.y})
+                    self.kill_player(victim, "trap", player.id)
+                    player.trap_target = None
+                    return
+                # Troppo lontano per detonare adesso: non fare nulla,
+                # il giocatore puo' riprovare avvicinandosi.
+                return
+            # La vittima precedente e' scappata/morta/scaduta: libera lo
+            # slot cosi' il prossimo tasto 4 puo' intrappolare di nuovo.
+            player.trap_target = None
+
+        # Caso 2: nessuna vittima attiva -> il tasto 4 intrappola SUBITO
+        # il nemico piu' vicino.
         target = self.nearest_alive(player.x, player.y, {player.id})
         if target is None:
             return
@@ -933,23 +988,6 @@ class Room:
             "kind": "trap_start", "player": player.id, "victim": target.id,
             "seconds": TRAP_DURATION_SECONDS,
         })
-
-    def try_detonate_trap(self, player):
-        """Tasto '3': se il nemico che questo giocatore ha intrappolato e'
-        ancora bloccato ed e' abbastanza vicino (TRAP_RANGE celle), lo
-        distrugge con una piccola esplosione (perde una vita)."""
-        if not player.alive or not player.has_trap or not player.trap_target:
-            return
-        victim = self.players.get(player.trap_target)
-        if victim is None or not victim.alive or victim.trapped_left <= 0:
-            player.trap_target = None
-            return
-        dist = max(abs(victim.x - player.x), abs(victim.y - player.y))
-        if dist > TRAP_RANGE:
-            return
-        self.push_event({"kind": "trap_boom", "x": victim.x, "y": victim.y})
-        self.kill_player(victim, "trap", player.id)
-        player.trap_target = None
 
     def check_win(self):
         """Il round finisce quando resta UN SOLO giocatore vivo: quello e'
@@ -978,7 +1016,13 @@ class Room:
             ],
             "mines": [{"id": m["id"], "x": m["x"], "y": m["y"], "owner": m["owner"]} for m in self.mines],
             "missiles": [
-                {"id": mz["id"], "x": mz["x"], "y": mz["y"], "owner": mz["owner"], "target": mz["target"]}
+                {
+                    "id": mz["id"], "x": mz["x"], "y": mz["y"],
+                    "owner": mz["owner"], "target": mz["target"],
+                    # Prossima cella del percorso (se nota): serve al client
+                    # solo per orientare graficamente la fiamma del missile.
+                    "next": list(mz["path"][0]) if mz["path"] else None,
+                }
                 for mz in self.missiles
             ],
         }
@@ -1001,6 +1045,7 @@ class Room:
         for p in self.players.values():
             p.alive = True
             p.direction = None
+            p.has_ninja = False
             p.is_assassin = False
             p.assassin_left = 0.0
             p.ghost_left = 0.0
@@ -1231,17 +1276,24 @@ async def handle_client(ws):
                     continue
                 room.try_place_mine(player)
 
+            elif mtype == "activate_ninja":
+                # Bonus 300 punti: pressione del tasto "2" lato client.
+                if not room or not player:
+                    continue
+                room.try_activate_ninja(player)
+
             elif mtype == "fire_missile":
-                # Bonus 400 punti: pressione del tasto "2" lato client.
+                # Bonus 400 punti: pressione del tasto "3" lato client.
                 if not room or not player:
                     continue
                 room.try_fire_missile(player)
 
-            elif mtype == "detonate_trap":
-                # Bonus 500 punti: pressione del tasto "3" lato client.
+            elif mtype == "activate_trap":
+                # Bonus 500 punti: pressione del tasto "4" lato client
+                # (sia per intrappolare che per far detonare).
                 if not room or not player:
                     continue
-                room.try_detonate_trap(player)
+                room.try_activate_trap(player)
 
             elif mtype == "stop":
                 # Il tasto/direzione e' stato rilasciato: il personaggio si

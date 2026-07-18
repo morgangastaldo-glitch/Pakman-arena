@@ -43,7 +43,7 @@ BONUS_THRESHOLDS = [
     (100, "extra_life"),    # +1 seconda vita extra (stesso effetto, soglia diversa)
     (150, "laser"),         # sblocca il laser (un colpo/secondo), ma dura solo LASER_DURATION_SECONDS
     (200, "mines"),         # sblocca 3 mine sganciabili sulla mappa (si attivano col tasto "1")
-    (400, "missile"),       # sblocca MISSILES_COUNT missili guidati (si sparano col tasto "2")
+    (400, "missile"),       # sblocca 1 missile guidato (si spara col tasto "3")
 ]
 PELLET_POINTS = 1                  # valore di un pallino normale
 POWER_PELLET_POINTS = 10           # valore di un pallino grosso/arancione
@@ -62,15 +62,16 @@ MINES_COUNT = 3                # numero di mine disponibili una volta sbloccato 
 MINE_DOUBLE_TAP_MS = 350       # finestra (ms) del doppio tocco freccia destra/D che sgancia una mina (uso lato client)
 PORTAL_COOLDOWN_SECONDS = 1.2  # anti ping-pong: dopo un teletrasporto i portali si ignorano per un attimo
 
-# ---- bonus 400 punti: missile guidato (tasto "2") ----
-MISSILE_SPEED_MULT = 1.5        # velocita' del missile = NORMAL_SPEED * 1.5 (piu' veloce di un giocatore normale)
-MISSILES_COUNT = 2              # missili disponibili una volta sbloccato il bonus 400 punti
+# ---- bonus 400 punti: missile guidato (tasto "3") ----
+MISSILE_SPEED_MULT = 1.1        # velocita' del missile = NORMAL_SPEED * 1.1 (di poco piu' veloce di un giocatore normale)
+MISSILES_COUNT = 1              # missili disponibili una volta sbloccato il bonus 400 punti (solo 1)
 MISSILE_RETARGET_SECONDS = 0.15  # ogni quanto il missile ricalcola il percorso verso il bersaglio (che si muove)
 
-# ---- bonus 500 punti: trappola (tasto "3") ----
-# Allo sblocco, il nemico piu' vicino viene intrappolato (bloccato sul posto)
-# per TRAP_DURATION_SECONDS: se ci si avvicina entro TRAP_RANGE celle e si
-# preme il tasto "3" in tempo, l'avversario viene distrutto da una piccola
+# ---- bonus 500 punti: trappola (tasto "4") ----
+# Allo sblocco NON scatta nulla in automatico: premendo il tasto "4" il
+# giocatore intrappola il nemico piu' vicino (bloccato sul posto) per
+# TRAP_DURATION_SECONDS. Se ci si avvicina entro TRAP_RANGE celle e si
+# preme di nuovo "4" in tempo, l'avversario viene distrutto da una piccola
 # esplosione (perde una vita). Se scade il tempo, la trappola si disinnesca
 # da sola e l'avversario torna libero.
 TRAP_THRESHOLD = 500

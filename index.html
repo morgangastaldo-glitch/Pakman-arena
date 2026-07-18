@@ -473,11 +473,11 @@ const BONUS_STEPS = [
   { at: 100, label: "SECONDA VITA EXTRA" },
   { at: 150, label: "LASER (1 min)" },
   { at: 200, label: "MINE (tasto 1)" },
-  { at: 300, label: "SUPER ASSASSINO (30s)" },
-  { at: 400, label: "MISSILE GUIDATO (tasto 2)" },
-  { at: 500, label: "TRAPPOLA (tasto 3)" },
+  { at: 300, label: "NINJA / INVISIBILITA' (tasto 2)" },
+  { at: 400, label: "MISSILE GUIDATO (tasto 3)" },
+  { at: 500, label: "TRAPPOLA (tasto 4)" },
 ];
-const MISSILE_SPEED_MULT = 1.5; // deve restare identica a MISSILE_SPEED_MULT in common.py
+const MISSILE_SPEED_MULT = 1.1; // deve restare identica a MISSILE_SPEED_MULT in common.py
 const TRAP_DURATION_SECONDS = 15; // deve restare identica a TRAP_DURATION_SECONDS in common.py
 function cellDurationMs(isAssassin){
   const speed = NORMAL_SPEED * (isAssassin ? ASSASSIN_SPEED_MULT : 1);
@@ -1934,8 +1934,10 @@ function drawMines(now){
 }
 
 // Missile guidato (bonus 400 punti): a differenza delle mine e' visibile a
-// TUTTI (non solo a chi l'ha sparato), con un piccolo nucleo luminoso e un
-// alone azzurro: insegue il nemico piu' vicino seguendo i corridoi.
+// TUTTI (non solo a chi l'ha sparato). Disegnato come un vero missilino
+// orientato nella direzione di volo, con pinne e una fiamma pulsante dietro
+// l'ugello: insegue il nemico piu' vicino seguendo i corridoi.
+let missileDirCache = {}; // id -> ultimo angolo noto (radianti), per non "scattare" quando next manca per un istante
 function drawMissiles(now){
   const list = (currSnapshot && currSnapshot.missiles) || [];
   if (!list.length) return;
@@ -1943,18 +1945,79 @@ function drawMissiles(now){
   list.forEach(function(mz){
     const cx = mz.x * BASE_CELL + BASE_CELL / 2;
     const cy = mz.y * BASE_CELL + BASE_CELL / 2;
-    ctx.globalAlpha = 0.3;
-    ctx.fillStyle = "#8fd3ff";
-    ctx.beginPath(); ctx.arc(cx, cy, 7, 0, Math.PI * 2); ctx.fill();
-    ctx.globalAlpha = 0.95;
-    ctx.fillStyle = "#e8f7ff";
-    ctx.beginPath(); ctx.arc(cx, cy, 3, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = "#5ab8ff";
-    ctx.lineWidth = 1.4;
-    ctx.beginPath(); ctx.arc(cx, cy, 5, 0, Math.PI * 2); ctx.stroke();
+
+    // Angolo di volo: dalla cella corrente alla prossima del percorso.
+    // Se per un istante non c'e' un "next" noto (es. appena ritargettizzato),
+    // si mantiene l'ultimo angolo valido invece di puntare a caso.
+    let angle = missileDirCache[mz.id];
+    if (mz.next){
+      const dx = mz.next[0] - mz.x, dy = mz.next[1] - mz.y;
+      if (dx || dy){ angle = Math.atan2(dy, dx); missileDirCache[mz.id] = angle; }
+    }
+    if (angle === undefined) angle = 0;
+
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(angle);
+
+    // Fiamma posteriore: due triangoli sovrapposti che pulsano di
+    // dimensione/opacita' per dare un senso di propulsione continua.
+    const flick = 0.75 + 0.25 * Math.sin(now / 45 + (mz.x + mz.y));
+    const flameLen = 8 * flick;
+    ctx.globalAlpha = 0.85 * flick;
+    const flameGrad = ctx.createLinearGradient(-5, 0, -5 - flameLen, 0);
+    flameGrad.addColorStop(0, "#fff3b0");
+    flameGrad.addColorStop(0.4, "#ff9d3c");
+    flameGrad.addColorStop(1, "rgba(255,60,20,0)");
+    ctx.fillStyle = flameGrad;
+    ctx.beginPath();
+    ctx.moveTo(-5, -2.6);
+    ctx.lineTo(-5 - flameLen, 0);
+    ctx.lineTo(-5, 2.6);
+    ctx.closePath();
+    ctx.fill();
+    ctx.globalAlpha = 0.9 * flick;
+    ctx.fillStyle = "#fff6d8";
+    ctx.beginPath();
+    ctx.moveTo(-5, -1.1);
+    ctx.lineTo(-5 - flameLen * 0.55, 0);
+    ctx.lineTo(-5, 1.1);
+    ctx.closePath();
+    ctx.fill();
+
+    // Corpo del missile: fusoliera + ogiva conica + pinne posteriori.
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = "#cfd8e3";
+    ctx.beginPath();
+    ctx.moveTo(7, 0);           // ogiva (punta)
+    ctx.lineTo(2, -2.4);
+    ctx.lineTo(-5, -2.2);
+    ctx.lineTo(-5, 2.2);
+    ctx.lineTo(2, 2.4);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = "#5a6b80";
+    ctx.lineWidth = 0.8;
+    ctx.stroke();
+
+    // Pinne (due, sopra/sotto), leggermente arretrate.
+    ctx.fillStyle = "#8fa3b8";
+    ctx.beginPath();
+    ctx.moveTo(-3, -2.2); ctx.lineTo(-6.5, -5); ctx.lineTo(-4.5, -2.2);
+    ctx.closePath(); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(-3, 2.2); ctx.lineTo(-6.5, 5); ctx.lineTo(-4.5, 2.2);
+    ctx.closePath(); ctx.fill();
+
+    // Fascia rossa distintiva dietro l'ogiva.
+    ctx.fillStyle = "#e0453f";
+    ctx.fillRect(1.2, -2.3, 1.6, 4.6);
+
+    ctx.restore();
   });
   ctx.restore();
 }
+
 
 // Effetto di teletrasporto (punto 4): anelli che si espandono dai due portali.
 function drawSwirls(now){
@@ -2344,8 +2407,9 @@ function onGameEvent(msg){
         extra_life:   "VITA EXTRA! \u2665",
         laser:        "LASER SBLOCCATO! (1 min)",
         mines:        "MINE SBLOCCATE! (3, tasto 1)",
-        missile:      "MISSILE GUIDATO SBLOCCATO! (tasto 2)",
-        trap:         "TRAPPOLA SBLOCCATA! (tasto 3)",
+        ninja:        "NINJA SBLOCCATO! (invisibilit\u00e0, tasto 2)",
+        missile:      "MISSILE GUIDATO SBLOCCATO! (tasto 3)",
+        trap:         "TRAPPOLA SBLOCCATA! (tasto 4)",
       };
       const txt = labels[msg.bonus] || "BONUS!";
       if (msg.player === myId){
@@ -2369,7 +2433,7 @@ function onGameEvent(msg){
       const byAssassin = msg.cause === "assassin";
       const byMissile = msg.cause === "missile";
       const byTrap = msg.cause === "trap";
-      const causeTxt = byLaser ? " dal laser" : (byMine ? " da una mina" : (byAssassin ? " dal super assassino"
+      const causeTxt = byLaser ? " dal laser" : (byMine ? " da una mina" : (byAssassin ? " da un ninja invisibile"
         : (byMissile ? " da un missile guidato" : (byTrap ? " da una trappola" : ""))));
       const stolenTxt = msg.stolen ? (" (-" + msg.stolen + " punti)") : "";
       if (msg.victim === myId){
@@ -2410,16 +2474,16 @@ function onGameEvent(msg){
         if (me){
           explosions.push({ x: me.x, y: me.y, color: "#ff3232", start: now });
         }
-        showBonusBanner("SUPER ASSASSINO! INVISIBILE E LETALE");
+        showBonusBanner("MODALITA' NINJA! INVISIBILE E LETALE");
         playBonus();
       } else {
-        // Non si rivela CHI e' diventato l'assassino: resta invisibile.
-        showToast("Un giocatore e' diventato il super assassino!");
+        // Non si rivela CHI e' diventato ninja: resta invisibile.
+        showToast("Un giocatore e' diventato invisibile!");
       }
       break;
     }
     case "assassin_off": {
-      if (msg.player === myId) showToast("Non sei piu' il super assassino");
+      if (msg.player === myId) showToast("Modalita' ninja terminata");
       break;
     }
     case "laser_expired": {
@@ -2440,6 +2504,7 @@ function onGameEvent(msg){
     case "missile_end": {
       explosions.push({ x: msg.x, y: msg.y, color: "#8fd3ff", start: now });
       tone(140, 0.15, "sawtooth", 0.12, 0.02);
+      delete missileDirCache[msg.id];
       break;
     }
     case "kill_life_bonus": {
@@ -2577,6 +2642,7 @@ function updateGameSidebar(msg){
            ":" + (p.colors || []).join(",") + ":" + (p.laser ? "l" : "") +
            (p.bounce ? "b" : "") + (p.mines ? ("m" + p.mines_left) : "") +
            (p.missile ? ("r" + p.missiles_left) : "") +
+           (p.ninja && p.id === myId ? "N" : "") +
            (p.trapped ? "t" : "") +
            ((p.assassin && p.id === myId) ? "A" : "");
   }).join("|");
@@ -2607,6 +2673,7 @@ function updateGameSidebar(msg){
       if (p.bounce){ const t = document.createElement("span"); t.className="tag alert"; t.textContent="RIMBALZO"; li.appendChild(t); }
       if (p.mines){ const t = document.createElement("span"); t.className="tag alert"; t.textContent="MINE " + p.mines_left; li.appendChild(t); }
       if (p.missile){ const t = document.createElement("span"); t.className="tag alert"; t.textContent="MISSILI " + p.missiles_left; li.appendChild(t); }
+      if (p.ninja && p.id === myId && !iAmAssassinRow){ const t = document.createElement("span"); t.className="tag alert"; t.textContent="NINJA (2)"; li.appendChild(t); }
       if (p.trapped){ const t = document.createElement("span"); t.className="tag alert"; t.textContent="INTRAPPOLATO"; li.appendChild(t); }
       if (iAmAssassinRow){ const t = document.createElement("span"); t.className="tag alert"; t.textContent="ASSASSINO"; li.appendChild(t); }
       const spacer = document.createElement("span"); spacer.className = "spacer"; li.appendChild(spacer);
@@ -2706,17 +2773,24 @@ document.addEventListener("keydown", function(ev){
     sendMsg({ type: "place_mine" });
     ev.preventDefault();
   }
-  // Bonus 400 punti: il tasto "2" spara un missile guidato verso il
-  // nemico piu' vicino (finche' restano missili disponibili).
+  // Bonus 300 punti: il tasto "2" attiva la modalita' ninja (invisibilita'
+  // + velocita' + uccisione al contatto) per 30 secondi. Si puo' riattivare
+  // piu' volte nello stesso round, ma solo quando non e' gia' attiva.
   if (ev.key === "2" && !ev.repeat){
+    sendMsg({ type: "activate_ninja" });
+    ev.preventDefault();
+  }
+  // Bonus 400 punti: il tasto "3" spara l'unico missile guidato disponibile
+  // verso il nemico piu' vicino.
+  if (ev.key === "3" && !ev.repeat){
     sendMsg({ type: "fire_missile" });
     ev.preventDefault();
   }
-  // Bonus 500 punti: il tasto "3", da vicino al nemico intrappolato,
-  // lo fa detonare (l'intrappolamento vero e proprio scatta da solo
-  // appena si sbloccano i 500 punti).
-  if (ev.key === "3" && !ev.repeat){
-    sendMsg({ type: "detonate_trap" });
+  // Bonus 500 punti: il tasto "4" gestisce tutta la trappola. Se non c'e'
+  // ancora nessuno intrappolato, intrappola il nemico piu' vicino. Se c'e'
+  // gia' una vittima intrappolata ed e' abbastanza vicina, la fa detonare.
+  if (ev.key === "4" && !ev.repeat){
+    sendMsg({ type: "activate_trap" });
     ev.preventDefault();
   }
 });
