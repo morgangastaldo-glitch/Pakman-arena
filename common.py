@@ -11,7 +11,7 @@ DEFAULT_PORT = 8765
 # fisica/collisioni e manda correzioni di stato ai client. Le velocita' sono
 # espresse in celle/secondo quindi il bilanciamento del gioco NON cambia
 # (a 60Hz ogni tick avanza semplicemente la meta' di spazio rispetto a
-# prima); a beneficiarne sono la precisione delle collisioni col killer
+# prima); a beneficiarne sono la precisione delle collisioni tra giocatori
 # (la cella "attraversata" viene controllata il doppio delle volte, quindi
 # si notano meno gli "attraversamenti fantasma" ad alta velocita') e la
 # riconciliazione client-side, che deve correggere scarti piu' piccoli e
@@ -24,13 +24,12 @@ TICK_HZ = 60
 TICK_DT = 1.0 / TICK_HZ
 
 COUNTDOWN_SECONDS = 15
-ROUND_SECONDS = 120
-KILLER_INTERVAL_SECONDS = 15  # ogni quanto il killer cambia casualmente durante il round
+ROUND_SECONDS = 300  # durata di un round: 5 minuti
 MAX_PLAYERS = 5
 MIN_PLAYERS = 2
 
 NORMAL_SPEED = 4.5          # celle al secondo
-KILLER_SPEED_MULT = 1.1     # come richiesto: killer 1.1x rispetto a 1.0 dei giocatori
+ASSASSIN_SPEED_MULT = 1.1   # il super assassino (bonus 300 punti) e' 1.1x rispetto a 1.0 dei giocatori normali
 
 # ---- sistema punti e bonus a traguardi ----
 # Ogni pallino normale vale 1 punto. In 10 punti (angoli/estremita') della
@@ -39,18 +38,20 @@ KILLER_SPEED_MULT = 1.1     # come richiesto: killer 1.1x rispetto a 1.0 dei gio
 # Al raggiungimento di ogni soglia (una sola volta per round) scatta il
 # bonus corrispondente.
 BONUS_THRESHOLDS = [
-    (50,  "extra_life"),    # +1 vita: se il killer ti prende, respawni invece di uscire
-    (100, "laser"),         # sblocca il laser: un colpo singolo (proiettile) ogni secondo
-    (150, "laser_bounce"),  # i colpi laser rimbalzano sui muri invece di sparire
-    (200, "mines"),         # sblocca 3 mine sganciabili sulla mappa
+    (50,  "extra_life"),    # +1 vita: se vieni eliminato, respawni invece di uscire
+    (100, "extra_life"),    # +1 seconda vita extra (stesso effetto, soglia diversa)
+    (150, "laser"),         # sblocca il laser (un colpo/secondo), ma dura solo LASER_DURATION_SECONDS
+    (200, "mines"),         # sblocca 3 mine sganciabili sulla mappa (si attivano col tasto "1")
 ]
 PELLET_POINTS = 1                  # valore di un pallino normale
 POWER_PELLET_POINTS = 10           # valore di un pallino grosso/arancione
 POWER_PELLET_COUNT = 10            # quanti pallini grossi su ciascuna mappa
 PELLET_RESPAWN_SECONDS = 20.0      # tempo prima che un pallino mangiato ricompaia
 SUPER_ASSASSIN_THRESHOLD = 300     # punti oltre i quali si diventa "super assassino"
+SUPER_ASSASSIN_DURATION_SECONDS = 30.0  # il super assassino dura solo 30 secondi, poi si disattiva
+LASER_DURATION_SECONDS = 60.0      # bonus 150 punti: il laser resta attivo solo 1 minuto
 GHOST_SECONDS = 10.0            # (bonus rimosso dal gioco, costante tenuta per compatibilita')
-SPAWN_PROTECT_SECONDS = 3.0    # invulnerabilita' (solo dal killer) dopo un respawn
+SPAWN_PROTECT_SECONDS = 3.0    # invulnerabilita' temporanea dopo un respawn
 LASER_INTERVAL_SECONDS = 1.0   # ogni quanto il laser spara un colpo, una volta sbloccato (1 al secondo)
 LASER_FIRST_DELAY_SECONDS = 1.0  # attesa del primo colpo dopo lo sblocco
 LASER_PROJECTILE_SPEED = 20.0  # celle al secondo percorse dal proiettile laser (raddoppiata: e' un proiettile vero, deve sentirsi veloce)

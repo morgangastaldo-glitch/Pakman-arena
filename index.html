@@ -25,7 +25,7 @@
     --wall-edge: #2b4bd6;
     --wall-glow: #4d7bff;
     --pellet: #ffe9a8;
-    --killer: #ff2b4e;
+    --alert: #ff2b4e;
     --c-azzurro: #29d6ff;
     --c-giallo: #ffd400;
     --c-verde: #33ff77;
@@ -181,12 +181,11 @@
     font-size:13px; background:rgba(53,255,141,0.03);
   }
   .player-row.dead{ opacity:0.4; text-decoration: line-through; }
-  .player-row.killer{ border-color:var(--killer); box-shadow:0 0 10px rgba(255,43,78,0.35); }
   .swatch{ width:13px; height:13px; border-radius:50%; flex:0 0 auto; box-shadow:0 0 6px currentColor; }
   .tag{ font-size:10px; padding:1px 5px; border-radius:3px; letter-spacing:1px; }
   .tag.host{ background:var(--marquee-yellow); color:#221900; }
   .tag.you{ border:1px solid var(--phosphor-dim); color:var(--phosphor-dim); }
-  .tag.killer{ background:var(--killer); color:#2a0007; }
+  .tag.alert{ background:var(--alert); color:#2a0007; }
   .spacer{ flex:1; }
 
   .color-grid{ display:flex; gap:8px; flex-wrap:wrap; margin:12px 0; }
@@ -272,15 +271,6 @@
     border-radius:8px; padding:6px; backdrop-filter: blur(2px);
   }
   .sidebar .player-row{ font-size:10.5px; padding:4px 6px; white-space:nowrap; }
-
-  .killer-banner{
-    position:absolute; top:8px; left:50%; transform:translateX(-50%);
-    background:rgba(20,0,4,0.85); border:1px solid var(--killer); color:var(--killer);
-    padding:6px 14px; border-radius:5px; font-size:13px; letter-spacing:2px;
-    text-shadow:0 0 8px var(--killer); opacity:0; transition:opacity 0.3s ease;
-    pointer-events:none; white-space:nowrap;
-  }
-  .killer-banner.show{ opacity:1; }
 
   .bonus-banner{
     position:absolute; top:38%; left:50%; transform:translate(-50%,-50%) scale(0.9);
@@ -437,7 +427,6 @@
           <span class="next-bonus" id="scoreNextBonus"></span>
           <div class="score-others" id="scoreOthers"></div>
         </div>
-        <div class="killer-banner" id="killerBanner"></div>
         <div class="bonus-banner" id="bonusBanner"></div>
         <div class="toast" id="toast"></div>
 
@@ -451,7 +440,7 @@
     </div>
 
     <div class="controls-row">
-      <span class="hint">WASD / frecce tastiera · Pallini = punti · Bonus a 15/30/50/100</span>
+      <span class="hint">WASD / frecce tastiera · Pallini = punti · Bonus a 50/100/150/200/300 · Tasto 1 = mina</span>
       <button class="ghost danger" id="btnLeaveGame">Esci</button>
     </div>
   </section>
@@ -469,26 +458,25 @@ const SERVER_TICK_HZ = 60; // deve restare identico a TICK_HZ in common.py
 const SERVER_TICK_MS = 1000 / SERVER_TICK_HZ;
 const BASE_CELL = 24; // risoluzione interna del canvas, in px per cella
 
-// Devono restare identiche a NORMAL_SPEED / KILLER_SPEED_MULT in common.py:
+// Devono restare identiche a NORMAL_SPEED / ASSASSIN_SPEED_MULT in common.py:
 // servono per calcolare quanto deve durare, in millisecondi, lo scivolamento
 // visivo di una pedina da una cella alla successiva. Cosi' l'animazione e'
 // fluida per costruzione e non dipende piu' da quanto arrivano puntuali gli
 // aggiornamenti di rete dal server.
 const NORMAL_SPEED = 4.5;
-const KILLER_SPEED_MULT = 1.1;  // come richiesto: killer (e super assassino) a 1.1x
-const MINE_DOUBLE_TAP_MS = 350; // finestra del doppio tocco (qualunque tasto di movimento) che sgancia una mina
+const ASSASSIN_SPEED_MULT = 1.1;  // il super assassino e' 1.1x rispetto a 1.0 dei giocatori normali
 const SUPER_ASSASSIN_THRESHOLD = 300; // deve restare identica a SUPER_ASSASSIN_THRESHOLD in common.py
 // Soglie dei bonus, per l'indicazione "prossimo bonus" nell'HUD: devono
 // restare identiche a BONUS_THRESHOLDS in common.py.
 const BONUS_STEPS = [
   { at: 50,  label: "VITA EXTRA" },
-  { at: 100, label: "LASER" },
-  { at: 150, label: "LASER RIMBALZANTE" },
-  { at: 200, label: "MINE" },
-  { at: 300, label: "SUPER ASSASSINO" },
+  { at: 100, label: "SECONDA VITA EXTRA" },
+  { at: 150, label: "LASER (1 min)" },
+  { at: 200, label: "MINE (tasto 1)" },
+  { at: 300, label: "SUPER ASSASSINO (30s)" },
 ];
-function cellDurationMs(isKiller){
-  const speed = NORMAL_SPEED * (isKiller ? KILLER_SPEED_MULT : 1);
+function cellDurationMs(isAssassin){
+  const speed = NORMAL_SPEED * (isAssassin ? ASSASSIN_SPEED_MULT : 1);
   return 1000 / speed;
 }
 
@@ -511,7 +499,7 @@ const COLOR_HEX = {
   blu_notte:  "#5b6bff",
   corallo:    "#ff5a36",
 };
-const KILLER_COLOR = "#ff2b4e";
+const ASSASSIN_COLOR = "#ff2b4e";
 const COLOR_NAMES = Object.keys(COLOR_HEX);
 const DIR_ANGLE = { right: 0, down: 90, left: 180, up: 270 };
 // Deve restare identico a DIRECTIONS in common.py: usato dalla simulazione
@@ -613,7 +601,6 @@ let maze = [], mazeW = 0, mazeH = 0;
 let joinMode = false;
 
 let currSnapshot = null, snapshotTime = 0;
-let lastKnownKillerId = null;
 // Stato di animazione locale per ogni giocatore: { fromX, fromY, toX, toY, start, duration }
 // Permette di disegnare uno scivolamento fluido cella-per-cella basato sulla
 // velocita' nota del gioco, invece che sull'intervallo (variabile) con cui
@@ -654,8 +641,6 @@ let lastCountdownSecond = null;  // ultimo secondo intero del countdown gia' "ti
 let eatenPellets = new Set();
 let powerPellets = new Set(); // celle "x,y" dei pallini grossi/arancioni (10 punti) di questa mappa
 let explosions = []; // {x,y,color,start}
-let killerBannerUntil = 0;
-let killerBannerShown = false;
 let myColors = []; // fino a 2: [0]=primario (corpo), [1]=dettaglio (contorno/denti/occhio)
 let myCharacter = "classic";
 let lobbyPlayersCache = [];
@@ -760,18 +745,10 @@ function playGameOver(){
   tone(220, 0.30, "sawtooth", 0.14, 0);
   tone(160, 0.45, "sawtooth", 0.14, 0.28);
 }
-// Fine countdown iniziale / rivelazione killer: prima era un sweep acuto
-// verso il basso + rumore bianco (tipo sirena d'allarme), giudicato troppo
-// fastidioso. Sostituito con un "tic-tac" da orologio: due click secchi e
-// puliti, uno acuto (tic) e uno leggermente piu' grave (tac).
-// Fine countdown iniziale / rivelazione killer: prima era un sweep acuto
-// verso il basso + rumore bianco (tipo sirena d'allarme), giudicato troppo
-// fastidioso. Sostituito con un "tic-tac" da orologio: due click secchi e
-// puliti, uno acuto (tic) e uno leggermente piu' grave (tac).
-function playKillerReveal(){
-  tone(1400, 0.03, "square", 0.11, 0.00);
-  tone(1000, 0.04, "square", 0.13, 0.16);
-}
+// Fine countdown iniziale: prima era un sweep acuto verso il basso +
+// rumore bianco (tipo sirena d'allarme), giudicato troppo fastidioso.
+// Sostituito con un "tic-tac" da orologio: due click secchi e puliti, uno
+// acuto (tic) e uno leggermente piu' grave (tac).
 // Singolo "tic" secco, richiamato una volta per ogni secondo del countdown
 // iniziale (vedi onState): da' la sensazione di un vero orologio che
 // scandisce l'attesa, invece del silenzio fino allo scatto finale.
@@ -792,25 +769,13 @@ function playTeleport(){
   sweep(240, 760, 0.18, "sine", 0.12);
 }
 
-// Punto 6 delle richieste: la sirena del countdown del killer e' stata
-// RIMOSSA perche' fastidiosa. Le due funzioni restano come "no-op" cosi' i
-// punti del codice che le chiamavano continuano a funzionare senza modifiche,
-// ma non producono piu' alcun suono. Restano attivi tutti gli altri effetti
-// sonori (masticazione, rivelazione killer, vittoria, eliminazione, ecc.).
+// La sirena del countdown iniziale e' stata RIMOSSA perche' fastidiosa. Le
+// due funzioni restano come "no-op" cosi' i punti del codice che le
+// chiamavano continuano a funzionare senza modifiche, ma non producono piu'
+// alcun suono. Restano attivi tutti gli altri effetti sonori (masticazione,
+// vittoria, eliminazione, ecc.).
 function startSiren(){ /* sirena rimossa: no-op */ }
 function stopSiren(){ /* sirena rimossa: no-op */ }
-
-let lastHeartbeat = 0;
-function updateHeartbeat(dist){
-  if (dist == null || dist > 4.5) return;
-  const interval = Math.max(150, dist * 130);
-  const now = performance.now();
-  if (now - lastHeartbeat > interval){
-    const closeness = Math.max(0, (4.5 - dist) / 4.5);
-    tone(78, 0.10, "sine", 0.08 + closeness * 0.14);
-    lastHeartbeat = now;
-  }
-}
 
 /* =========================================================================
    SCHERMATE
@@ -1607,52 +1572,6 @@ function drawPacmanVariant(px, py, radius, mouthDeg, rotationDeg, primaryHex, se
   ctx.restore();
 }
 
-// Il killer non diventa piu' un "Pac-Man rosso e piu' grande": prende le
-// sembianze del classico fantasmino (cupola + gonnellino ondulato + occhi
-// che guardano nella direzione di marcia), mantenendo pero' le stesse
-// dimensioni e la stessa velocita' che aveva il Pac-Man killer.
-function drawGhost(px, py, r, colorHex, facingDeg, glowExtra){
-  ctx.save();
-  ctx.translate(px, py);
-
-  ctx.beginPath();
-  ctx.moveTo(-r, r * 0.85);
-  ctx.arc(0, 0, r, Math.PI, 0, false); // cupola superiore
-  ctx.lineTo(r, r * 0.85);
-  const scallops = 4;
-  const step = (2 * r) / scallops;
-  for (let i = 0; i < scallops; i++){
-    const xStart = r - i * step;
-    const xEnd = xStart - step;
-    const xMid = xStart - step / 2;
-    const yTip = (i % 2 === 0) ? r * 0.55 : r * 1.02;
-    ctx.quadraticCurveTo(xMid, yTip, xEnd, r * 0.85);
-  }
-  ctx.closePath();
-  ctx.fillStyle = colorHex;
-  ctx.shadowColor = colorHex;
-  ctx.shadowBlur = 8 + (glowExtra || 0);
-  ctx.fill();
-  ctx.shadowBlur = 0;
-
-  const eyeDX = r * 0.40, eyeDY = -r * 0.08, eyeRX = r * 0.27, eyeRY = r * 0.33;
-  [-1, 1].forEach(function(side){
-    ctx.beginPath();
-    ctx.ellipse(side * eyeDX, eyeDY, eyeRX, eyeRY, 0, 0, Math.PI * 2);
-    ctx.fillStyle = "#eef4ff";
-    ctx.fill();
-  });
-  const rad = (facingDeg || 0) * Math.PI / 180;
-  const pdx = Math.cos(rad) * eyeRX * 0.5, pdy = Math.sin(rad) * eyeRY * 0.5;
-  [-1, 1].forEach(function(side){
-    ctx.beginPath();
-    ctx.arc(side * eyeDX + pdx, eyeDY + pdy, eyeRX * 0.5, 0, Math.PI * 2);
-    ctx.fillStyle = "#1b2440";
-    ctx.fill();
-  });
-  ctx.restore();
-}
-
 function getRenderedPos(p, now){
   if (p.id === myId && predInited){
     return { x: predGridX + (predDir ? DIR_VEC[predDir][0] * predAccum : 0),
@@ -1729,9 +1648,9 @@ function stepSim(state, dt, speed, hasNextDirQueue){
 // Avanza la simulazione locale del proprio personaggio (wrapper su stepSim
 // che usa le variabili globali pred* per compatibilita' col resto del
 // codice, ad es. gli handler di input che le leggono/scrivono).
-function stepLocalPrediction(dt, isKiller, isAssassin){
+function stepLocalPrediction(dt, isAssassin){
   if (!predInited) return;
-  let speed = NORMAL_SPEED * ((isKiller || isAssassin) ? KILLER_SPEED_MULT : 1);
+  let speed = NORMAL_SPEED * (isAssassin ? ASSASSIN_SPEED_MULT : 1);
   const state = { gridX: predGridX, gridY: predGridY, accum: predAccum, dir: predDir, nextDir: predNextDir };
   stepSim(state, dt, speed, true);
   predGridX = state.gridX; predGridY = state.gridY; predAccum = state.accum;
@@ -1744,7 +1663,7 @@ function stepLocalPrediction(dt, isKiller, isAssassin){
 function stepRemoteSim(p, dt){
   const s = remoteSim[p.id];
   if (!s || !p.alive) return;
-  let speed = NORMAL_SPEED * ((p.is_killer || p.assassin) ? KILLER_SPEED_MULT : 1);
+  let speed = NORMAL_SPEED * (p.assassin ? ASSASSIN_SPEED_MULT : 1);
   stepSim(s, dt, speed, false);
 }
 
@@ -1774,24 +1693,22 @@ function drawPlayers(players, now){
 
     const facing = computeFacing(p);
     lastFacingMap[p.id] = facing;
-    const isKiller = p.is_killer;
 
     // ---- MODALITA' FANTASMA (bonus rimosso) e SUPER ASSASSINO (300 punti) ----
     // Chi e' fantasma o super assassino e' invisibile agli ALTRI giocatori
     // (nome incluso); a SE STESSO si vede in modo diverso (alone
     // tratteggiato per il fantasma, alone rosso pulsante per l'assassino),
-    // per sapere che la modalita' e' attiva. Il killer in carica non e' mai
-    // "ghost" (il server azzera il bonus finche' e' killer).
-    const iAmGhost = p.ghost && !isKiller;
+    // per sapere che la modalita' e' attiva.
+    const iAmGhost = !!p.ghost;
     const iAmAssassin = !!p.assassin;
     if ((iAmGhost || iAmAssassin) && p.id !== myId) return;  // invisibile agli altri
 
-    const chompSpeed = isKiller ? 11 : 8;
+    const chompSpeed = 8;
     const mouthDeg = 8 + 24 * Math.abs(Math.sin(now / 1000 * chompSpeed));
     const colors = p.colors || [];
-    const baseColor = isKiller ? KILLER_COLOR : (COLOR_HEX[colors[0]] || "#fff");
+    const baseColor = COLOR_HEX[colors[0]] || "#fff";
     const detailColor = colors[1] ? COLOR_HEX[colors[1]] : null;
-    const radius = BASE_CELL * 0.42;  // killer stessa dimensione dei giocatori (punto 1)
+    const radius = BASE_CELL * 0.42;
 
     ctx.save();
 
@@ -1841,25 +1758,9 @@ function drawPlayers(players, now){
       ctx.restore();
     }
 
-    // Anello pulsante del killer.
-    if (isKiller){
-      const pulse = 4 + 3 * Math.abs(Math.sin(now / 220));
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(px, py, radius + pulse, 0, Math.PI * 2);
-      ctx.strokeStyle = "rgba(255,43,78,0.55)";
-      ctx.lineWidth = 2;
-      ctx.stroke();
-      ctx.restore();
-    }
+    drawPacmanVariant(px, py, radius, mouthDeg, facing, baseColor, detailColor, p.character || "classic", 0);
 
-    if (isKiller){
-      drawGhost(px, py, radius, baseColor, facing, 10);
-    } else {
-      drawPacmanVariant(px, py, radius, mouthDeg, facing, baseColor, detailColor, p.character || "classic", 0);
-    }
-
-    // Laser sbloccato (bonus 100 punti): puntino rosso davanti alla bocca.
+    // Laser sbloccato (bonus 150 punti, dura 1 min): puntino rosso davanti alla bocca.
     if (p.laser && facing != null){
       const rad = facing * Math.PI / 180;
       ctx.save();
@@ -1882,7 +1783,7 @@ function drawPlayers(players, now){
       ctx.globalAlpha = 0.7;
       ctx.fillText(p.name, px + 0.5, py - radius - 4.5);
       ctx.globalAlpha = 1;
-      ctx.fillStyle = isKiller ? KILLER_COLOR : baseColor;
+      ctx.fillStyle = baseColor;
       ctx.fillText(p.name, px, py - radius - 5);
       ctx.restore();
     }
@@ -1933,7 +1834,7 @@ function drawPortals(now){
   });
 }
 
-// Bonus 100 punti: il laser e' ora un singolo proiettile in movimento
+// Bonus 150 punti: il laser e' ora un singolo proiettile in movimento
 // (niente piu' raggio istantaneo). La posizione e' quella autoritativa
 // mandata dal server ad ogni tick (currSnapshot.lasers): si disegna come
 // un piccolo "doppio trattino" (=) orientato nella direzione di marcia.
@@ -1967,7 +1868,7 @@ function drawLaserProjectiles(now){
   ctx.restore();
 }
 
-// Scintille per rimbalzo (bonus 150 punti) o estinzione del proiettile.
+// Scintille per rimbalzo (funzione non piu' sbloccabile da alcun bonus) o estinzione del proiettile.
 function drawSparks(now){
   sparks = sparks.filter(function(s){ return now - s.start < 220; });
   sparks.forEach(function(s){
@@ -2104,7 +2005,7 @@ function renderLoop(now){
   lastFrameTs = now;
   const me0 = findPlayer(currSnapshot, myId);
   if (me0 && me0.alive && roundActive){
-    stepLocalPrediction(dt, !!me0.is_killer, !!me0.assassin);
+    stepLocalPrediction(dt, !!me0.assassin);
   }
   if (roundActive){
     currSnapshot.players.forEach(function(p){
@@ -2124,24 +2025,6 @@ function renderLoop(now){
   drawSparks(now);
   drawExplosions(now);
   drawSwirls(now);
-
-  const bannerShouldShow = now < killerBannerUntil;
-  if (bannerShouldShow !== killerBannerShown){
-    killerBannerShown = bannerShouldShow;
-    document.getElementById("killerBanner").classList.toggle("show", bannerShouldShow);
-  }
-
-  const me = findPlayer(currSnapshot, myId);
-  const killer = currSnapshot.killer_id ? findPlayer(currSnapshot, currSnapshot.killer_id) : null;
-  if (me && killer && me.alive && !me.is_killer && currSnapshot.phase === "playing"){
-    // Usa le posizioni simulate (fluide) invece di quelle grezze
-    // dell'ultimo pacchetto, cosi' il battito cardiaco riflette la
-    // distanza reale in tempo reale anche tra un aggiornamento e l'altro.
-    const meP = getRenderedPos(me, now);
-    const killerP = getRenderedPos(killer, now);
-    const dist = Math.hypot(meP.x - killerP.x, meP.y - killerP.y);
-    updateHeartbeat(dist);
-  }
 }
 requestAnimationFrame(renderLoop);
 
@@ -2210,7 +2093,6 @@ function onState(msg){
     remoteSim = {};
     lastServerPos = {};
     lastFacingMap = {};
-    lastKnownKillerId = null;
     lastRequestedDir = null;
     predInited = false;
     predDir = null;
@@ -2224,27 +2106,15 @@ function onState(msg){
   }
 
   // Tic-tac da orologio per ogni secondo del countdown iniziale: un click
-  // breve e pulito ad ogni cambio di secondo, cosi' l'attesa prima che il
-  // killer venga rivelato suona davvero come un orologio che scandisce il
-  // tempo, invece di restare in silenzio fino allo scatto finale.
+  // breve e pulito ad ogni cambio di secondo, cosi' l'attesa prima che
+  // inizi il round suona come un orologio che scandisce il tempo, invece
+  // di restare in silenzio fino allo scatto finale.
   if (msg.phase === "countdown"){
     const sec = Math.ceil(msg.countdown);
     if (sec !== lastCountdownSecond && sec > 0){
       lastCountdownSecond = sec;
       playClockTick();
     }
-  }
-
-  // Rivela il killer sia alla prima scelta (fine countdown) sia ogni volta
-  // che cambia durante il round (rotazione ogni KILLER_INTERVAL_SECONDS).
-  if (msg.phase === "playing" && msg.killer_id && msg.killer_id !== lastKnownKillerId){
-    stopSiren();
-    playKillerReveal();
-    killerBannerUntil = now + 1600;
-    const killer = findPlayer(msg, msg.killer_id);
-    document.getElementById("killerBanner").textContent =
-      killer ? ("IL KILLER E' " + killer.name.toUpperCase() + "!") : "IL KILLER E' STATO SCELTO!";
-    lastKnownKillerId = msg.killer_id;
   }
 
   msg.players.forEach(function(p){
@@ -2428,9 +2298,8 @@ function onGameEvent(msg){
     case "bonus": {
       const labels = {
         extra_life:   "VITA EXTRA! \u2665",
-        laser:        "LASER SBLOCCATO!",
-        laser_bounce: "LASER RIMBALZANTE!",
-        mines:        "MINE SBLOCCATE! (3)",
+        laser:        "LASER SBLOCCATO! (1 min)",
+        mines:        "MINE SBLOCCATE! (3, tasto 1)",
       };
       const txt = labels[msg.bonus] || "BONUS!";
       if (msg.player === myId){
@@ -2445,7 +2314,7 @@ function onGameEvent(msg){
     case "kill": {
       const victim = findPlayer(currSnapshot, msg.victim);
       const at = msg.at || (victim ? [victim.x, victim.y] : [0, 0]);
-      const col = (victim && victim.is_killer) ? KILLER_COLOR
+      const col = (victim && victim.assassin) ? ASSASSIN_COLOR
                 : (victim ? (COLOR_HEX[(victim.colors && victim.colors[0])] || "#fff") : "#fff");
       explosions.push({ x: at[0], y: at[1], color: col, start: now });
       playEliminate();
@@ -2504,6 +2373,10 @@ function onGameEvent(msg){
       if (msg.player === myId) showToast("Non sei piu' il super assassino");
       break;
     }
+    case "laser_expired": {
+      if (msg.player === myId) showToast("Il laser si e' esaurito");
+      break;
+    }
     case "mine_boom": {
       explosions.push({ x: msg.x, y: msg.y, color: "#ff9d1f", start: now });
       noiseBurst(0.22, 0.18);
@@ -2538,12 +2411,10 @@ function showBonusBanner(text){
 function updateHud(msg){
   const timerEl = document.getElementById("hudTimer");
   if (msg.phase === "countdown"){
-    timerEl.textContent = "IL KILLER SARA' SVELATO TRA " + Math.ceil(msg.countdown) + "s (puoi gia' muoverti)";
+    timerEl.textContent = "IL ROUND INIZIA TRA " + Math.ceil(msg.countdown) + "s (puoi gia' muoverti)";
     timerEl.classList.remove("urgent");
   } else {
-    const nextKiller = msg.killer_timer != null ? Math.ceil(msg.killer_timer) : null;
-    timerEl.textContent = "TEMPO: " + Math.ceil(msg.timer) + "s" +
-      (nextKiller != null ? " · KILLER CAMBIA TRA " + nextKiller + "s" : "");
+    timerEl.textContent = "TEMPO: " + Math.ceil(msg.timer) + "s";
     timerEl.classList.toggle("urgent", msg.timer <= 10);
   }
   updateScoreCounter(msg);
@@ -2551,7 +2422,7 @@ function updateHud(msg){
 
 // Contatore punti dedicato (vedi .score-counter in alto a sinistra):
 // prima il punteggio era scritto in coda alla stringa del timer, che cambia
-// ogni tick ed e' lunga (fase, secondi, cambio killer...): il numero dei
+// ogni tick ed e' lunga (fase, secondi...): il numero dei
 // punti finiva "perso" in mezzo al testo e passava inosservato. Ora ha un
 // box tutto suo, sempre nello stesso posto: i TUOI punti in evidenza sopra,
 // e sotto una mini-classifica con i punti di TUTTI gli altri giocatori.
@@ -2585,7 +2456,7 @@ function updateScoreCounter(msg){
       row.className = "score-row";
       const sw = document.createElement("span");
       sw.className = "sw";
-      const c = p.is_killer ? KILLER_COLOR : (COLOR_HEX[(p.colors || [])[0]] || "#888");
+      const c = COLOR_HEX[(p.colors || [])[0]] || "#888";
       sw.style.background = c;
       row.appendChild(sw);
       const nm = document.createElement("span");
@@ -2609,12 +2480,12 @@ function updateScoreCounter(msg){
 let lastSidebarSig = "";
 let sidebarRefs = {};   // id -> {score, tags} per aggiornare punti/vite senza rebuild
 function updateGameSidebar(msg){
-  // La struttura della lista (chi c'e', vivo/morto, chi e' killer, fantasma,
-  // laser) cambia di rado: si ricostruisce il DOM solo su questi cambi
-  // (signature). Punti e vite invece cambiano spesso: si aggiornano scrivendo
-  // direttamente nello <span> gia' esistente, senza ricostruire nulla (perf).
+  // La struttura della lista (chi c'e', vivo/morto, fantasma, laser) cambia
+  // di rado: si ricostruisce il DOM solo su questi cambi (signature). Punti
+  // e vite invece cambiano spesso: si aggiornano scrivendo direttamente
+  // nello <span> gia' esistente, senza ricostruire nulla (perf).
   const sig = myId + "|" + msg.players.map(function(p){
-    return p.id + ":" + p.alive + ":" + p.is_killer + ":" + p.name +
+    return p.id + ":" + p.alive + ":" + p.name +
            ":" + (p.colors || []).join(",") + ":" + (p.laser ? "l" : "") +
            (p.bounce ? "b" : "") + (p.mines ? ("m" + p.mines_left) : "") +
            ((p.assassin && p.id === myId) ? "A" : "");
@@ -2627,13 +2498,14 @@ function updateGameSidebar(msg){
     list.innerHTML = "";
     msg.players.forEach(function(p){
       const li = document.createElement("li");
-      li.className = "player-row" + (!p.alive ? " dead" : "") + (p.is_killer ? " killer" : "");
+      const iAmAssassinRow = p.assassin && p.id === myId;
+      li.className = "player-row" + (!p.alive ? " dead" : "");
       const sw = document.createElement("span");
       sw.className = "swatch";
       const colors = p.colors || [];
-      const c = p.is_killer ? KILLER_COLOR : (COLOR_HEX[colors[0]] || "#888");
+      const c = iAmAssassinRow ? ASSASSIN_COLOR : (COLOR_HEX[colors[0]] || "#888");
       sw.style.background = c; sw.style.color = c;
-      if (!p.is_killer && colors[1]){
+      if (!iAmAssassinRow && colors[1]){
         sw.style.boxShadow = "0 0 0 2px " + COLOR_HEX[colors[1]] + ", 0 0 6px currentColor";
       }
       li.appendChild(sw);
@@ -2641,11 +2513,10 @@ function updateGameSidebar(msg){
       nameSpan.textContent = p.name;
       li.appendChild(nameSpan);
       if (p.id === myId){ const t = document.createElement("span"); t.className="tag you"; t.textContent="TU"; li.appendChild(t); }
-      if (p.is_killer){ const t = document.createElement("span"); t.className="tag killer"; t.textContent="KILLER"; li.appendChild(t); }
-      if (p.laser){ const t = document.createElement("span"); t.className="tag killer"; t.textContent="LASER"; li.appendChild(t); }
-      if (p.bounce){ const t = document.createElement("span"); t.className="tag killer"; t.textContent="RIMBALZO"; li.appendChild(t); }
-      if (p.mines){ const t = document.createElement("span"); t.className="tag killer"; t.textContent="MINE " + p.mines_left; li.appendChild(t); }
-      if (p.assassin && p.id === myId){ const t = document.createElement("span"); t.className="tag killer"; t.textContent="ASSASSINO"; li.appendChild(t); }
+      if (p.laser){ const t = document.createElement("span"); t.className="tag alert"; t.textContent="LASER"; li.appendChild(t); }
+      if (p.bounce){ const t = document.createElement("span"); t.className="tag alert"; t.textContent="RIMBALZO"; li.appendChild(t); }
+      if (p.mines){ const t = document.createElement("span"); t.className="tag alert"; t.textContent="MINE " + p.mines_left; li.appendChild(t); }
+      if (iAmAssassinRow){ const t = document.createElement("span"); t.className="tag alert"; t.textContent="ASSASSINO"; li.appendChild(t); }
       const spacer = document.createElement("span"); spacer.className = "spacer"; li.appendChild(spacer);
       const score = document.createElement("span");
       score.style.fontSize = "10px"; score.style.color = "var(--phosphor-dim)";
@@ -2671,9 +2542,9 @@ function onRoundEnd(msg){
   const overlay = document.getElementById("endOverlay");
   const title = document.getElementById("endTitle");
   const winners = document.getElementById("endWinners");
-  if (msg.reason === "killer_wins") title.textContent = "IL KILLER HA VINTO";
-  else if (msg.reason === "last_survivor") title.textContent = "ULTIMO SOPRAVVISSUTO!";
-  else title.textContent = "TEMPO SCADUTO";
+  if (msg.reason === "last_survivor") title.textContent = "ULTIMO SOPRAVVISSUTO!";
+  else if (msg.reason === "time_up") title.textContent = "TEMPO SCADUTO";
+  else title.textContent = "FINE ROUND";
 
   winners.innerHTML = "";
   msg.winners.forEach(function(wid){
@@ -2728,28 +2599,19 @@ function requestDir(dir){
   sendMsg({ type: "move", direction: dir });
 }
 
-// Bonus 200 punti: doppio tocco veloce dello STESSO tasto di movimento
-// (una qualunque tra le 4 direzioni) sgancia una mina nella cella
-// corrente. Il server e' l'autorita' su quante mine restano e ignora la
-// richiesta se il bonus non e' ancora sbloccato o non ci sono piu' mine
-// disponibili.
-let lastTapAt = 0;
-let lastTapDir = null;
-
+// Bonus 200 punti: il tasto "1" sgancia una mina nella cella corrente.
+// Il server e' l'autorita' su quante mine restano e ignora la richiesta
+// se il bonus non e' ancora sbloccato o non ci sono piu' mine disponibili.
 document.addEventListener("keydown", function(ev){
   if (currentScreen !== "game") return;
   const dir = KEY_TO_DIR[ev.key];
   if (dir){
-    if (!ev.repeat){
-      requestDir(dir);
-      const now = performance.now();
-      if (dir === lastTapDir && now - lastTapAt < MINE_DOUBLE_TAP_MS){
-        sendMsg({ type: "place_mine" });
-        lastTapAt = 0; lastTapDir = null; // evita che un terzo tocco ravvicinato sganci subito un'altra mina
-      } else {
-        lastTapAt = now; lastTapDir = dir;
-      }
-    }
+    if (!ev.repeat) requestDir(dir);
+    ev.preventDefault();
+    return;
+  }
+  if (ev.key === "1" && !ev.repeat){
+    sendMsg({ type: "place_mine" });
     ev.preventDefault();
   }
 });
