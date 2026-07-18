@@ -331,25 +331,33 @@ class Room:
             if p.portal_cd > 0:
                 p.portal_cd = max(0.0, p.portal_cd - TICK_DT)
 
-            # Si puo' girare SENZA scatti solo in due casi: si e' appena
-            # arrivati esattamente su una cella (move_accum == 0) oppure si
-            # e' bloccati contro un muro nella direzione corrente (o fermi).
-            # PRIMA la svolta in coda veniva applicata a meta' cella tenendo
-            # lo stesso move_accum, ma reinterpretato sull'asse nuovo: questo
-            # faceva "teletrasportare" il personaggio di una frazione di
-            # cella nella direzione sbagliata ad ogni curva presa un attimo
-            # in anticipo, il famoso scatto. Ora, se non si e' su un incrocio
-            # (si sta ancora scorrendo dentro la cella corrente), la svolta
-            # resta in coda: scattera' da sola, in modo pulito, nell'istante
-            # esatto in cui si attraversa il confine della cella (vedi sotto).
-            currently_blocked = True
-            if p.direction is not None:
-                bdx, bdy = DIRECTIONS[p.direction]
-                currently_blocked = is_wall(self.maze, self.maze_w, self.maze_h, p.x + bdx, p.y + bdy)
-
-            if p.next_direction is not None and (p.move_accum == 0.0 or currently_blocked):
+            # La svolta in coda si applica SUBITO, ad ogni tick, non solo
+            # quando si e' esattamente su un incrocio: aspettare l'incrocio
+            # sembrava piu' pulito, ma introduceva un problema peggiore,
+            # cioe' client e server non attraversano MAI il confine della
+            # cella nello stesso identico istante (millisecondo), quindi ad
+            # ogni curva le due posizioni previste divergevano abbastanza
+            # da far scattare la correzione forte lato client: e' quello il
+            # teletrasporto. Girando subito, client e server seguono la
+            # STESSA regola semplice ("se non e' muro, gira ora") e restano
+            # sincronizzati sulla stessa logica deterministica.
+            #
+            # Resta pero' il problema originale che l'attesa dell'incrocio
+            # doveva risolvere: se si cambia asse (es. da orizzontale a
+            # verticale) a meta' cella, non si puo' riusare lo stesso
+            # move_accum sul nuovo asse, altrimenti il personaggio "salta"
+            # di una frazione di cella nella direzione sbagliata. Per
+            # questo, ogni volta che la direzione cambia davvero, si azzera
+            # l'avanzamento frazionario: il movimento nella nuova direzione
+            # riparte pulito dal centro della cella corrente. E' comunque
+            # uno scatto piccolo e deterministico (identico su client e
+            # server), non il grosso teletrasporto dovuto al disallineamento
+            # di rete.
+            if p.next_direction is not None:
                 ndx, ndy = DIRECTIONS[p.next_direction]
                 if not is_wall(self.maze, self.maze_w, self.maze_h, p.x + ndx, p.y + ndy):
+                    if p.direction != p.next_direction:
+                        p.move_accum = 0.0
                     p.direction = p.next_direction
                     p.next_direction = None
 
@@ -374,16 +382,9 @@ class Room:
                     if p.move_accum >= 1.0:
                         p.move_accum -= 1.0
                         p.x, p.y = nx, ny
-                        # Si e' appena attraversato il confine di cella:
-                        # e' l'istante esatto in cui una curva in coda puo'
-                        # scattare senza alcun salto visivo (l'eventuale
-                        # "sorpasso" di move_accum continua semplicemente
-                        # nella nuova direzione anziche' in quella vecchia).
-                        if p.next_direction is not None:
-                            ndx2, ndy2 = DIRECTIONS[p.next_direction]
-                            if not is_wall(self.maze, self.maze_w, self.maze_h, p.x + ndx2, p.y + ndy2):
-                                p.direction = p.next_direction
-                                p.next_direction = None
+                        # La svolta in coda, se presente, viene gia' gestita
+                        # a inizio tick (vedi sopra): qui non serve
+                        # riapplicarla, resta solo l'avanzamento di cella.
 
             # Pallini e portali si valutano sulla cella in cui ci si trova
             # ORA (anche da fermi: copre lo spawn su un pallino).
