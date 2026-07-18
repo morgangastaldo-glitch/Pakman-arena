@@ -32,6 +32,25 @@ MIN_PLAYERS = 2
 NORMAL_SPEED = 4.5          # celle al secondo
 ASSASSIN_SPEED_MULT = 1.1   # il super assassino (bonus 300 punti) e' 1.1x rispetto a 1.0 dei giocatori normali
 
+# ---- finestra di accettazione delle svolte ----
+# Una direzione richiesta (next_direction) resta "in coda" pronta a
+# scattare al primo centro-cella utile, ma solo per un tempo limitato:
+# TURN_BUFFER_SECONDS da quando il tasto e' stato premuto. Se entro quel
+# tempo la svolta non diventa applicabile (perche' non si e' ancora vicini
+# all'incrocio, o perche' l'incrocio raggiunto e' bloccato da un muro), la
+# richiesta viene scartata invece di restare in memoria all'infinito in
+# attesa del primo incrocio "utile" futuro - che poteva arrivare molte
+# celle piu' avanti e produrre una svolta del tutto inaspettata, oppure,
+# se anche quello era bloccato, veniva ritentata identica ad ogni tick
+# senza mai riuscire (il personaggio "incastrato" a girare verso un muro,
+# percepito come lag). Con questa finestra, un input dato troppo presto
+# rispetto alla svolta scade prima di poter scattare (va quindi dato un
+# po' piu' vicino all'incrocio) e un input dato troppo tardi (svolta gia'
+# superata) viene semplicemente ignorato. Identica su client (stepSim in
+# index.html) e server (update_movement in main.py), cosi' la previsione
+# locale non diverge mai da cio' che decide il server.
+TURN_BUFFER_SECONDS = 0.15
+
 # ---- sistema punti e bonus a traguardi ----
 # Ogni pallino normale vale 1 punto. In 10 punti (angoli/estremita') della
 # mappa si trovano pallini piu' grossi e arancioni che valgono 10 punti.
@@ -49,8 +68,12 @@ PELLET_POINTS = 1                  # valore di un pallino normale
 POWER_PELLET_POINTS = 10           # valore di un pallino grosso/arancione
 POWER_PELLET_COUNT = 10            # quanti pallini grossi su ciascuna mappa
 PELLET_RESPAWN_SECONDS = 20.0      # tempo prima che un pallino mangiato ricompaia
-SUPER_ASSASSIN_THRESHOLD = 300     # punti oltre i quali si diventa "super assassino"
-SUPER_ASSASSIN_DURATION_SECONDS = 30.0  # il super assassino dura solo 30 secondi, poi si disattiva
+SUPER_ASSASSIN_THRESHOLD = 300     # punti oltre i quali si sblocca la modalita' ninja
+# La modalita' ninja dura 45 secondi (aumentata da 30) ed e' utilizzabile
+# UNA SOLA VOLTA per round: una volta terminata (scaduto il tempo o dopo
+# un'eliminazione) non si puo' piu' riattivare (vedi Player.ninja_used e
+# try_activate_ninja in main.py).
+SUPER_ASSASSIN_DURATION_SECONDS = 45.0
 LASER_DURATION_SECONDS = 60.0      # bonus 150 punti: il laser resta attivo solo 1 minuto
 GHOST_SECONDS = 10.0            # (bonus rimosso dal gioco, costante tenuta per compatibilita')
 SPAWN_PROTECT_SECONDS = 3.0    # invulnerabilita' temporanea dopo un respawn
@@ -103,6 +126,31 @@ TURRET_RANGE_CELLS = 10
 # Percentuale di punti che chi uccide ruba alla vittima (50%): la vittima
 # NON perde piu' tutto, conserva l'altra meta' delle sue risorse.
 KILL_STEAL_FRACTION = 0.5
+
+# ---- bonus 700 punti: corazza laser (tasto "6") ----
+# Allo sblocco NON scatta nulla in automatico: premendo il tasto "6" il
+# giocatore attiva la corazza per ARMOR_DURATION_SECONDS. Mentre e' attiva:
+# respinge (rimbalza indietro) qualsiasi proiettile laser/missile la
+# colpisca, distrugge ogni torretta che tocca e uccide chiunque tocchi
+# (stessa meccanica di contatto del ninja). E' visibile a TUTTI (a
+# differenza del ninja, non da' invisibilita') ed e' utilizzabile UNA SOLA
+# VOLTA per round, come la modalita' ninja.
+ARMOR_THRESHOLD = 700
+ARMOR_DURATION_SECONDS = 20.0
+
+# ---- bonus 800 punti: fulmine (tasto "7") ----
+# Allo sblocco NON scatta nulla in automatico: premendo il tasto "7" il
+# giocatore scatena un fulmine che colpisce ISTANTANEAMENTE tutti gli
+# avversari vivi presenti sulla mappa (ovunque si trovino, niente raggio
+# d'azione), facendo perdere loro una vita ciascuno (stessa unica via
+# kill_player usata da laser/mine/missili/trappola). UTILIZZABILE UNA SOLA
+# VOLTA per round, come il ninja e la corazza.
+LIGHTNING_THRESHOLD = 800
+
+# Distanza (in caselle, stile scacchi/Chebyshev) entro la quale le mine
+# ALTRUI diventano visibili: da piu' lontano restano nascoste finche' non
+# esplodono. Le proprie mine restano sempre visibili a se stessi.
+MINE_VISIBILITY_RANGE = 5
 
 # Nome colore (mostrato all'utente, in italiano) -> id colore interno.
 # Elenco esteso: ogni giocatore puo' scegliere fino a 2 colori (primario +

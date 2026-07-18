@@ -55,6 +55,8 @@ from common import (
     TRAP_THRESHOLD, TRAP_DURATION_SECONDS, TRAP_RANGE, TRAP_MAX_USES,
     TURRET_THRESHOLD, TURRET_FIRE_INTERVAL_SECONDS,
     TURRET_RANGE_CELLS, KILL_STEAL_FRACTION,
+    ARMOR_THRESHOLD, ARMOR_DURATION_SECONDS,
+    TURN_BUFFER_SECONDS, LIGHTNING_THRESHOLD,
 )
 
 # Direzione opposta di ciascuna direzione: serve per l'inversione di marcia
@@ -104,6 +106,11 @@ class Player:
         # direzione un istante troppo presto la faceva perdere del tutto,
         # dando la sensazione di comandi "poco precisi".
         self.next_direction = None
+        # Da quanto tempo (secondi) next_direction e' in attesa di poter
+        # scattare: scade dopo TURN_BUFFER_SECONDS (vedi update_movement),
+        # cosi' una svolta data troppo presto o troppo tardi viene
+        # dimenticata invece di restare in coda a tempo indeterminato.
+        self.next_direction_ttl = 0.0
         self.move_accum = 0.0
         self.alive = True
         self.connected = True
@@ -116,14 +123,16 @@ class Player:
         # (tasto "2"), attivabile a comando finche' il round e' in corso.
         # Una volta attivata: invisibile agli altri, piu' veloce (1.1x
         # rispetto a 1.0 dei giocatori normali) e uccide chiunque al solo
-        # contatto. Dura solo SUPER_ASSASSIN_DURATION_SECONDS (30s) poi si
+        # contatto. Dura solo SUPER_ASSASSIN_DURATION_SECONDS (45s) poi si
         # disattiva da sola (vedi il countdown in update_movement); si
         # disattiva anche prima se il giocatore viene ucciso (vedi
-        # kill_player). Puo' essere riattivata piu' volte nello stesso
-        # round (a differenza di laser/mine/missili che si consumano).
+        # kill_player). E' UTILIZZABILE UNA SOLA VOLTA per round (vedi
+        # ninja_used): a differenza di prima non si puo' piu' riattivare
+        # dopo che e' scaduta o dopo un'eliminazione.
         self.has_ninja = False         # bonus sbloccato (una volta per round)
         self.is_assassin = False       # True mentre la modalita' ninja e' ATTIVA in questo istante
         self.assassin_left = 0.0       # secondi rimanenti da modalita' ninja attiva
+        self.ninja_used = False        # True dopo l'unica attivazione consentita per round
         self.prot_left = 0.0           # invulnerabilita' temporanea dopo un respawn
         self.has_laser = False         # bonus 150 punti: laser frontale a intermittenza (1 colpo/secondo)
         self.laser_cd = 0.0            # countdown al prossimo colpo di laser
@@ -147,6 +156,22 @@ class Player:
         # ---- bonus 600 punti: torretta automatica permanente (tasto "5") ----
         self.has_turret = False        # bonus sbloccato (una volta per round)
         self.turret_placed = False     # True dopo il piazzamento: il tasto "5" e' utilizzabile una sola volta
+        # ---- bonus 700 punti: corazza laser (tasto "6") ----
+        # Allo sblocco NON si attiva da sola: si attiva a comando col tasto
+        # "6" (vedi try_activate_armor), UNA SOLA VOLTA per round, e dura
+        # ARMOR_DURATION_SECONDS. Mentre e' attiva respinge ogni proiettile
+        # che la colpisce, distrugge le torrette toccate e uccide chiunque
+        # tocchi (a differenza del ninja resta pero' visibile a tutti).
+        self.has_armor = False         # bonus sbloccato (una volta per round)
+        self.armor_active = False      # True mentre la corazza e' ATTIVA in questo istante
+        self.armor_left = 0.0          # secondi rimanenti di corazza attiva
+        self.armor_used = False        # True dopo l'unica attivazione consentita per round
+        # ---- bonus 800 punti: fulmine (tasto "7") ----
+        # Allo sblocco NON scatta nulla in automatico: si attiva a comando
+        # col tasto "7" (vedi try_activate_lightning), UNA SOLA VOLTA per
+        # round. Colpisce all'istante tutti gli avversari vivi sulla mappa.
+        self.has_lightning = False     # bonus sbloccato (una volta per round)
+        self.lightning_used = False    # True dopo l'unica attivazione consentita per round
         # Uccisioni fatte in questo round: ogni 2 kill si guadagna una vita extra.
         self.kills = 0
 
@@ -174,6 +199,7 @@ class Player:
             "ghost": self.ghost_left > 0,
             "assassin": self.is_assassin,
             "ninja": self.has_ninja,
+            "ninja_used": self.ninja_used,
             "prot": self.prot_left > 0,
             "laser": self.has_laser,
             "bounce": self.has_bounce,
@@ -187,6 +213,11 @@ class Player:
             "trapped_left": round(self.trapped_left, 1) if self.trapped_left > 0 else 0,
             "turret": self.has_turret,
             "turret_placed": self.turret_placed,
+            "armor": self.has_armor,
+            "armor_on": self.armor_active,
+            "armor_used": self.armor_used,
+            "lightning": self.has_lightning,
+            "lightning_used": self.lightning_used,
         }
 
 
@@ -338,6 +369,7 @@ class Room:
             p.x, p.y = x, y
             p.direction = None
             p.next_direction = None
+            p.next_direction_ttl = 0.0
             p.move_accum = 0.0
             p.alive = True
             # reset del sistema punti/bonus per il nuovo round
@@ -347,6 +379,7 @@ class Room:
             p.has_ninja = False
             p.is_assassin = False
             p.assassin_left = 0.0
+            p.ninja_used = False
             p.ghost_left = 0.0
             p.prot_left = 0.0
             p.has_laser = False
@@ -366,6 +399,12 @@ class Room:
             p.trap_uses_left = 0
             p.has_turret = False
             p.turret_placed = False
+            p.has_armor = False
+            p.armor_active = False
+            p.armor_left = 0.0
+            p.armor_used = False
+            p.has_lightning = False
+            p.lightning_used = False
             p.kills = 0
         self.lasers = []
         self.mines = []
@@ -412,6 +451,13 @@ class Room:
                 if p.assassin_left <= 0 and p.is_assassin:
                     p.is_assassin = False
                     self.push_event({"kind": "assassin_off", "player": p.id})
+            # Bonus 700 punti (corazza laser): dura solo ARMOR_DURATION_SECONDS,
+            # poi si disattiva da sola.
+            if p.armor_left > 0:
+                p.armor_left = max(0.0, p.armor_left - TICK_DT)
+                if p.armor_left <= 0 and p.armor_active:
+                    p.armor_active = False
+                    self.push_event({"kind": "armor_off", "player": p.id})
 
             # Bonus 500 punti (trappola): chi e' intrappolato resta bloccato
             # sul punto esatto in cui si trovava, per TRAP_DURATION_SECONDS.
@@ -463,6 +509,24 @@ class Room:
             #     il piccolo "scatto all'indietro" ad ogni curva.
             #  3. Se la svolta e' bloccata da un muro, la coda RESTA in
             #     attesa e scatta da sola al primo incrocio utile.
+            # La svolta in coda ha vita limitata (TURN_BUFFER_SECONDS): se
+            # non riesce a scattare entro quel tempo dalla pressione del
+            # tasto, viene scartata invece di restare in memoria in attesa
+            # del primo incrocio "utile", che poteva capitare molte celle
+            # piu' avanti (svolta del tutto inaspettata) o essere a sua
+            # volta bloccato da un muro, nel qual caso veniva ritentata
+            # identica ad ogni tick senza mai riuscire (il personaggio
+            # restava "incastrato" a girare verso il muro, percepito come
+            # lag). Con la scadenza, un input dato troppo presto rispetto
+            # alla svolta reale scade prima di poter applicarsi (va quindi
+            # dato un po' piu' vicino all'incrocio) e un input dato troppo
+            # tardi (la svolta e' gia' passata) viene semplicemente
+            # ignorato.
+            if p.next_direction is not None:
+                p.next_direction_ttl -= TICK_DT
+                if p.next_direction_ttl <= 0:
+                    p.next_direction = None
+
             speed = NORMAL_SPEED
             if p.is_assassin:
                 # Il super assassino (300 punti) e' piu' veloce dei
@@ -629,6 +693,35 @@ class Room:
                 "kind": "bonus", "player": p.id,
                 "bonus": "turret", "points": TURRET_THRESHOLD,
             })
+        # Bonus 700 punti: sblocca la corazza laser, ma NON la attiva. Si
+        # attiva a comando col tasto "6" (vedi try_activate_armor), UNA SOLA
+        # VOLTA per round (come il ninja).
+        if (
+            p.alive
+            and p.points >= ARMOR_THRESHOLD
+            and ARMOR_THRESHOLD not in p.claimed
+        ):
+            p.claimed.add(ARMOR_THRESHOLD)
+            p.has_armor = True
+            self.push_event({
+                "kind": "bonus", "player": p.id,
+                "bonus": "armor", "points": ARMOR_THRESHOLD,
+            })
+        # Bonus 800 punti: sblocca il fulmine, ma NON lo scatena subito. Si
+        # attiva a comando col tasto "7" (vedi try_activate_lightning), UNA
+        # SOLA VOLTA per round (come ninja, trappola-innesco a parte, e
+        # corazza).
+        if (
+            p.alive
+            and p.points >= LIGHTNING_THRESHOLD
+            and LIGHTNING_THRESHOLD not in p.claimed
+        ):
+            p.claimed.add(LIGHTNING_THRESHOLD)
+            p.has_lightning = True
+            self.push_event({
+                "kind": "bonus", "player": p.id,
+                "bonus": "lightning", "points": LIGHTNING_THRESHOLD,
+            })
 
     def try_portal(self, p):
         """Se il giocatore e' su un portale (e non e' appena arrivato da un
@@ -680,6 +773,7 @@ class Room:
         p.x, p.y = x, y
         p.direction = None
         p.next_direction = None
+        p.next_direction_ttl = 0.0
         p.move_accum = 0.0
         p.prot_left = SPAWN_PROTECT_SECONDS
         p.portal_cd = 0.5  # se lo spawn fosse vicino a un portale, niente teletrasporto istantaneo
@@ -735,6 +829,7 @@ class Room:
             victim.alive = False
             victim.direction = None
             victim.next_direction = None
+            victim.next_direction_ttl = 0.0
             victim.move_accum = 0.0
             respawned = False
         if victim.is_assassin:
@@ -751,9 +846,12 @@ class Room:
     def check_collisions(self, prev_positions):
         """A SUPER_ASSASSIN_THRESHOLD punti un giocatore diventa "super
         assassino" per SUPER_ASSASSIN_DURATION_SECONDS (vedi check_bonuses):
-        invisibile agli altri, piu' veloce, e uccide chiunque tocchi. Due
-        super assassini non si uccidono a vicenda toccandosi."""
-        lethal = [p for p in self.players.values() if p.alive and p.is_assassin]
+        invisibile agli altri, piu' veloce, e uccide chiunque tocchi. Allo
+        stesso modo, a ARMOR_THRESHOLD punti la corazza laser (bonus 700,
+        visibile a tutti) uccide chiunque tocchi mentre e' attiva. Due
+        giocatori "letali" (ninja e/o corazza, in qualsiasi combinazione)
+        non si uccidono a vicenda toccandosi."""
+        lethal = [p for p in self.players.values() if p.alive and (p.is_assassin or p.armor_active)]
         if not lethal:
             return
         killed_ids = set()
@@ -763,8 +861,8 @@ class Room:
             for p in list(self.players.values()):
                 if p.id == L.id or not p.alive or p.id in killed_ids:
                     continue
-                if p.is_assassin:
-                    continue  # due super assassini non si eliminano a vicenda
+                if p.is_assassin or p.armor_active:
+                    continue  # due giocatori "letali" non si eliminano a vicenda
                 # Il tocco non puo' nulla contro la protezione post-respawn
                 # (il bonus fantasma e' stato rimosso dal gioco, ghost_left
                 # resta sempre 0). Laser e mine ignorano comunque entrambe.
@@ -776,7 +874,8 @@ class Room:
                     and prev_positions.get(L.id) == (p.x, p.y)
                 )
                 if same_cell or swapped:
-                    self.kill_player(p, "assassin", shooter_id=L.id)
+                    cause = "assassin" if L.is_assassin else "armor"
+                    self.kill_player(p, cause, shooter_id=L.id)
                     killed_ids.add(p.id)
 
     def update_lasers(self):
@@ -871,6 +970,22 @@ class Room:
                     if q.alive and q.id != lz["owner"] and q.x == nx and q.y == ny
                 ]
                 if victims:
+                    armored = [v for v in victims if v.armor_active]
+                    if armored:
+                        # Bonus 700 punti: la corazza laser RESPINGE il
+                        # colpo invece di subirlo. Il proiettile inverte
+                        # direzione e riparte come "sparato" dal portatore
+                        # della corazza, quindi puo' colpire chiunque trovi
+                        # sulla via del ritorno, compreso lo sparatore
+                        # originale. Il portatore della corazza non subisce
+                        # alcun danno.
+                        lz["dx"], lz["dy"] = -lz["dx"], -lz["dy"]
+                        lz["owner"] = armored[0].id
+                        self.push_event({
+                            "kind": "laser_reflect", "id": lz["id"],
+                            "x": nx, "y": ny, "by": armored[0].id,
+                        })
+                        continue  # riprova subito nella direzione invertita, stesso tick
                     for v in victims:
                         self.kill_player(v, "laser", lz["owner"])
                     destroyed = True
@@ -933,19 +1048,72 @@ class Room:
     # ---- bonus 300 punti: modalita' ninja (tasto "2") ----
 
     def try_activate_ninja(self, player):
-        """Tasto '2': se il bonus e' sbloccato (300 punti), attiva la
-        modalita' ninja per SUPER_ASSASSIN_DURATION_SECONDS (invisibile
-        agli altri, 1.1x piu' veloce, uccide chiunque tocchi). Si puo'
-        riattivare piu' volte nello stesso round (a differenza di
-        mine/missili che si consumano), ma solo se non e' gia' attiva."""
-        if not player.alive or not player.has_ninja or player.is_assassin:
+        """Tasto '2': se il bonus e' sbloccato (300 punti) e non e' ancora
+        stato usato in questo round, attiva la modalita' ninja per
+        SUPER_ASSASSIN_DURATION_SECONDS (45s: invisibile agli altri, 1.1x
+        piu' veloce, uccide chiunque tocchi). UTILIZZABILE UNA SOLA VOLTA
+        per round: una volta terminata (scaduto il tempo o dopo
+        un'eliminazione) non si puo' piu' riattivare, a differenza di
+        prima."""
+        if not player.alive or not player.has_ninja or player.is_assassin or player.ninja_used:
             return
+        player.ninja_used = True
         player.is_assassin = True
         player.assassin_left = SUPER_ASSASSIN_DURATION_SECONDS
         self.push_event({
             "kind": "assassin_on", "player": player.id,
             "bonus": "ninja", "points": SUPER_ASSASSIN_THRESHOLD,
         })
+
+    # ---- bonus 700 punti: corazza laser (tasto "6") ----
+
+    def try_activate_armor(self, player):
+        """Tasto '6': se il bonus e' sbloccato (700 punti) e non e' ancora
+        stato usato in questo round, attiva la corazza laser per
+        ARMOR_DURATION_SECONDS: respinge ogni proiettile che la colpisce
+        (vedi move_lasers/move_missiles), distrugge le torrette toccate
+        (vedi check_armor_effects) e uccide chiunque tocchi (vedi
+        check_collisions). Resta visibile a tutti (niente invisibilita').
+        UTILIZZABILE UNA SOLA VOLTA per round."""
+        if not player.alive or not player.has_armor or player.armor_active or player.armor_used:
+            return
+        player.armor_used = True
+        player.armor_active = True
+        player.armor_left = ARMOR_DURATION_SECONDS
+        self.push_event({
+            "kind": "armor_on", "player": player.id,
+            "bonus": "armor", "points": ARMOR_THRESHOLD,
+        })
+
+    # ---- bonus 800 punti: fulmine (tasto "7") ----
+
+    def try_activate_lightning(self, player):
+        """Tasto '7': se il bonus e' sbloccato (800 punti) e non e' ancora
+        stato usato in questo round, scatena un fulmine che colpisce
+        ISTANTANEAMENTE tutti gli avversari vivi presenti sulla mappa,
+        ovunque si trovino (nessun raggio d'azione, a differenza della
+        torretta): ciascuno perde una vita tramite kill_player (la stessa
+        unica via usata da laser/mine/missili/trappola), con lo stesso
+        furto del 50% dei punti e lo stesso conteggio kill/vita-extra-ogni-
+        2-uccisioni del killer. UTILIZZABILE UNA SOLA VOLTA per round."""
+        if not player.alive or not player.has_lightning or player.lightning_used:
+            return
+        player.lightning_used = True
+        targets = [
+            q for q in self.players.values()
+            if q.alive and q.id != player.id
+        ]
+        self.push_event({
+            "kind": "lightning_on", "player": player.id,
+            "bonus": "lightning", "points": LIGHTNING_THRESHOLD,
+            "targets": [t.id for t in targets],
+        })
+        # Si copia la lista prima di iterare: kill_player puo' modificare
+        # lo stato (respawn/eliminazione) dei bersagli, ma non la lista dei
+        # giocatori della stanza, quindi qui non serve altro accorgimento;
+        # si usa comunque una lista "congelata" per chiarezza.
+        for victim in targets:
+            self.kill_player(victim, "lightning", player.id)
 
     # ---- bonus 400 punti: missile guidato (tasto "3") ----
 
@@ -1019,7 +1187,19 @@ class Room:
                         if q.alive and q.id != mz["owner"] and q.x == nx and q.y == ny
                     ]
                     if victims:
-                        for v in victims:
+                        armored = [v for v in victims if v.armor_active]
+                        other_victims = [v for v in victims if not v.armor_active]
+                        if armored:
+                            # Bonus 700 punti: la corazza laser respinge
+                            # anche il missile guidato (che non puo' essere
+                            # rimandato indietro come il laser, dato che e'
+                            # a ricerca automatica: viene semplicemente
+                            # distrutto all'impatto, senza fare danno).
+                            self.push_event({
+                                "kind": "missile_reflect", "id": mz["id"],
+                                "x": nx, "y": ny, "by": armored[0].id,
+                            })
+                        for v in other_victims:
                             self.kill_player(v, "missile", mz["owner"])
                         destroyed = True
 
@@ -1160,6 +1340,29 @@ class Room:
                 "x": t["x"], "y": t["y"], "dir": dir_name, "turret": True,
             })
 
+    def check_armor_effects(self):
+        """Bonus 700 punti: chi ha la corazza laser ATTIVA distrugge ogni
+        torretta la cui cella tocca, a prescindere da chi l'ha piazzata
+        (proprietario incluso)."""
+        if not self.turrets:
+            return
+        armored = [p for p in self.players.values() if p.alive and p.armor_active]
+        if not armored:
+            return
+        remaining = []
+        for t in self.turrets:
+            destroyer = next(
+                (a for a in armored if a.x == t["x"] and a.y == t["y"]), None
+            )
+            if destroyer is not None:
+                self.push_event({
+                    "kind": "turret_destroyed", "id": t["id"],
+                    "x": t["x"], "y": t["y"], "by": destroyer.id,
+                })
+            else:
+                remaining.append(t)
+        self.turrets = remaining
+
     def check_win(self):
         """Il round finisce quando resta UN SOLO giocatore vivo: quello e'
         il vincitore. Con le vite extra e i bonus (laser, mine, super
@@ -1225,6 +1428,7 @@ class Room:
             p.has_ninja = False
             p.is_assassin = False
             p.assassin_left = 0.0
+            p.ninja_used = False
             p.ghost_left = 0.0
             p.prot_left = 0.0
             p.has_laser = False
@@ -1241,6 +1445,12 @@ class Room:
             p.trap_uses_left = 0
             p.has_turret = False
             p.turret_placed = False
+            p.has_armor = False
+            p.armor_active = False
+            p.armor_left = 0.0
+            p.armor_used = False
+            p.has_lightning = False
+            p.lightning_used = False
             p.kills = 0
 
     # ---------- main loop ----------
@@ -1281,6 +1491,7 @@ class Room:
                 self.move_lasers()    # avanza i proiettili laser in volo (con eventuale rimbalzo)
                 self.check_mines()    # bonus 200 punti: fa esplodere le mine calpestate
                 self.move_missiles()  # bonus 400 punti: avanza i missili guidati verso il bersaglio
+                self.check_armor_effects()  # bonus 700 punti: la corazza distrugge le torrette toccate
                 winners, reason = self.check_win()
                 if winners is None and self.timer_left <= 0:
                     alive = [p for p in self.players.values() if p.alive]
@@ -1456,6 +1667,10 @@ async def handle_client(ws):
                     # l'ultima ricevuta prima che ci sia spazio per
                     # svoltare (vedi update_movement).
                     player.next_direction = direction
+                    # Da questo istante la richiesta ha TURN_BUFFER_SECONDS
+                    # di tempo per diventare applicabile, altrimenti viene
+                    # scartata (vedi update_movement).
+                    player.next_direction_ttl = TURN_BUFFER_SECONDS
 
             elif mtype == "place_mine":
                 # Bonus 200 punti: pressione del tasto "1" lato client.
@@ -1492,6 +1707,18 @@ async def handle_client(ws):
                     continue
                 room.try_place_turret(player)
 
+            elif mtype == "activate_armor":
+                # Bonus 700 punti: pressione del tasto "6" lato client.
+                if not room or not player:
+                    continue
+                room.try_activate_armor(player)
+
+            elif mtype == "activate_lightning":
+                # Bonus 800 punti: pressione del tasto "7" lato client.
+                if not room or not player:
+                    continue
+                room.try_activate_lightning(player)
+
             elif mtype == "stop":
                 # Il tasto/direzione e' stato rilasciato: il personaggio si
                 # ferma subito, non continua da solo nell'ultima direzione
@@ -1502,6 +1729,7 @@ async def handle_client(ws):
                     continue
                 player.direction = None
                 player.next_direction = None
+                player.next_direction_ttl = 0.0
                 player.move_accum = 0.0
 
             elif mtype == "ping":

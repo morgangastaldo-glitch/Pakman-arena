@@ -494,6 +494,12 @@ const BASE_CELL = 24; // risoluzione interna del canvas, in px per cella
 // aggiornamenti di rete dal server.
 const NORMAL_SPEED = 4.5;
 const ASSASSIN_SPEED_MULT = 1.1;  // il super assassino e' 1.1x rispetto a 1.0 dei giocatori normali
+// Stessa costante di TURN_BUFFER_SECONDS in common.py: una svolta richiesta
+// (nextDir) che non riesce a scattare entro questo tempo viene dimenticata
+// invece di restare in coda all'infinito (vedi stepSim). Deve combaciare
+// col server, altrimenti la previsione locale diverge dalle correzioni che
+// arrivano dal server.
+const TURN_BUFFER_SECONDS = 0.15;
 const SUPER_ASSASSIN_THRESHOLD = 300; // deve restare identica a SUPER_ASSASSIN_THRESHOLD in common.py
 // Soglie dei bonus, per l'indicazione "prossimo bonus" nell'HUD: devono
 // restare identiche a BONUS_THRESHOLDS in common.py.
@@ -506,9 +512,12 @@ const BONUS_STEPS = [
   { at: 400, label: "MISSILE GUIDATO (tasto 3)" },
   { at: 500, label: "TRAPPOLA (tasto 4)" },
   { at: 600, label: "TORRETTA AUTOMATICA (tasto 5)" },
+  { at: 700, label: "CORAZZA LASER (tasto 6)" },
+  { at: 800, label: "FULMINE (tasto 7)" },
 ];
 const MISSILE_SPEED_MULT = 1.1; // deve restare identica a MISSILE_SPEED_MULT in common.py
 const TRAP_DURATION_SECONDS = 3; // deve restare identica a TRAP_DURATION_SECONDS in common.py
+const MINE_VISIBILITY_RANGE = 5; // deve restare identica a MINE_VISIBILITY_RANGE in common.py
 function cellDurationMs(isAssassin){
   const speed = NORMAL_SPEED * (isAssassin ? ASSASSIN_SPEED_MULT : 1);
   return 1000 / speed;
@@ -534,6 +543,8 @@ const COLOR_HEX = {
   corallo:    "#ff5a36",
 };
 const ASSASSIN_COLOR = "#ff2b4e";
+const ARMOR_COLOR = "#4dffe8";
+const LIGHTNING_COLOR = "#ffe14d";
 const COLOR_NAMES = Object.keys(COLOR_HEX);
 const DIR_ANGLE = { right: 0, down: 90, left: 180, up: 270 };
 // Deve restare identico a DIRECTIONS in common.py: usato dalla simulazione
@@ -656,6 +667,7 @@ let lastServerPos = {};
 // direttamente sulla posizione del server se lo scarto e' grande (es. dopo
 // uno spawn, o dopo essere stati bloccati da un muro in modo imprevisto).
 let predGridX = 0, predGridY = 0, predAccum = 0, predDir = null, predNextDir = null;
+let predNextDirTtl = 0;  // scadenza di predNextDir (vedi TURN_BUFFER_SECONDS)
 let predInited = false;
 
 // Simulazione locale anche per TUTTI GLI ALTRI giocatori (non solo il
@@ -1636,6 +1648,24 @@ function stepSim(state, dt, speed, hasNextDirQueue){
   // per evitare che il personaggio "teletrasporti" attraverso i muri.
   if (remaining > 0.25) remaining = 0.25;
 
+  // La svolta in coda "scade" se non diventa applicabile entro
+  // TURN_BUFFER_SECONDS da quando e' stata richiesta (stessa costante e
+  // stessa regola del server, vedi update_movement in main.py): un input
+  // dato troppo presto rispetto alla svolta reale scade prima di potersi
+  // applicare (va quindi dato un po' piu' vicino all'incrocio), e un
+  // input dato troppo tardi (svolta gia' passata) viene semplicemente
+  // dimenticato, invece di restare in coda all'infinito in attesa del
+  // primo incrocio "utile" - che poteva capitare molte celle piu' avanti
+  // (svolta inaspettata) o essere a sua volta bloccato da un muro, nel
+  // qual caso veniva ritentato identico ad ogni frame senza mai riuscire
+  // (il personaggio "incastrato" a girare verso il muro).
+  if (hasNextDirQueue && state.nextDir){
+    state.nextDirTtl = (state.nextDirTtl || 0) - remaining;
+    if (state.nextDirTtl <= 0){
+      state.nextDir = null;
+    }
+  }
+
   while (remaining > 0){
     // Stessa regola del server (vedi update_movement in main.py): la
     // svolta in coda si applica SUBITO, non solo su un incrocio.
@@ -1704,10 +1734,10 @@ function stepSim(state, dt, speed, hasNextDirQueue){
 function stepLocalPrediction(dt, isAssassin){
   if (!predInited) return;
   let speed = NORMAL_SPEED * (isAssassin ? ASSASSIN_SPEED_MULT : 1);
-  const state = { gridX: predGridX, gridY: predGridY, accum: predAccum, dir: predDir, nextDir: predNextDir };
+  const state = { gridX: predGridX, gridY: predGridY, accum: predAccum, dir: predDir, nextDir: predNextDir, nextDirTtl: predNextDirTtl };
   stepSim(state, dt, speed, true);
   predGridX = state.gridX; predGridY = state.gridY; predAccum = state.accum;
-  predDir = state.dir; predNextDir = state.nextDir;
+  predDir = state.dir; predNextDir = state.nextDir; predNextDirTtl = state.nextDirTtl;
 }
 
 // Avanza la simulazione "dead reckoning" di un giocatore remoto: continua
@@ -1812,6 +1842,25 @@ function drawPlayers(players, now){
     }
 
     drawPacmanVariant(px, py, radius, mouthDeg, facing, baseColor, detailColor, p.character || "classic", 0);
+
+    // Corazza laser (bonus 700 punti, dura 20s): a differenza del ninja
+    // NON da' invisibilita', quindi l'anello e' disegnato per TUTTI i
+    // giocatori (non solo per se stessi), cosi' si vede chiaramente chi e'
+    // scudato in questo momento e va evitato/aggirato.
+    if (p.armor_on){
+      ctx.save();
+      ctx.strokeStyle = "rgba(77,255,232,0.9)";
+      ctx.lineWidth = 2;
+      const pulse = 2.5 + 2.5 * Math.abs(Math.sin(now / 130));
+      ctx.beginPath();
+      ctx.arc(px, py, radius + pulse, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = 0.35;
+      ctx.beginPath();
+      ctx.arc(px, py, radius + pulse + 4, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
 
     // Laser sbloccato (bonus 150 punti, dura 1 min): puntino rosso davanti alla bocca.
     if (p.laser && facing != null){
@@ -1968,11 +2017,19 @@ function drawSparks(now){
 }
 
 // Mine posate sulla mappa (bonus 200 punti): un piccolo disco lampeggiante.
-// Visibili SOLO a chi le ha posate: agli avversari restano nascoste finche'
-// non esplodono (vedi richiesta punto 3).
+// Sempre visibili a chi le ha posate. Le mine ALTRUI restano nascoste
+// finche' non ci si avvicina entro MINE_VISIBILITY_RANGE caselle (distanza
+// a scacchi/Chebyshev) dal proprio personaggio, poi diventano visibili
+// anche loro (si nascondono di nuovo se ci si allontana).
 function drawMines(now){
   const all = (currSnapshot && currSnapshot.mines) || [];
-  const list = all.filter(function(m){ return m.owner === myId; });
+  const me = findPlayer(currSnapshot, myId);
+  const list = all.filter(function(m){
+    if (m.owner === myId) return true;
+    if (!me) return false;
+    const dist = Math.max(Math.abs(m.x - me.x), Math.abs(m.y - me.y));
+    return dist <= MINE_VISIBILITY_RANGE;
+  });
   if (!list.length) return;
   ctx.save();
   list.forEach(function(m){
@@ -2278,6 +2335,7 @@ function onState(msg){
     predInited = false;
     predDir = null;
     predNextDir = null;
+    predNextDirTtl = 0;
     predAccum = 0;
     roundActive = true;
     lastCountdownSecond = null;
@@ -2487,6 +2545,8 @@ function onGameEvent(msg){
         missile:      ["MISSILE GUIDATO!", "premi 3 per lanciarlo"],
         trap:         ["TRAPPOLA SBLOCCATA!", "3 secondi \u00b7 3 usi \u00b7 premi 4"],
         turret:       ["TORRETTA SBLOCCATA!", "raggio 10 caselle \u00b7 premi 5 per piazzarla"],
+        armor:        ["CORAZZA LASER SBLOCCATA!", "20 secondi \u00b7 premi 6 per attivarla"],
+        lightning:    ["FULMINE SBLOCCATO!", "colpisce tutti \u00b7 premi 7 per scatenarlo"],
       };
       const lb = labels[msg.bonus] || ["BONUS!", ""];
       const txt = lb[0] + (lb[1] ? " \u00b7 " + lb[1] : "");
@@ -2502,7 +2562,9 @@ function onGameEvent(msg){
     case "kill": {
       const victim = findPlayer(currSnapshot, msg.victim);
       const at = msg.at || (victim ? [victim.x, victim.y] : [0, 0]);
-      const col = (victim && victim.assassin) ? ASSASSIN_COLOR
+      const col = (msg.cause === "lightning") ? LIGHTNING_COLOR
+                : (victim && victim.assassin) ? ASSASSIN_COLOR
+                : (victim && victim.armor_on) ? ARMOR_COLOR
                 : (victim ? (COLOR_HEX[(victim.colors && victim.colors[0])] || "#fff") : "#fff");
       explosions.push({ x: at[0], y: at[1], color: col, start: now });
       playEliminate();
@@ -2511,8 +2573,11 @@ function onGameEvent(msg){
       const byAssassin = msg.cause === "assassin";
       const byMissile = msg.cause === "missile";
       const byTrap = msg.cause === "trap";
+      const byArmor = msg.cause === "armor";
+      const byLightning = msg.cause === "lightning";
       const causeTxt = byLaser ? " dal laser" : (byMine ? " da una mina" : (byAssassin ? " da un ninja invisibile"
-        : (byMissile ? " da un missile guidato" : (byTrap ? " da una trappola" : ""))));
+        : (byMissile ? " da un missile guidato" : (byTrap ? " da una trappola" : (byArmor ? " dalla corazza laser"
+        : (byLightning ? " da un fulmine" : ""))))));
       const stolenTxt = msg.stolen ? (" (-" + msg.stolen + " punti)") : "";
       if (msg.victim === myId){
         showBonusBanner(msg.respawn ? ("HAI PERSO UNA VITA \u2665" + msg.lives) : "SEI STATO ELIMINATO");
@@ -2574,6 +2639,65 @@ function onGameEvent(msg){
     }
     case "assassin_off": {
       if (msg.player === myId) showToast("Modalita' ninja terminata");
+      break;
+    }
+    case "armor_on": {
+      if (msg.player === myId){
+        const me = findPlayer(currSnapshot, myId);
+        if (me){
+          explosions.push({ x: me.x, y: me.y, color: ARMOR_COLOR, start: now });
+        }
+        showBonusBanner("CORAZZA LASER ATTIVA!", "respinge tutto \u00b7 letale al tocco");
+        playBonus();
+      } else {
+        const who = findPlayer(currSnapshot, msg.player);
+        showToast((who ? who.name : "Un giocatore") + " ha attivato la corazza laser!");
+      }
+      break;
+    }
+    case "armor_off": {
+      if (msg.player === myId) showToast("La corazza laser si e' disattivata");
+      break;
+    }
+    case "lightning_on": {
+      // Bonus 800 punti: colpisce all'istante tutti gli avversari vivi.
+      // Un fulmine (effetto "esplosione" ricolorato) su ciascun bersaglio,
+      // preso dalla posizione nota nello snapshot corrente: le eliminazioni
+      // vere e proprie arrivano comunque una per una come eventi "kill"
+      // separati (stesso testo/suono di laser, mine, ecc.).
+      (msg.targets || []).forEach(function(tid){
+        const t = findPlayer(currSnapshot, tid);
+        if (t) explosions.push({ x: t.x, y: t.y, color: LIGHTNING_COLOR, start: now });
+      });
+      noiseBurst(0.25, 0.2);
+      tone(1200, 0.08, "square", 0.14);
+      if (msg.player === myId){
+        showBonusBanner("FULMINE SCATENATO!", "tutti gli avversari colpiti");
+        playBonus();
+      } else {
+        const who = findPlayer(currSnapshot, msg.player);
+        showToast((who ? who.name : "Un giocatore") + " ha scatenato un fulmine su tutti!");
+      }
+      break;
+    }
+    case "laser_reflect": {
+      // Il colpo e' stato respinto dalla corazza: scintilla piu' vistosa
+      // di un normale rimbalzo su muro, cosi' si capisce che e' successo
+      // qualcosa di diverso.
+      sparks.push({ x: msg.x, y: msg.y, start: now });
+      tone(900, 0.07, "square", 0.11);
+      break;
+    }
+    case "missile_reflect": {
+      explosions.push({ x: msg.x, y: msg.y, color: ARMOR_COLOR, start: now });
+      tone(700, 0.1, "square", 0.11);
+      break;
+    }
+    case "turret_destroyed": {
+      explosions.push({ x: msg.x, y: msg.y, color: ARMOR_COLOR, start: now });
+      noiseBurst(0.2, 0.16);
+      tone(130, 0.18, "sawtooth", 0.13, 0.02);
+      if (msg.by === myId) showToast("Torretta distrutta dalla corazza!");
       break;
     }
     case "laser_expired": {
@@ -2768,11 +2892,14 @@ function updateGameSidebar(msg){
            ":" + (p.colors || []).join(",") + ":" + (p.laser ? "l" : "") +
            (p.bounce ? "b" : "") + (p.mines ? ("m" + p.mines_left) : "") +
            (p.missile ? ("r" + p.missiles_left) : "") +
-           (p.ninja && p.id === myId ? "N" : "") +
+           (p.ninja && p.id === myId ? ("N" + (p.ninja_used ? "1" : "0")) : "") +
            (p.trapped ? "t" : "") +
            (p.trap && p.id === myId ? ("u" + p.trap_uses_left) : "") +
            (p.turret && p.id === myId ? ("g" + (p.turret_placed ? "1" : "0")) : "") +
-           ((p.assassin && p.id === myId) ? "A" : "");
+           ((p.assassin && p.id === myId) ? "A" : "") +
+           (p.armor && p.id === myId ? ("C" + (p.armor_used ? "1" : "0")) : "") +
+           (p.armor_on ? "O" : "") +
+           (p.lightning && p.id === myId ? ("F" + (p.lightning_used ? "1" : "0")) : "");
   }).join("|");
 
   if (sig !== lastSidebarSig){
@@ -2801,11 +2928,30 @@ function updateGameSidebar(msg){
       if (p.bounce){ const t = document.createElement("span"); t.className="tag alert"; t.textContent="RIMBALZO"; li.appendChild(t); }
       if (p.mines){ const t = document.createElement("span"); t.className="tag alert"; t.textContent="MINE " + p.mines_left; li.appendChild(t); }
       if (p.missile){ const t = document.createElement("span"); t.className="tag alert"; t.textContent="MISSILI " + p.missiles_left; li.appendChild(t); }
-      if (p.ninja && p.id === myId && !iAmAssassinRow){ const t = document.createElement("span"); t.className="tag alert"; t.textContent="NINJA (2)"; li.appendChild(t); }
+      if (p.ninja && p.id === myId && !iAmAssassinRow){
+        const t = document.createElement("span"); t.className="tag alert";
+        t.textContent = p.ninja_used ? "NINJA USATO" : "NINJA (2)";
+        li.appendChild(t);
+      }
       if (p.trapped){ const t = document.createElement("span"); t.className="tag alert"; t.textContent="INTRAPPOLATO"; li.appendChild(t); }
       if (p.trap && p.id === myId && p.trap_uses_left > 0){ const t = document.createElement("span"); t.className="tag alert"; t.textContent="TRAPPOLA " + p.trap_uses_left; li.appendChild(t); }
       if (p.turret && p.id === myId){ const t = document.createElement("span"); t.className="tag alert"; t.textContent = p.turret_placed ? "TORRETTA ATTIVA" : "TORRETTA (tasto 5)"; li.appendChild(t); }
       if (iAmAssassinRow){ const t = document.createElement("span"); t.className="tag alert"; t.textContent="ASSASSINO"; li.appendChild(t); }
+      if (p.armor && p.id === myId && !p.armor_on){
+        const t = document.createElement("span"); t.className="tag alert";
+        t.textContent = p.armor_used ? "CORAZZA USATA" : "CORAZZA (6)";
+        li.appendChild(t);
+      }
+      if (p.armor_on){
+        // Visibile a TUTTI (a differenza del ninja, la corazza non da'
+        // invisibilita'): si vede chi e' scudato in questo momento.
+        const t = document.createElement("span"); t.className="tag alert"; t.textContent="CORAZZA ATTIVA"; li.appendChild(t);
+      }
+      if (p.lightning && p.id === myId){
+        const t = document.createElement("span"); t.className="tag alert";
+        t.textContent = p.lightning_used ? "FULMINE USATO" : "FULMINE (7)";
+        li.appendChild(t);
+      }
       const spacer = document.createElement("span"); spacer.className = "spacer"; li.appendChild(spacer);
       const score = document.createElement("span");
       score.style.fontSize = "10px"; score.style.color = "var(--phosphor-dim)";
@@ -2884,13 +3030,15 @@ const KEY_TO_DIR = {
 let lastRequestedDir = null;
 
 function requestDir(dir){
-  // NIENTE piu' finestra di tempismo (TURN_WINDOW): come nel Pac-Man
-  // originale OGNI pressione viene accettata e messa in coda. Le
-  // inversioni di marcia scattano subito, le svolte perpendicolari
-  // scattano da sole al primo centro-cella/incrocio utile (vedi stepSim
-  // qui e update_movement sul server): i comandi non si "perdono" mai.
+  // Ogni pressione viene accettata e messa in coda (next_direction), ma
+  // solo per TURN_BUFFER_SECONDS: le inversioni di marcia scattano subito,
+  // le svolte perpendicolari scattano da sole al primo centro-cella/
+  // incrocio utile ENTRO quella finestra (vedi stepSim qui e
+  // update_movement sul server), altrimenti la richiesta scade e viene
+  // dimenticata, invece di restare in coda all'infinito.
   if (dir !== lastRequestedDir){ playTurn(); lastRequestedDir = dir; }
   predNextDir = dir;
+  predNextDirTtl = TURN_BUFFER_SECONDS;
   sendMsg({ type: "move", direction: dir });
 }
 
@@ -2934,6 +3082,23 @@ document.addEventListener("keydown", function(ev){
   // ignora richieste successive (vedi try_place_turret).
   if (ev.key === "5" && !ev.repeat){
     sendMsg({ type: "place_turret" });
+    ev.preventDefault();
+  }
+  // Bonus 700 punti: il tasto "6" attiva la corazza laser (respinge ogni
+  // proiettile, distrugge le torrette toccate, uccide chi tocca) per 20
+  // secondi. Utilizzabile una sola volta per round: il server ignora
+  // richieste successive (vedi try_activate_armor).
+  if (ev.key === "6" && !ev.repeat){
+    sendMsg({ type: "activate_armor" });
+    ev.preventDefault();
+  }
+  // Bonus 800 punti: il tasto "7" scatena un fulmine che colpisce
+  // istantaneamente TUTTI gli avversari vivi sulla mappa (nessun raggio
+  // d'azione), facendo perdere loro una vita ciascuno. Utilizzabile una
+  // sola volta per round: il server ignora richieste successive (vedi
+  // try_activate_lightning).
+  if (ev.key === "7" && !ev.repeat){
+    sendMsg({ type: "activate_lightning" });
     ev.preventDefault();
   }
 });
