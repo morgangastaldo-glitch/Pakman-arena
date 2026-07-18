@@ -2688,27 +2688,15 @@ const KEY_TO_DIR = {
 
 let lastRequestedDir = null;
 
-// Finestra di tolleranza per il tempismo della svolta: DEVE restare
-// identica a TURN_WINDOW in common.py, altrimenti client e server
-// "decidono" cose diverse sulla stessa pressione e si torna al problema
-// del teletrasporto da correzione. Il tasto prende solo se premuto vicino
-// al centro cella (predAccum vicino a 0.0 o vicino a 1.0): altrimenti
-// viene scartato subito, invece di restare in coda a sovrapporsi al
-// prossimo comando.
-const TURN_WINDOW = 0.40;
-
 function requestDir(dir){
-  // Da fermi, o se si conferma la direzione gia' in corso, il tempismo
-  // non conta: si accetta sempre (altrimenti non si potrebbe nemmeno
-  // partire dallo spawn, e "andare dritti" non e' mai una svolta).
-  const onTime = (predAccum <= TURN_WINDOW) || (predAccum >= 1 - TURN_WINDOW);
-  if (predDir !== null && dir !== predDir && !onTime){
-    // Fuori tempo rispetto alla curva: ignorato. Niente coda, niente
-    // suono di svolta, niente invio al server: bisogna ripremere il
-    // tasto un po' piu' vicino all'incrocio.
-    return;
-  }
   if (dir !== lastRequestedDir){ playTurn(); lastRequestedDir = dir; }
+  // predNextDir e' un singolo slot, non una coda: una nuova pressione
+  // sovrascrive sempre l'eventuale richiesta precedente ancora in attesa,
+  // quindi non e' mai possibile avere piu' di un input "in sospeso" alla
+  // volta. La svolta scattera' solo quando ci sara' davvero spazio (nessun
+  // muro) nella nuova direzione: vedi il controllo isWallCell in stepSim
+  // e is_wall in update_movement (main.py), che e' l'unica condizione che
+  // decide quando applicare next_direction.
   predNextDir = dir;
   sendMsg({ type: "move", direction: dir });
 }
