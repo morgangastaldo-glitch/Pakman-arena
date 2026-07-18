@@ -476,14 +476,15 @@ const BASE_CELL = 24; // risoluzione interna del canvas, in px per cella
 // aggiornamenti di rete dal server.
 const NORMAL_SPEED = 4.5;
 const KILLER_SPEED_MULT = 1.1;  // come richiesto: killer a 1.1x
-const BOOST_MULT = 2;           // bonus 30 punti: velocita' x2 (uguale a BOOST_MULT in common.py)
+const BOOST_MULT = 2;           // (bonus rimosso dal gioco, costante tenuta per compatibilita')
+const MINE_DOUBLE_TAP_MS = 350; // finestra del doppio tocco freccia destra/D che sgancia una mina (bonus 200 punti)
 // Soglie dei bonus, per l'indicazione "prossimo bonus" nell'HUD: devono
 // restare identiche a BONUS_THRESHOLDS in common.py.
 const BONUS_STEPS = [
-  { at: 15,  label: "VITA EXTRA" },
-  { at: 30,  label: "VELOCITA' x2" },
-  { at: 50,  label: "MODALITA' FANTASMA" },
+  { at: 50,  label: "VITA EXTRA" },
   { at: 100, label: "LASER" },
+  { at: 150, label: "LASER RIMBALZANTE" },
+  { at: 200, label: "MINE" },
 ];
 function cellDurationMs(isKiller){
   const speed = NORMAL_SPEED * (isKiller ? KILLER_SPEED_MULT : 1);
@@ -659,7 +660,8 @@ let lobbyPlayersCache = [];
 
 // ---- stato dei nuovi elementi (portali, laser, teletrasporto, particelle) ----
 let portals = [];          // [[x,y],[x,y]] ricevuti dal server con la mappa
-let beams = [];            // colpi di laser in corso: {from,to,dir,start}
+let beams = [];            // (non piu' usato: il vecchio raggio istantaneo e' stato sostituito dai proiettili)
+let sparks = [];           // scintille per rimbalzo/estinzione laser: {x,y,start}
 let swirls = [];           // effetti di teletrasporto in corso: {x,y,start,color}
 let themeFx = [];          // particelle atmosferiche a tema della mappa corrente
 let themeFxKind = null;    // tipo di effetto della mappa corrente (embers/snow/...)
@@ -1882,31 +1884,80 @@ function drawPortals(now){
   });
 }
 
-// Punto 3 (laser): il raggio disegnato per ~260ms. Linea spessa translucida
-// rossa + nucleo bianco sottile + scintilla sull'estremita'.
-function drawBeams(now){
-  beams = beams.filter(function(b){ return now - b.start < 260; });
-  beams.forEach(function(b){
-    const t = (now - b.start) / 260;
-    const x0 = b.from[0] * BASE_CELL + BASE_CELL / 2;
-    const y0 = b.from[1] * BASE_CELL + BASE_CELL / 2;
-    const x1 = b.to[0] * BASE_CELL + BASE_CELL / 2;
-    const y1 = b.to[1] * BASE_CELL + BASE_CELL / 2;
+// Bonus 100 punti: il laser e' ora un singolo proiettile in movimento
+// (niente piu' raggio istantaneo). La posizione e' quella autoritativa
+// mandata dal server ad ogni tick (currSnapshot.lasers): si disegna come
+// un piccolo "doppio trattino" (=) orientato nella direzione di marcia.
+function drawLaserProjectiles(now){
+  const list = (currSnapshot && currSnapshot.lasers) || [];
+  if (!list.length) return;
+  ctx.save();
+  ctx.strokeStyle = "#ff3b5c";
+  ctx.lineCap = "round";
+  list.forEach(function(lz){
+    const cx = lz.x * BASE_CELL + BASE_CELL / 2;
+    const cy = lz.y * BASE_CELL + BASE_CELL / 2;
+    const angle = Math.atan2(lz.dir[1], lz.dir[0]);
     ctx.save();
-    ctx.lineCap = "round";
-    ctx.globalAlpha = (1 - t) * 0.8;
-    ctx.strokeStyle = "#ff3b5c";
-    ctx.lineWidth = 6 * (1 - t) + 2;
-    ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
-    ctx.globalAlpha = (1 - t);
-    ctx.strokeStyle = "#fff";
-    ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
-    ctx.globalAlpha = (1 - t) * 0.9;
-    ctx.fillStyle = "#ffd0d8";
-    ctx.beginPath(); ctx.arc(x1, y1, 3 * (1 - t) + 1.5, 0, Math.PI * 2); ctx.fill();
+    ctx.translate(cx, cy);
+    ctx.rotate(angle);
+    // Bagliore morbido dietro al colpo.
+    ctx.globalAlpha = 0.35;
+    ctx.fillStyle = "#ff3b5c";
+    ctx.beginPath(); ctx.arc(0, 0, 5, 0, Math.PI * 2); ctx.fill();
+    // Doppio trattino "=" perpendicolare alla direzione di marcia.
+    ctx.globalAlpha = 0.95;
+    ctx.lineWidth = 2.2;
+    ctx.beginPath(); ctx.moveTo(-3, -2.6); ctx.lineTo(3, -2.6); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(-3, 2.6); ctx.lineTo(3, 2.6); ctx.stroke();
+    ctx.globalAlpha = 0.9;
+    ctx.fillStyle = "#fff";
+    ctx.beginPath(); ctx.arc(0, 0, 1.3, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
   });
+  ctx.restore();
+}
+
+// Scintille per rimbalzo (bonus 150 punti) o estinzione del proiettile.
+function drawSparks(now){
+  sparks = sparks.filter(function(s){ return now - s.start < 220; });
+  sparks.forEach(function(s){
+    const t = (now - s.start) / 220;
+    const cx = s.x * BASE_CELL + BASE_CELL / 2;
+    const cy = s.y * BASE_CELL + BASE_CELL / 2;
+    ctx.save();
+    ctx.globalAlpha = 1 - t;
+    ctx.strokeStyle = "#ffd0d8";
+    ctx.lineWidth = 1.5;
+    for (let i = 0; i < 5; i++){
+      const a = (i / 5) * Math.PI * 2;
+      const r = 2 + t * 7;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+      ctx.stroke();
+    }
+    ctx.restore();
+  });
+}
+
+// Mine posate sulla mappa (bonus 200 punti): un piccolo disco lampeggiante.
+function drawMines(now){
+  const list = (currSnapshot && currSnapshot.mines) || [];
+  if (!list.length) return;
+  ctx.save();
+  list.forEach(function(m){
+    const cx = m.x * BASE_CELL + BASE_CELL / 2;
+    const cy = m.y * BASE_CELL + BASE_CELL / 2;
+    const pulse = 0.6 + 0.4 * Math.abs(Math.sin(now / 200));
+    ctx.globalAlpha = 0.9;
+    ctx.fillStyle = "#ff9d1f";
+    ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = pulse;
+    ctx.fillStyle = "#fff";
+    ctx.beginPath(); ctx.arc(cx, cy, 1.6, 0, Math.PI * 2); ctx.fill();
+  });
+  ctx.restore();
 }
 
 // Effetto di teletrasporto (punto 4): anelli che si espandono dai due portali.
@@ -2015,7 +2066,9 @@ function renderLoop(now){
   drawPortals(now);
   drawThemeFx(now);
   drawPlayers(currSnapshot.players, now);
-  drawBeams(now);
+  drawMines(now);
+  drawLaserProjectiles(now);
+  drawSparks(now);
   drawExplosions(now);
   drawSwirls(now);
 
@@ -2099,6 +2152,7 @@ function onState(msg){
     pelletsLayerDirty = true;
     explosions = [];
     beams = [];
+    sparks = [];
     swirls = [];
     remoteSim = {};
     lastServerPos = {};
@@ -2309,10 +2363,10 @@ function onGameEvent(msg){
     }
     case "bonus": {
       const labels = {
-        extra_life: "VITA EXTRA! \u2665",
-        speed:      "VELOCITA' \u00d72 (15s)",
-        ghost:      "MODALITA' FANTASMA (10s)",
-        laser:      "LASER SBLOCCATO!",
+        extra_life:   "VITA EXTRA! \u2665",
+        laser:        "LASER SBLOCCATO!",
+        laser_bounce: "LASER RIMBALZANTE!",
+        mines:        "MINE SBLOCCATE! (3)",
       };
       const txt = labels[msg.bonus] || "BONUS!";
       if (msg.player === myId){
@@ -2332,16 +2386,40 @@ function onGameEvent(msg){
       explosions.push({ x: at[0], y: at[1], color: col, start: now });
       playEliminate();
       const byLaser = msg.cause === "laser";
+      const byMine = msg.cause === "mine";
+      const causeTxt = byLaser ? " dal laser" : (byMine ? " da una mina" : "");
       if (msg.victim === myId){
         showBonusBanner(msg.respawn ? ("HAI PERSO UNA VITA \u2665" + msg.lives) : "SEI STATO ELIMINATO");
       } else if (victim){
-        showToast(victim.name + (msg.respawn ? " colpito!" : " eliminato") + (byLaser ? " dal laser" : ""));
+        showToast(victim.name + (msg.respawn ? " colpito!" : " eliminato") + causeTxt);
       }
       break;
     }
-    case "laser": {
-      beams.push({ from: msg.from, to: msg.to, dir: msg.dir, start: now });
+    case "laser_fire": {
+      // Nuovo colpo: solo suono, il proiettile in se' viene disegnato ad
+      // ogni frame leggendo currSnapshot.lasers (autorita' server).
       playLaser();
+      break;
+    }
+    case "laser_bounce": {
+      // Piccola scintilla dove il colpo ha rimbalzato sul muro.
+      sparks.push({ x: msg.x, y: msg.y, start: now });
+      tone(700, 0.05, "square", 0.09);
+      break;
+    }
+    case "laser_end": {
+      sparks.push({ x: msg.x, y: msg.y, start: now });
+      break;
+    }
+    case "mine_place": {
+      if (msg.player === myId) showToast("Mina posata (" + msg.left + " rimaste)");
+      tone(220, 0.06, "square", 0.1);
+      break;
+    }
+    case "mine_boom": {
+      explosions.push({ x: msg.x, y: msg.y, color: "#ff9d1f", start: now });
+      noiseBurst(0.22, 0.18);
+      tone(120, 0.2, "sawtooth", 0.14, 0.02);
       break;
     }
     case "teleport": {
@@ -2449,7 +2527,8 @@ function updateGameSidebar(msg){
   // direttamente nello <span> gia' esistente, senza ricostruire nulla (perf).
   const sig = myId + "|" + msg.players.map(function(p){
     return p.id + ":" + p.alive + ":" + p.is_killer + ":" + p.name +
-           ":" + (p.colors || []).join(",") + ":" + (p.ghost ? "g" : "") + (p.laser ? "l" : "");
+           ":" + (p.colors || []).join(",") + ":" + (p.laser ? "l" : "") +
+           (p.bounce ? "b" : "") + (p.mines ? ("m" + p.mines_left) : "");
   }).join("|");
 
   if (sig !== lastSidebarSig){
@@ -2474,8 +2553,9 @@ function updateGameSidebar(msg){
       li.appendChild(nameSpan);
       if (p.id === myId){ const t = document.createElement("span"); t.className="tag you"; t.textContent="TU"; li.appendChild(t); }
       if (p.is_killer){ const t = document.createElement("span"); t.className="tag killer"; t.textContent="KILLER"; li.appendChild(t); }
-      if (p.ghost && !p.is_killer){ const t = document.createElement("span"); t.className="tag you"; t.textContent="FANTASMA"; li.appendChild(t); }
       if (p.laser){ const t = document.createElement("span"); t.className="tag killer"; t.textContent="LASER"; li.appendChild(t); }
+      if (p.bounce){ const t = document.createElement("span"); t.className="tag killer"; t.textContent="RIMBALZO"; li.appendChild(t); }
+      if (p.mines){ const t = document.createElement("span"); t.className="tag killer"; t.textContent="MINE " + p.mines_left; li.appendChild(t); }
       const spacer = document.createElement("span"); spacer.className = "spacer"; li.appendChild(spacer);
       const score = document.createElement("span");
       score.style.fontSize = "10px"; score.style.color = "var(--phosphor-dim)";
@@ -2558,11 +2638,28 @@ function requestDir(dir){
   sendMsg({ type: "move", direction: dir });
 }
 
+// Bonus 200 punti: doppio tocco veloce di freccia destra o tasto D (il
+// tasto destro del movimento) sgancia una mina nella cella corrente. Il
+// server e' l'autorita' su quante mine restano e ignora la richiesta se il
+// bonus non e' ancora sbloccato o non ci sono piu' mine disponibili.
+let lastRightTapAt = 0;
+
 document.addEventListener("keydown", function(ev){
   if (currentScreen !== "game") return;
   const dir = KEY_TO_DIR[ev.key];
   if (dir){
-    if (!ev.repeat) requestDir(dir);
+    if (!ev.repeat){
+      requestDir(dir);
+      if (dir === "right"){
+        const now = performance.now();
+        if (now - lastRightTapAt < MINE_DOUBLE_TAP_MS){
+          sendMsg({ type: "place_mine" });
+          lastRightTapAt = 0; // evita che un terzo tocco ravvicinato sganci subito un'altra mina
+        } else {
+          lastRightTapAt = now;
+        }
+      }
+    }
     ev.preventDefault();
   }
 });

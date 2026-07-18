@@ -36,17 +36,21 @@ KILLER_SPEED_MULT = 1.1     # come richiesto: killer 1.1x rispetto a 1.0 dei gio
 # Ogni pallino della mappa vale 1 punto. Al raggiungimento di ogni soglia
 # (una sola volta per round) scatta il bonus corrispondente.
 BONUS_THRESHOLDS = [
-    (15,  "extra_life"),   # +1 vita: se il killer ti prende, respawni invece di uscire
-    (30,  "speed"),        # velocita' x2 per 15 secondi
-    (50,  "ghost"),        # modalita' fantasma: invisibile e non catturabile dal killer
-    (100, "laser"),        # laser frontale a intermittenza, elimina chiunque (fantasmi inclusi)
+    (50,  "extra_life"),    # +1 vita: se il killer ti prende, respawni invece di uscire
+    (100, "laser"),         # sblocca il laser: un colpo singolo (proiettile) ogni secondo
+    (150, "laser_bounce"),  # i colpi laser rimbalzano sui muri invece di sparire
+    (200, "mines"),         # sblocca 3 mine sganciabili sulla mappa
 ]
-BOOST_MULT = 2.0               # moltiplicatore del bonus velocita'
-BOOST_SECONDS = 15.0           # durata del bonus velocita'
-GHOST_SECONDS = 10.0           # durata della modalita' fantasma
+BOOST_MULT = 2.0               # (bonus rimosso dal gioco, costante tenuta per compatibilita')
+BOOST_SECONDS = 15.0           # (bonus rimosso dal gioco, costante tenuta per compatibilita')
+GHOST_SECONDS = 10.0           # (bonus rimosso dal gioco, costante tenuta per compatibilita')
 SPAWN_PROTECT_SECONDS = 3.0    # invulnerabilita' (solo dal killer) dopo un respawn
-LASER_INTERVAL_SECONDS = 3.0   # ogni quanto il laser spara un colpo, una volta sbloccato
+LASER_INTERVAL_SECONDS = 1.0   # ogni quanto il laser spara un colpo, una volta sbloccato (1 al secondo)
 LASER_FIRST_DELAY_SECONDS = 1.0  # attesa del primo colpo dopo lo sblocco
+LASER_PROJECTILE_SPEED = 10.0  # celle al secondo percorse dal proiettile laser
+LASER_BOUNCE_DISTANCE = 12     # celle percorribili dopo il primo rimbalzo su una parete (bonus 150 punti)
+MINES_COUNT = 3                # numero di mine disponibili una volta sbloccato il bonus 200 punti
+MINE_DOUBLE_TAP_MS = 350       # finestra (ms) del doppio tocco freccia destra/D che sgancia una mina (uso lato client)
 PORTAL_COOLDOWN_SECONDS = 1.2  # anti ping-pong: dopo un teletrasporto i portali si ignorano per un attimo
 
 # Nome colore (mostrato all'utente, in italiano) -> id colore interno.

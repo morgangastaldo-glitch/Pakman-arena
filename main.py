@@ -39,6 +39,7 @@ from common import (
     pick_random_maze,
     BONUS_THRESHOLDS, BOOST_MULT, BOOST_SECONDS, GHOST_SECONDS,
     SPAWN_PROTECT_SECONDS, LASER_INTERVAL_SECONDS, LASER_FIRST_DELAY_SECONDS,
+    LASER_PROJECTILE_SPEED, LASER_BOUNCE_DISTANCE, MINES_COUNT,
     PORTAL_COOLDOWN_SECONDS,
 )
 
@@ -91,13 +92,16 @@ class Player:
         self.connected = True
         # ---- sistema punti / bonus (azzerato ad ogni round) ----
         self.points = 0
-        self.lives = 1                 # a 15 punti diventa 2: il killer non elimina, fa respawnare
+        self.lives = 1                 # a 50 punti diventa 2: il killer non elimina, fa respawnare
         self.claimed = set()           # soglie bonus gia' riscattate in questo round
-        self.boost_left = 0.0          # secondi rimanenti di velocita' x2 (bonus 30 punti)
-        self.ghost_left = 0.0          # secondi rimanenti di modalita' fantasma (bonus 50 punti)
+        self.boost_left = 0.0          # (bonus velocita' rimosso dal gioco: resta sempre a 0)
+        self.ghost_left = 0.0          # (bonus fantasma rimosso dal gioco: resta sempre a 0)
         self.prot_left = 0.0           # invulnerabilita' dal killer dopo un respawn
-        self.has_laser = False         # bonus 100 punti: laser frontale a intermittenza
+        self.has_laser = False         # bonus 100 punti: laser frontale a intermittenza (1 colpo/secondo)
         self.laser_cd = 0.0            # countdown al prossimo colpo di laser
+        self.has_bounce = False        # bonus 150 punti: i colpi laser rimbalzano sui muri
+        self.has_mines = False         # bonus 200 punti: puo' sganciare mine
+        self.mines_left = 0            # mine ancora disponibili in questo round
         self.portal_cd = 0.0           # anti ping-pong dopo un teletrasporto
         # Ultima direzione di marcia nota: e' il "lato frontale" da cui parte
         # il laser anche se in questo istante si e' fermi contro un muro.
@@ -127,6 +131,9 @@ class Player:
             "boost": self.boost_left > 0,
             "prot": self.prot_left > 0,
             "laser": self.has_laser,
+            "bounce": self.has_bounce,
+            "mines": self.has_mines,
+            "mines_left": self.mines_left,
         }
 
 
@@ -150,6 +157,11 @@ class Room:
         # cio' che permette al client effetti/suoni precisi senza dover
         # "indovinare" confrontando snapshot consecutivi.
         self.events = []
+        # Proiettili laser in volo e mine posate sulla mappa: entrambi sono
+        # liste di dict semplici (niente classi dedicate, sono pochi campi)
+        # azzerate ad ogni nuovo round.
+        self.lasers = []
+        self.mines = []
         # Mappa corrente della stanza: viene ripescata a caso tra le 10
         # disponibili a OGNI inizio round (vedi run_round), cosi' ogni
         # partita puo' capitare su una mappa diversa per forma/colore/misura.
@@ -277,9 +289,14 @@ class Room:
             p.prot_left = 0.0
             p.has_laser = False
             p.laser_cd = 0.0
+            p.has_bounce = False
+            p.has_mines = False
+            p.mines_left = 0
             p.portal_cd = 0.0
             p.facing = "right"
         self.killer_id = None
+        self.lasers = []
+        self.mines = []
 
     def start_killer_phase(self):
         self.state = "PLAYING"
@@ -377,7 +394,7 @@ class Room:
                     if p.is_killer:
                         speed *= KILLER_SPEED_MULT
                     if p.boost_left > 0:
-                        speed *= BOOST_MULT  # bonus 30 punti: velocita' x2
+                        speed *= BOOST_MULT  # bonus velocita' rimosso: boost_left resta sempre 0
                     p.move_accum += speed * TICK_DT
                     if p.move_accum >= 1.0:
                         p.move_accum -= 1.0
@@ -409,16 +426,14 @@ class Room:
             p.claimed.add(threshold)
             if kind == "extra_life":
                 p.lives += 1
-            elif kind == "speed":
-                p.boost_left = BOOST_SECONDS
-            elif kind == "ghost":
-                # Il killer in carica resta comunque visibile lato client;
-                # per lui il bonus e' di fatto "in pausa" finche' e' killer
-                # (vedi rotate_killer, che azzera ghost_left al passaggio).
-                p.ghost_left = GHOST_SECONDS
             elif kind == "laser":
                 p.has_laser = True
                 p.laser_cd = LASER_FIRST_DELAY_SECONDS
+            elif kind == "laser_bounce":
+                p.has_bounce = True
+            elif kind == "mines":
+                p.has_mines = True
+                p.mines_left = MINES_COUNT
             self.push_event({
                 "kind": "bonus", "player": p.id,
                 "bonus": kind, "points": threshold,
@@ -494,9 +509,10 @@ class Room:
         for p in list(self.players.values()):
             if p.id == killer.id or not p.alive:
                 continue
-            # Il tocco del killer non puo' nulla contro la modalita' fantasma
-            # (bonus 50 punti) ne' contro la protezione post-respawn. Il
-            # laser invece ignora entrambe (vedi fire_laser).
+            # Il tocco del killer non puo' nulla contro la protezione
+            # post-respawn (il bonus fantasma e' stato rimosso dal gioco,
+            # ghost_left resta sempre 0). Laser e mine ignorano comunque
+            # entrambe (vedi move_lasers/check_mines).
             if p.ghost_left > 0 or p.prot_left > 0:
                 continue
             same_cell = (p.x == killer.x and p.y == killer.y)
@@ -508,8 +524,8 @@ class Room:
                 self.kill_player(p, "killer")
 
     def update_lasers(self):
-        """Bonus 100 punti: ogni LASER_INTERVAL_SECONDS parte un colpo dal
-        lato frontale del personaggio."""
+        """Bonus 100 punti: ogni LASER_INTERVAL_SECONDS (1 secondo) parte un
+        singolo colpo (proiettile) dal lato frontale del personaggio."""
         for p in list(self.players.values()):
             if not p.alive or not p.has_laser:
                 continue
@@ -517,38 +533,132 @@ class Room:
             if p.laser_cd > 0:
                 continue
             p.laser_cd = LASER_INTERVAL_SECONDS
-            self.fire_laser(p)
+            self.spawn_laser(p)
 
-    def fire_laser(self, shooter):
-        """Raggio istantaneo: percorre tutta la distanza libera davanti al
-        giocatore e si infrange sul primo muro o sul primo giocatore colpito.
-        Elimina QUALSIASI giocatore (fantasmi e protetti inclusi)."""
+    def spawn_laser(self, shooter):
+        """Crea un nuovo proiettile laser (singolo colpo) che parte dalla
+        cella dello sparatore e viaggia nella sua direzione frontale. Il
+        proiettile vero e proprio avanza poi, un tick alla volta, dentro
+        move_lasers()."""
         dx, dy = DIRECTIONS.get(shooter.facing, (1, 0))
-        x, y = shooter.x, shooter.y
-        last_free = (shooter.x, shooter.y)
-        hit = []
-        while True:
-            x += dx
-            y += dy
-            if is_wall(self.maze, self.maze_w, self.maze_h, x, y):
-                break
-            last_free = (x, y)
+        laser = {
+            "id": uuid.uuid4().hex[:8],
+            "owner": shooter.id,
+            "x": shooter.x, "y": shooter.y,   # cella intera corrente
+            "dx": dx, "dy": dy,
+            "move_accum": 0.0,
+            "bounce_left": None,  # None finche' non ha ancora rimbalzato
+        }
+        self.lasers.append(laser)
+        self.push_event({
+            "kind": "laser_fire", "id": laser["id"], "shooter": shooter.id,
+            "x": shooter.x, "y": shooter.y, "dir": shooter.facing,
+        })
+
+    def move_lasers(self):
+        """Avanza tutti i proiettili laser attivi di un tick. Un proiettile
+        elimina QUALSIASI giocatore colpito (protezioni incluse, come il
+        vecchio raggio istantaneo) e si estingue sul primo muro incontrato,
+        a meno che lo sparatore abbia sbloccato il rimbalzo (bonus 150
+        punti): in quel caso rimbalza in una direzione libera scelta a caso
+        e prosegue per altre LASER_BOUNCE_DISTANCE celle prima di sparire."""
+        if not self.lasers:
+            return
+        survivors = []
+        for lz in self.lasers:
+            lz["move_accum"] += LASER_PROJECTILE_SPEED * TICK_DT
+            destroyed = False
+            while lz["move_accum"] >= 1.0 and not destroyed:
+                nx, ny = lz["x"] + lz["dx"], lz["y"] + lz["dy"]
+                if is_wall(self.maze, self.maze_w, self.maze_h, nx, ny):
+                    shooter = self.players.get(lz["owner"])
+                    can_bounce = (
+                        shooter is not None and shooter.has_bounce
+                        and (lz["bounce_left"] is None or lz["bounce_left"] > 0)
+                    )
+                    if not can_bounce:
+                        destroyed = True
+                        break
+                    # Sceglie una direzione libera a caso (diversa da quella
+                    # che ha appena portato al muro, se possibile).
+                    options = []
+                    for ddx, ddy in DIRECTIONS.values():
+                        if (ddx, ddy) == (-lz["dx"], -lz["dy"]):
+                            continue  # evita di tornare indietro sui propri passi
+                        tx, ty = lz["x"] + ddx, lz["y"] + ddy
+                        if not is_wall(self.maze, self.maze_w, self.maze_h, tx, ty):
+                            options.append((ddx, ddy))
+                    if not options:
+                        # Vicolo cieco: nessuna via libera nemmeno tornando
+                        # indietro, il proiettile si estingue qui.
+                        destroyed = True
+                        break
+                    lz["dx"], lz["dy"] = random.choice(options)
+                    first_bounce = lz["bounce_left"] is None
+                    if first_bounce:
+                        lz["bounce_left"] = LASER_BOUNCE_DISTANCE
+                        self.push_event({
+                            "kind": "laser_bounce", "id": lz["id"],
+                            "x": lz["x"], "y": lz["y"],
+                        })
+                    continue  # riprova subito nella nuova direzione, stesso tick
+                # Cella libera: avanza di una cella.
+                lz["move_accum"] -= 1.0
+                lz["x"], lz["y"] = nx, ny
+                if lz["bounce_left"] is not None:
+                    lz["bounce_left"] -= 1
+                victims = [
+                    q for q in self.players.values()
+                    if q.alive and q.id != lz["owner"] and q.x == nx and q.y == ny
+                ]
+                if victims:
+                    for v in victims:
+                        self.kill_player(v, "laser", lz["owner"])
+                    destroyed = True
+                    break
+                if lz["bounce_left"] is not None and lz["bounce_left"] <= 0:
+                    destroyed = True
+                    break
+            if destroyed:
+                self.push_event({"kind": "laser_end", "id": lz["id"], "x": lz["x"], "y": lz["y"]})
+            else:
+                survivors.append(lz)
+        self.lasers = survivors
+
+    def try_place_mine(self, player):
+        """Bonus 200 punti: sgancia una mina nella cella corrente del
+        giocatore (finche' ne ha ancora disponibili). Chiamato dal doppio
+        tocco di freccia destra/D lato client."""
+        if not player.alive or not player.has_mines or player.mines_left <= 0:
+            return
+        if any(m["x"] == player.x and m["y"] == player.y for m in self.mines):
+            return  # niente due mine sulla stessa cella
+        player.mines_left -= 1
+        mine = {"id": uuid.uuid4().hex[:8], "owner": player.id, "x": player.x, "y": player.y}
+        self.mines.append(mine)
+        self.push_event({
+            "kind": "mine_place", "id": mine["id"], "player": player.id,
+            "x": player.x, "y": player.y, "left": player.mines_left,
+        })
+
+    def check_mines(self):
+        """Fa esplodere le mine calpestate: elimina chiunque le tocchi
+        (proprietario escluso), ignorando protezioni, come il laser."""
+        if not self.mines:
+            return
+        remaining = []
+        for m in self.mines:
             victims = [
                 q for q in self.players.values()
-                if q.alive and q.id != shooter.id and q.x == x and q.y == y
+                if q.alive and q.id != m["owner"] and q.x == m["x"] and q.y == m["y"]
             ]
             if victims:
-                hit = victims
-                break
-        self.push_event({
-            "kind": "laser", "shooter": shooter.id,
-            "from": [shooter.x, shooter.y],
-            "to": [last_free[0], last_free[1]],
-            "dir": shooter.facing,
-            "hit": [v.id for v in hit],
-        })
-        for v in hit:
-            self.kill_player(v, "laser", shooter.id)
+                for v in victims:
+                    self.kill_player(v, "mine", m["owner"])
+                self.push_event({"kind": "mine_boom", "id": m["id"], "x": m["x"], "y": m["y"]})
+            else:
+                remaining.append(m)
+        self.mines = remaining
 
     def check_win(self):
         """FIX richiesto: il round NON finisce piu' alla prima eliminazione.
@@ -581,6 +691,11 @@ class Room:
             "killer_timer": round(max(self.killer_timer, 0), 1),
             "killer_id": self.killer_id,
             "players": [p.to_public() for p in self.players.values()],
+            "lasers": [
+                {"id": lz["id"], "x": lz["x"], "y": lz["y"], "dir": [lz["dx"], lz["dy"]]}
+                for lz in self.lasers
+            ],
+            "mines": [{"id": m["id"], "x": m["x"], "y": m["y"]} for m in self.mines],
         }
 
     async def drain_events(self):
@@ -597,6 +712,8 @@ class Room:
         self.killer_timer = 0.0
         self.last_kill = None
         self.events = []
+        self.lasers = []
+        self.mines = []
         for p in self.players.values():
             p.alive = True
             p.is_killer = False
@@ -605,6 +722,9 @@ class Room:
             p.ghost_left = 0.0
             p.prot_left = 0.0
             p.has_laser = False
+            p.has_bounce = False
+            p.has_mines = False
+            p.mines_left = 0
 
     # ---------- main loop ----------
 
@@ -638,7 +758,9 @@ class Room:
             elif self.state == "PLAYING":
                 self.timer_left -= TICK_DT
                 self.killer_timer -= TICK_DT
-                self.update_lasers()  # bonus 100 punti: colpi a intermittenza
+                self.update_lasers()  # bonus 100 punti: un colpo al secondo
+                self.move_lasers()    # avanza i proiettili laser in volo (con eventuale rimbalzo)
+                self.check_mines()    # bonus 200 punti: fa esplodere le mine calpestate
                 if self.killer_timer <= 0:
                     self.rotate_killer()
                 winners, reason = self.check_win()
@@ -806,6 +928,14 @@ async def handle_client(ws):
                 direction = msg.get("direction")
                 if direction in DIRECTIONS:
                     player.next_direction = direction
+
+            elif mtype == "place_mine":
+                # Bonus 200 punti: doppio tocco di freccia destra/D lato
+                # client. Il server resta l'autorita' su quante mine restano
+                # e su dove vengono posate.
+                if not room or not player:
+                    continue
+                room.try_place_mine(player)
 
             elif mtype == "stop":
                 # Il tasto/direzione e' stato rilasciato: il personaggio si
