@@ -44,7 +44,7 @@ ASSASSIN_SPEED_MULT = 1.1   # il super assassino (bonus 300 punti) e' 1.1x rispe
 # vicino a 0.0, l'istante dell'incrocio nel Pac-Man originale). Fuori da
 # questa finestra la pressione viene scartata (non messa in coda): bisogna
 # premere di nuovo, con un tempismo piu' vicino alla curva.
-TURN_WINDOW = 0.22  # frazione di cella (0.0-1.0) di tolleranza attorno al centro cella
+TURN_WINDOW = 0.40  # frazione di cella (0.0-1.0) di tolleranza attorno al centro cella
 
 # ---- sistema punti e bonus a traguardi ----
 # Ogni pallino normale vale 1 punto. In 10 punti (angoli/estremita') della
