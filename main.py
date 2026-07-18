@@ -48,9 +48,10 @@ from common import (
     SUPER_ASSASSIN_DURATION_SECONDS, LASER_DURATION_SECONDS,
     SPAWN_PROTECT_SECONDS, LASER_INTERVAL_SECONDS, LASER_FIRST_DELAY_SECONDS,
     LASER_PROJECTILE_SPEED, LASER_BOUNCE_DISTANCE, MINES_COUNT,
-    PORTAL_COOLDOWN_SECONDS,
+    PORTAL_COOLDOWN_SECONDS, PORTAL_ON_SECONDS, PORTAL_OFF_SECONDS,
     MISSILE_SPEED_MULT, MISSILES_COUNT, MISSILE_RETARGET_SECONDS,
-    TRAP_THRESHOLD, TRAP_DURATION_SECONDS, TRAP_RANGE,
+    TRAP_THRESHOLD, TRAP_DURATION_SECONDS, TRAP_RANGE, TRAP_MAX_USES,
+    TURRET_THRESHOLD, TURRET_FIRE_INTERVAL_SECONDS,
 )
 
 MAX_PLAYER_COLORS = 2  # colore primario + colore di dettaglio (opzionale)
@@ -135,6 +136,10 @@ class Player:
         self.trap_target = None        # id della vittima che QUESTO giocatore ha intrappolato
         self.trapped_left = 0.0        # se > 0, QUESTO giocatore e' intrappolato (immobile)
         self.trapped_by = None         # id di chi lo ha intrappolato (per pulizia alla scadenza/morte)
+        self.trap_uses_left = 0        # quante volte puo' ancora INNESCARE la trappola (max TRAP_MAX_USES)
+        # ---- bonus 600 punti: torretta automatica permanente (tasto "5") ----
+        self.has_turret = False        # bonus sbloccato (una volta per round)
+        self.turret_placed = False     # True dopo il piazzamento: il tasto "5" e' utilizzabile una sola volta
         # Uccisioni fatte in questo round: ogni 2 kill si guadagna una vita extra.
         self.kills = 0
 
@@ -169,8 +174,11 @@ class Player:
             "missile": self.has_missile,
             "missiles_left": self.missiles_left,
             "trap": self.has_trap,
+            "trap_uses_left": self.trap_uses_left,
             "trapped": self.trapped_left > 0,
             "trapped_left": round(self.trapped_left, 1) if self.trapped_left > 0 else 0,
+            "turret": self.has_turret,
+            "turret_placed": self.turret_placed,
         }
 
 
@@ -196,6 +204,10 @@ class Room:
         # azzerate ad ogni nuovo round.
         self.lasers = []
         self.mines = []
+        # Torrette automatiche piazzate (bonus 600 punti): permanenti, non
+        # vengono mai svuotate durante il round, solo ad ogni nuovo round
+        # (vedi assign_spawns/reset_to_lobby).
+        self.turrets = []
         # Mappa corrente della stanza: viene ripescata a caso tra le 10
         # disponibili a OGNI inizio round (vedi run_round), cosi' ogni
         # partita puo' capitare su una mappa diversa per forma/colore/misura.
@@ -252,6 +264,11 @@ class Room:
             self.portals = [(1, left_y), (self.maze_w - 2, right_y)]
         else:
             self.portals = []
+        # I portali partono accesi ad ogni nuova mappa/round, poi si
+        # alternano acceso/spento ogni PORTAL_ON_SECONDS/PORTAL_OFF_SECONDS
+        # (vedi update_portal_cycle, chiamato una volta per tick).
+        self.portal_on = True
+        self.portal_cycle_left = PORTAL_ON_SECONDS
 
     def map_payload(self):
         return {
@@ -338,10 +355,14 @@ class Room:
             p.trap_target = None
             p.trapped_left = 0.0
             p.trapped_by = None
+            p.trap_uses_left = 0
+            p.has_turret = False
+            p.turret_placed = False
             p.kills = 0
         self.lasers = []
         self.mines = []
         self.missiles = []
+        self.turrets = []
 
     def begin_playing(self):
         """Fine countdown iniziale: il round entra nel vivo. Non c'e' piu'
@@ -549,15 +570,32 @@ class Room:
         ):
             p.claimed.add(TRAP_THRESHOLD)
             p.has_trap = True
+            p.trap_uses_left = TRAP_MAX_USES
             self.push_event({
                 "kind": "bonus", "player": p.id,
                 "bonus": "trap", "points": TRAP_THRESHOLD,
             })
+        # Bonus 600 punti: sblocca la torretta automatica permanente, ma NON
+        # la piazza subito. Si piazza a comando col tasto "5" (vedi
+        # try_place_turret), una sola volta per giocatore.
+        if (
+            p.alive
+            and p.points >= TURRET_THRESHOLD
+            and TURRET_THRESHOLD not in p.claimed
+        ):
+            p.claimed.add(TURRET_THRESHOLD)
+            p.has_turret = True
+            self.push_event({
+                "kind": "bonus", "player": p.id,
+                "bonus": "turret", "points": TURRET_THRESHOLD,
+            })
 
     def try_portal(self, p):
         """Se il giocatore e' su un portale (e non e' appena arrivato da un
-        teletrasporto), lo sposta al portale opposto mantenendo la direzione."""
-        if not self.portals or p.portal_cd > 0:
+        teletrasporto), lo sposta al portale opposto mantenendo la direzione.
+        Funziona solo mentre i portali sono ACCESI (vedi update_portal_cycle):
+        da spenti, stare sulla cella del portale non ha alcun effetto."""
+        if not self.portals or p.portal_cd > 0 or not self.portal_on:
             return
         pos = (p.x, p.y)
         if pos == self.portals[0]:
@@ -574,6 +612,17 @@ class Room:
             "kind": "teleport", "player": p.id,
             "from": [src[0], src[1]], "to": [dest[0], dest[1]],
         })
+
+    def update_portal_cycle(self):
+        """Alterna i portali tra acceso (PORTAL_ON_SECONDS) e spento
+        (PORTAL_OFF_SECONDS), avanti e indietro per tutto il round."""
+        if not self.portals:
+            return
+        self.portal_cycle_left -= TICK_DT
+        if self.portal_cycle_left <= 0:
+            self.portal_on = not self.portal_on
+            self.portal_cycle_left = PORTAL_ON_SECONDS if self.portal_on else PORTAL_OFF_SECONDS
+            self.push_event({"kind": "portal_toggle", "on": self.portal_on})
 
     def respawn_player(self, p):
         """Rimette in gioco chi aveva una vita extra: se un super assassino
@@ -952,8 +1001,9 @@ class Room:
         - Se invece ha gia' una vittima intrappolata ed e' abbastanza
           vicino (TRAP_RANGE celle), la fa detonare con una piccola
           esplosione (perde una vita).
-        Puo' essere riattivata piu' volte nello stesso round: non si
-        consuma come mine/missili."""
+        L'INNESCO (intrappolare un nuovo bersaglio) e' limitato a
+        TRAP_MAX_USES volte per giocatore, per round: la detonazione di una
+        trappola gia' innescata non consuma un uso extra."""
         if not player.alive or not player.has_trap:
             return
 
@@ -969,16 +1019,83 @@ class Room:
                 return
             player.trap_target = None
 
+        # Nessuna vittima attualmente intrappolata: per innescarne una nuova
+        # serve almeno un uso residuo (ne restano al massimo TRAP_MAX_USES
+        # per round).
+        if player.trap_uses_left <= 0:
+            return
+
         target = self.nearest_alive(player.x, player.y, {player.id})
         if target is None:
             return
+        player.trap_uses_left -= 1
         target.trapped_left = TRAP_DURATION_SECONDS
         target.trapped_by = player.id
         player.trap_target = target.id
         self.push_event({
             "kind": "trap_start", "player": player.id, "victim": target.id,
-            "seconds": TRAP_DURATION_SECONDS,
+            "seconds": TRAP_DURATION_SECONDS, "uses_left": player.trap_uses_left,
         })
+
+    # ---- bonus 600 punti: torretta automatica permanente (tasto "5") ----
+
+    def try_place_turret(self, player):
+        """Tasto '5': piazza UNA SOLA VOLTA (per tutto il round) una
+        torretta nella cella corrente del giocatore. Da quel momento la
+        torretta e' permanente (resta sulla mappa fino a fine round, anche
+        se il proprietario muore o si disconnette) e spara da sola verso il
+        nemico vivo piu' vicino, con la stessa cadenza del laser (vedi
+        update_turrets)."""
+        if not player.alive or not player.has_turret or player.turret_placed:
+            return
+        player.turret_placed = True
+        turret = {
+            "id": uuid.uuid4().hex[:8],
+            "owner": player.id,
+            "x": player.x, "y": player.y,
+            "cd": LASER_FIRST_DELAY_SECONDS,
+        }
+        self.turrets.append(turret)
+        self.push_event({
+            "kind": "turret_place", "id": turret["id"], "player": player.id,
+            "x": player.x, "y": player.y,
+        })
+
+    def update_turrets(self):
+        """Ogni torretta piazzata spara automaticamente verso il nemico
+        vivo piu' vicino ogni TURRET_FIRE_INTERVAL_SECONDS (stessa cadenza
+        del laser): riusa esattamente la stessa meccanica dei proiettili
+        laser (self.lasers / move_lasers), scegliendo la direzione cardinale
+        piu' vicina al bersaglio dato che la torretta non si muove."""
+        if not self.turrets:
+            return
+        for t in self.turrets:
+            t["cd"] -= TICK_DT
+            if t["cd"] > 0:
+                continue
+            t["cd"] = TURRET_FIRE_INTERVAL_SECONDS
+            target = self.nearest_alive(t["x"], t["y"], {t["owner"]})
+            if target is None:
+                continue
+            ddx, ddy = target.x - t["x"], target.y - t["y"]
+            if abs(ddx) >= abs(ddy):
+                dx, dy = (1, 0) if ddx >= 0 else (-1, 0)
+            else:
+                dx, dy = (0, 1) if ddy >= 0 else (0, -1)
+            dir_name = next((k for k, v in DIRECTIONS.items() if v == (dx, dy)), "right")
+            laser = {
+                "id": uuid.uuid4().hex[:8],
+                "owner": t["owner"],
+                "x": t["x"], "y": t["y"],
+                "dx": dx, "dy": dy,
+                "move_accum": 0.0,
+                "bounce_left": None,
+            }
+            self.lasers.append(laser)
+            self.push_event({
+                "kind": "laser_fire", "id": laser["id"], "shooter": t["owner"],
+                "x": t["x"], "y": t["y"], "dir": dir_name, "turret": True,
+            })
 
     def check_win(self):
         """Il round finisce quando resta UN SOLO giocatore vivo: quello e'
@@ -1006,6 +1123,9 @@ class Room:
                 for lz in self.lasers
             ],
             "mines": [{"id": m["id"], "x": m["x"], "y": m["y"], "owner": m["owner"]} for m in self.mines],
+            "turrets": [{"id": t["id"], "x": t["x"], "y": t["y"], "owner": t["owner"]} for t in self.turrets],
+            "portal_on": self.portal_on,
+            "portal_cycle_left": round(max(self.portal_cycle_left, 0), 1),
             "missiles": [
                 {
                     "id": mz["id"], "x": mz["x"], "y": mz["y"],
@@ -1031,6 +1151,7 @@ class Room:
         self.lasers = []
         self.mines = []
         self.missiles = []
+        self.turrets = []
         for p in self.players.values():
             p.alive = True
             p.direction = None
@@ -1050,6 +1171,9 @@ class Room:
             p.trap_target = None
             p.trapped_left = 0.0
             p.trapped_by = None
+            p.trap_uses_left = 0
+            p.has_turret = False
+            p.turret_placed = False
             p.kills = 0
 
     # ---------- main loop ----------
@@ -1075,6 +1199,7 @@ class Room:
             # muovere subito, ancora prima che il round entri nel vivo.
             prev = self.update_movement()
             self.update_pellet_respawns()
+            self.update_portal_cycle()   # accende/spegne i portali ogni 30s
             self.check_collisions(prev)  # no-op finche' nessuno e' super assassino
 
             if self.state == "COUNTDOWN":
@@ -1085,6 +1210,7 @@ class Room:
             elif self.state == "PLAYING":
                 self.timer_left -= TICK_DT
                 self.update_lasers()  # bonus 150 punti: un colpo al secondo, dura 60s
+                self.update_turrets() # bonus 600 punti: torretta automatica, stessa cadenza del laser
                 self.move_lasers()    # avanza i proiettili laser in volo (con eventuale rimbalzo)
                 self.check_mines()    # bonus 200 punti: fa esplodere le mine calpestate
                 self.move_missiles()  # bonus 400 punti: avanza i missili guidati verso il bersaglio
@@ -1290,6 +1416,14 @@ async def handle_client(ws):
                 if not room or not player:
                     continue
                 room.try_activate_trap(player)
+
+            elif mtype == "place_turret":
+                # Bonus 600 punti: pressione del tasto "5" lato client.
+                # Utilizzabile una sola volta per giocatore (vedi
+                # try_place_turret): il server resta l'autorita'.
+                if not room or not player:
+                    continue
+                room.try_place_turret(player)
 
             elif mtype == "stop":
                 # Il tasto/direzione e' stato rilasciato: il personaggio si

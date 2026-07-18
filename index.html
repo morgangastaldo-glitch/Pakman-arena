@@ -440,7 +440,7 @@
     </div>
 
     <div class="controls-row">
-      <span class="hint">WASD / frecce tastiera · Pallini = punti · Bonus a 50/100/150/200/300 · Tasto 1 = mina</span>
+      <span class="hint">WASD / frecce tastiera · Pallini = punti · Bonus a 50/100/150/200/300/400/500/600 · Tasto 5 = torretta</span>
       <button class="ghost danger" id="btnLeaveGame">Esci</button>
     </div>
   </section>
@@ -476,9 +476,10 @@ const BONUS_STEPS = [
   { at: 300, label: "NINJA / INVISIBILITA' (tasto 2)" },
   { at: 400, label: "MISSILE GUIDATO (tasto 3)" },
   { at: 500, label: "TRAPPOLA (tasto 4)" },
+  { at: 600, label: "TORRETTA AUTOMATICA (tasto 5)" },
 ];
 const MISSILE_SPEED_MULT = 1.1; // deve restare identica a MISSILE_SPEED_MULT in common.py
-const TRAP_DURATION_SECONDS = 15; // deve restare identica a TRAP_DURATION_SECONDS in common.py
+const TRAP_DURATION_SECONDS = 3; // deve restare identica a TRAP_DURATION_SECONDS in common.py
 function cellDurationMs(isAssassin){
   const speed = NORMAL_SPEED * (isAssassin ? ASSASSIN_SPEED_MULT : 1);
   return 1000 / speed;
@@ -1823,19 +1824,26 @@ function lerp(a, b, t){ return a + (b - a) * t; }
 // con un piccolo vortice interno. Economico (nessun shadowBlur).
 function drawPortals(now){
   if (!portals || portals.length < 2) return;
+  // I portali si accendono/spengono a cicli di 30s (vedi currSnapshot.portal_on,
+  // mandato dal server): da spenti restano visibili ma spenti/immobili e
+  // fiochi, cosi' si capisce a colpo d'occhio che in questo momento
+  // teletrasportarsi non funziona.
+  const portalOn = !currSnapshot || currSnapshot.portal_on !== false;
   const colA = mazeTheme.edge || "#4d7bff";
   const colB = mazeTheme.glow || "#9df6ff";
   portals.forEach(function(pt, idx){
     const cx = pt[0] * BASE_CELL + BASE_CELL / 2;
     const cy = pt[1] * BASE_CELL + BASE_CELL / 2;
     const r = BASE_CELL * 0.42;
-    const spin = now / 1000 * (idx === 0 ? 1 : -1);
+    const spin = portalOn ? now / 1000 * (idx === 0 ? 1 : -1) : 0;
     ctx.save();
     ctx.translate(cx, cy);
+    ctx.globalAlpha = portalOn ? 1 : 0.35;
     for (let ring = 0; ring < 2; ring++){
       ctx.rotate(spin * (ring ? -1.6 : 1.2));
-      ctx.strokeStyle = ring ? colB : colA;
-      ctx.globalAlpha = 0.85 - ring * 0.25;
+      ctx.strokeStyle = ring ? colB : "#555";
+      if (portalOn) ctx.strokeStyle = ring ? colB : colA;
+      ctx.globalAlpha = (portalOn ? 0.85 : 0.3) - ring * 0.25;
       ctx.lineWidth = 2;
       for (let a = 0; a < 3; a++){
         const start = a * (Math.PI * 2 / 3);
@@ -1844,9 +1852,9 @@ function drawPortals(now){
         ctx.stroke();
       }
     }
-    // nucleo
-    ctx.globalAlpha = 0.5 + 0.3 * Math.abs(Math.sin(now / 300));
-    ctx.fillStyle = colB;
+    // nucleo: pulsa solo se acceso, altrimenti fisso e spento
+    ctx.globalAlpha = portalOn ? (0.5 + 0.3 * Math.abs(Math.sin(now / 300))) : 0.25;
+    ctx.fillStyle = portalOn ? colB : "#555";
     ctx.beginPath();
     ctx.arc(0, 0, r * 0.28, 0, Math.PI * 2);
     ctx.fill();
@@ -1929,6 +1937,34 @@ function drawMines(now){
     ctx.globalAlpha = pulse;
     ctx.fillStyle = "#fff";
     ctx.beginPath(); ctx.arc(cx, cy, 1.6, 0, Math.PI * 2); ctx.fill();
+  });
+  ctx.restore();
+}
+
+// Torretta automatica permanente (bonus 600 punti): a differenza delle
+// mine e' visibile a TUTTI (e' un piazzamento permanente, non una trappola
+// nascosta). Disegnata come un piccolo "cannoncino" fisso con un nucleo
+// pulsante nel colore del proprietario.
+function drawTurrets(now){
+  const list = (currSnapshot && currSnapshot.turrets) || [];
+  if (!list.length) return;
+  ctx.save();
+  list.forEach(function(t){
+    const cx = t.x * BASE_CELL + BASE_CELL / 2;
+    const cy = t.y * BASE_CELL + BASE_CELL / 2;
+    const owner = findPlayer(currSnapshot, t.owner);
+    const col = (owner && COLOR_HEX[(owner.colors || [])[0]]) || "#ff3b5c";
+    const pulse = 0.6 + 0.4 * Math.abs(Math.sin(now / 260));
+    ctx.globalAlpha = 0.28;
+    ctx.fillStyle = col;
+    ctx.beginPath(); ctx.arc(cx, cy, 9, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 0.95;
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.rect(cx - 5, cy - 5, 10, 10); ctx.stroke();
+    ctx.globalAlpha = pulse;
+    ctx.fillStyle = "#fff";
+    ctx.beginPath(); ctx.arc(cx, cy, 2, 0, Math.PI * 2); ctx.fill();
   });
   ctx.restore();
 }
@@ -2064,6 +2100,7 @@ function renderLoop(now){
   drawThemeFx(now);
   drawPlayers(currSnapshot.players, now);
   drawMines(now);
+  drawTurrets(now);
   drawMissiles(now);
   drawLaserProjectiles(now);
   drawSparks(now);
@@ -2343,10 +2380,11 @@ function onGameEvent(msg){
       const labels = {
         extra_life:   "VITA EXTRA! \u2665",
         laser:        "LASER SBLOCCATO! (1 min)",
-        mines:        "MINE SBLOCCATE! (3, tasto 1)",
+        mines:        "MINE SBLOCCATE! (2, tasto 1)",
         ninja:        "NINJA SBLOCCATO! (invisibilit\u00e0, tasto 2)",
         missile:      "MISSILE GUIDATO SBLOCCATO! (tasto 3)",
-        trap:         "TRAPPOLA SBLOCCATA! (tasto 4)",
+        trap:         "TRAPPOLA SBLOCCATA! (3s, 3 usi, tasto 4)",
+        turret:       "TORRETTA AUTOMATICA SBLOCCATA! (permanente, tasto 5)",
       };
       const txt = labels[msg.bonus] || "BONUS!";
       if (msg.player === myId){
@@ -2404,6 +2442,18 @@ function onGameEvent(msg){
       tone(220, 0.06, "square", 0.1);
       break;
     }
+    case "turret_place": {
+      if (msg.player === myId) showToast("Torretta piazzata! E' permanente.");
+      tone(160, 0.14, "square", 0.12);
+      break;
+    }
+    case "portal_toggle": {
+      // I portali si sono accesi/spenti (ciclo 30s on / 30s off): niente
+      // banner invasivo, solo un tono discreto piu' il rendering
+      // (drawPortals) che gia' legge currSnapshot.portal_on ad ogni frame.
+      tone(msg.on ? 520 : 260, 0.12, "sine", 0.08);
+      break;
+    }
     case "assassin_on": {
       if (msg.player === myId){
         assassinFxAt = now;
@@ -2452,7 +2502,8 @@ function onGameEvent(msg){
     }
     case "trap_start": {
       if (msg.player === myId){
-        showBonusBanner("NEMICO INTRAPPOLATO! Avvicinati e premi 3");
+        const usesTxt = (typeof msg.uses_left === "number") ? (" (" + msg.uses_left + " usi rimasti)") : "";
+        showBonusBanner("NEMICO INTRAPPOLATO! Avvicinati e premi 4" + usesTxt);
         playBonus();
       } else if (msg.victim === myId){
         showBonusBanner("SEI INTRAPPOLATO!");
@@ -2580,6 +2631,8 @@ function updateGameSidebar(msg){
            (p.missile ? ("r" + p.missiles_left) : "") +
            (p.ninja && p.id === myId ? "N" : "") +
            (p.trapped ? "t" : "") +
+           (p.trap && p.id === myId ? ("u" + p.trap_uses_left) : "") +
+           (p.turret && p.id === myId ? ("g" + (p.turret_placed ? "1" : "0")) : "") +
            ((p.assassin && p.id === myId) ? "A" : "");
   }).join("|");
 
@@ -2611,6 +2664,8 @@ function updateGameSidebar(msg){
       if (p.missile){ const t = document.createElement("span"); t.className="tag alert"; t.textContent="MISSILI " + p.missiles_left; li.appendChild(t); }
       if (p.ninja && p.id === myId && !iAmAssassinRow){ const t = document.createElement("span"); t.className="tag alert"; t.textContent="NINJA (2)"; li.appendChild(t); }
       if (p.trapped){ const t = document.createElement("span"); t.className="tag alert"; t.textContent="INTRAPPOLATO"; li.appendChild(t); }
+      if (p.trap && p.id === myId && p.trap_uses_left > 0){ const t = document.createElement("span"); t.className="tag alert"; t.textContent="TRAPPOLA " + p.trap_uses_left; li.appendChild(t); }
+      if (p.turret && p.id === myId){ const t = document.createElement("span"); t.className="tag alert"; t.textContent = p.turret_placed ? "TORRETTA ATTIVA" : "TORRETTA (tasto 5)"; li.appendChild(t); }
       if (iAmAssassinRow){ const t = document.createElement("span"); t.className="tag alert"; t.textContent="ASSASSINO"; li.appendChild(t); }
       const spacer = document.createElement("span"); spacer.className = "spacer"; li.appendChild(spacer);
       const score = document.createElement("span");
@@ -2688,15 +2743,27 @@ const KEY_TO_DIR = {
 
 let lastRequestedDir = null;
 
+// Finestra di tolleranza per il tempismo della svolta: DEVE restare
+// identica a TURN_WINDOW in common.py, altrimenti client e server
+// "decidono" cose diverse sulla stessa pressione e si torna al problema
+// del teletrasporto da correzione. Il tasto prende solo se premuto vicino
+// al centro cella (predAccum vicino a 0.0 o vicino a 1.0): altrimenti
+// viene scartato subito, invece di restare in coda a sovrapporsi al
+// prossimo comando.
+const TURN_WINDOW = 0.40;
+
 function requestDir(dir){
+  // Da fermi, o se si conferma la direzione gia' in corso, il tempismo
+  // non conta: si accetta sempre (altrimenti non si potrebbe nemmeno
+  // partire dallo spawn, e "andare dritti" non e' mai una svolta).
+  const onTime = (predAccum <= TURN_WINDOW) || (predAccum >= 1 - TURN_WINDOW);
+  if (predDir !== null && dir !== predDir && !onTime){
+    // Fuori tempo rispetto alla curva: ignorato. Niente coda, niente
+    // suono di svolta, niente invio al server: bisogna ripremere il
+    // tasto un po' piu' vicino all'incrocio.
+    return;
+  }
   if (dir !== lastRequestedDir){ playTurn(); lastRequestedDir = dir; }
-  // predNextDir e' un singolo slot, non una coda: una nuova pressione
-  // sovrascrive sempre l'eventuale richiesta precedente ancora in attesa,
-  // quindi non e' mai possibile avere piu' di un input "in sospeso" alla
-  // volta. La svolta scattera' solo quando ci sara' davvero spazio (nessun
-  // muro) nella nuova direzione: vedi il controllo isWallCell in stepSim
-  // e is_wall in update_movement (main.py), che e' l'unica condizione che
-  // decide quando applicare next_direction.
   predNextDir = dir;
   sendMsg({ type: "move", direction: dir });
 }
@@ -2734,6 +2801,13 @@ document.addEventListener("keydown", function(ev){
   // gia' una vittima intrappolata ed e' abbastanza vicina, la fa detonare.
   if (ev.key === "4" && !ev.repeat){
     sendMsg({ type: "activate_trap" });
+    ev.preventDefault();
+  }
+  // Bonus 600 punti: il tasto "5" piazza la torretta automatica permanente
+  // nella cella corrente. Utilizzabile una sola volta per round: il server
+  // ignora richieste successive (vedi try_place_turret).
+  if (ev.key === "5" && !ev.repeat){
+    sendMsg({ type: "place_turret" });
     ev.preventDefault();
   }
 });

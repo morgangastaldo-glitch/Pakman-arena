@@ -58,9 +58,16 @@ LASER_INTERVAL_SECONDS = 1.0   # ogni quanto il laser spara un colpo, una volta 
 LASER_FIRST_DELAY_SECONDS = 1.0  # attesa del primo colpo dopo lo sblocco
 LASER_PROJECTILE_SPEED = 20.0  # celle al secondo percorse dal proiettile laser (raddoppiata: e' un proiettile vero, deve sentirsi veloce)
 LASER_BOUNCE_DISTANCE = 12     # celle percorribili dopo il primo rimbalzo su una parete (bonus 150 punti)
-MINES_COUNT = 3                # numero di mine disponibili una volta sbloccato il bonus 200 punti
+MINES_COUNT = 2                # numero di mine disponibili una volta sbloccato il bonus 200 punti (ridotto da 3 a 2)
 MINE_DOUBLE_TAP_MS = 350       # finestra (ms) del doppio tocco freccia destra/D che sgancia una mina (uso lato client)
 PORTAL_COOLDOWN_SECONDS = 1.2  # anti ping-pong: dopo un teletrasporto i portali si ignorano per un attimo
+
+# ---- ciclo acceso/spento dei portali di teletrasporto ----
+# I portali non sono piu' sempre attivi: si accendono per PORTAL_ON_SECONDS,
+# poi si spengono per PORTAL_OFF_SECONDS, e cosi' via per tutto il round.
+# Da spenti, entrarci non ha alcun effetto (vedi try_portal in main.py).
+PORTAL_ON_SECONDS = 30.0
+PORTAL_OFF_SECONDS = 30.0
 
 # ---- bonus 400 punti: missile guidato (tasto "3") ----
 MISSILE_SPEED_MULT = 1.1        # velocita' del missile = NORMAL_SPEED * 1.1 (di poco piu' veloce di un giocatore normale)
@@ -75,8 +82,20 @@ MISSILE_RETARGET_SECONDS = 0.15  # ogni quanto il missile ricalcola il percorso 
 # esplosione (perde una vita). Se scade il tempo, la trappola si disinnesca
 # da sola e l'avversario torna libero.
 TRAP_THRESHOLD = 500
-TRAP_DURATION_SECONDS = 15.0
+TRAP_DURATION_SECONDS = 3.0    # la trappola immobilizza il bersaglio solo 3 secondi (ridotta da 15)
 TRAP_RANGE = 1  # distanza massima (in celle, stile scacchi/Chebyshev) per far detonare la trappola
+TRAP_MAX_USES = 3              # la trappola si puo' innescare al massimo 3 volte per giocatore, per round
+
+# ---- bonus 600 punti: torretta automatica piazzabile (tasto "5") ----
+# Allo sblocco NON scatta nulla in automatico: premendo il tasto "5" UNA
+# SOLA VOLTA il giocatore piazza una torretta nella cella in cui si trova
+# in quel momento. La torretta e' permanente (resta sulla mappa per tutto
+# il resto del round, anche se il proprietario muore) e spara da sola verso
+# il nemico vivo piu' vicino con la STESSA cadenza di fuoco del laser
+# (un colpo ogni LASER_INTERVAL_SECONDS), riusando la stessa meccanica dei
+# proiettili laser (stessa velocita', si ferma sul primo muro).
+TURRET_THRESHOLD = 600
+TURRET_FIRE_INTERVAL_SECONDS = LASER_INTERVAL_SECONDS  # stessa cadenza di fuoco del laser
 
 # Nome colore (mostrato all'utente, in italiano) -> id colore interno.
 # Elenco esteso: ogni giocatore puo' scegliere fino a 2 colori (primario +
