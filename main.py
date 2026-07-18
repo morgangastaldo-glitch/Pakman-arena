@@ -331,12 +331,23 @@ class Room:
             if p.portal_cd > 0:
                 p.portal_cd = max(0.0, p.portal_cd - TICK_DT)
 
-            # Appena la direzione "in coda" diventa percorribile dalla cella
-            # attuale, diventa la direzione corrente: e' cosi' che nel
-            # Pac-Man originale una svolta premuta con un attimo di anticipo
-            # (mentre si e' ancora contro il muro sbagliato) non va persa,
-            # ma scatta un istante dopo, non appena possibile.
-            if p.next_direction is not None:
+            # Si puo' girare SENZA scatti solo in due casi: si e' appena
+            # arrivati esattamente su una cella (move_accum == 0) oppure si
+            # e' bloccati contro un muro nella direzione corrente (o fermi).
+            # PRIMA la svolta in coda veniva applicata a meta' cella tenendo
+            # lo stesso move_accum, ma reinterpretato sull'asse nuovo: questo
+            # faceva "teletrasportare" il personaggio di una frazione di
+            # cella nella direzione sbagliata ad ogni curva presa un attimo
+            # in anticipo, il famoso scatto. Ora, se non si e' su un incrocio
+            # (si sta ancora scorrendo dentro la cella corrente), la svolta
+            # resta in coda: scattera' da sola, in modo pulito, nell'istante
+            # esatto in cui si attraversa il confine della cella (vedi sotto).
+            currently_blocked = True
+            if p.direction is not None:
+                bdx, bdy = DIRECTIONS[p.direction]
+                currently_blocked = is_wall(self.maze, self.maze_w, self.maze_h, p.x + bdx, p.y + bdy)
+
+            if p.next_direction is not None and (p.move_accum == 0.0 or currently_blocked):
                 ndx, ndy = DIRECTIONS[p.next_direction]
                 if not is_wall(self.maze, self.maze_w, self.maze_h, p.x + ndx, p.y + ndy):
                     p.direction = p.next_direction
@@ -363,6 +374,16 @@ class Room:
                     if p.move_accum >= 1.0:
                         p.move_accum -= 1.0
                         p.x, p.y = nx, ny
+                        # Si e' appena attraversato il confine di cella:
+                        # e' l'istante esatto in cui una curva in coda puo'
+                        # scattare senza alcun salto visivo (l'eventuale
+                        # "sorpasso" di move_accum continua semplicemente
+                        # nella nuova direzione anziche' in quella vecchia).
+                        if p.next_direction is not None:
+                            ndx2, ndy2 = DIRECTIONS[p.next_direction]
+                            if not is_wall(self.maze, self.maze_w, self.maze_h, p.x + ndx2, p.y + ndy2):
+                                p.direction = p.next_direction
+                                p.next_direction = None
 
             # Pallini e portali si valutano sulla cella in cui ci si trova
             # ORA (anche da fermi: copre lo spawn su un pallino).

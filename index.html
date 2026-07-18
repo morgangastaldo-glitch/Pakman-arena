@@ -1643,7 +1643,19 @@ function stepSim(state, dt, speed, hasNextDirQueue){
   if (remaining > 0.25) remaining = 0.25;
 
   while (remaining > 0){
-    if (hasNextDirQueue && state.nextDir){
+    // Stessa regola del server (vedi update_movement in main.py): si puo'
+    // girare SENZA scatti solo su un incrocio (accum ~ 0, appena arrivati
+    // in una cella) o se si e' bloccati contro un muro. Girare a meta'
+    // cella riusando l'accum sull'asse sbagliato e' esattamente cio' che
+    // causava il salto/scatto visibile quando si svoltava un attimo troppo
+    // presto: ora la svolta in coda resta in attesa e scatta pulita
+    // esattamente al confine della cella.
+    let blocked = true;
+    if (state.dir){
+      const bv = DIR_VEC[state.dir];
+      blocked = isWallCell(state.gridX + bv[0], state.gridY + bv[1]);
+    }
+    if (hasNextDirQueue && state.nextDir && (state.accum < 1e-6 || blocked)){
       const v = DIR_VEC[state.nextDir];
       if (!isWallCell(state.gridX + v[0], state.gridY + v[1])){
         state.dir = state.nextDir;
@@ -1664,6 +1676,10 @@ function stepSim(state, dt, speed, hasNextDirQueue){
       state.accum = 0;
       state.gridX = nx;
       state.gridY = ny;
+      // Appena attraversato il confine, si ricontrolla subito la coda
+      // (prossimo giro del while, se resta tempo) oppure al prossimo frame:
+      // in entrambi i casi accum e' 0, quindi il controllo sopra la lascera'
+      // scattare senza alcun salto.
     } else {
       break;
     }
