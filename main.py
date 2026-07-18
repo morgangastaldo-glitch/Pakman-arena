@@ -36,8 +36,10 @@ from common import (
     TICK_DT, COUNTDOWN_SECONDS, ROUND_SECONDS, KILLER_INTERVAL_SECONDS,
     MAX_PLAYERS, MIN_PLAYERS, NORMAL_SPEED, KILLER_SPEED_MULT,
     COLORS, CHARACTERS, DIRECTIONS, is_wall, ROOM_CODE_CHARS,
-    pick_random_maze,
-    BONUS_THRESHOLDS, BOOST_MULT, BOOST_SECONDS, GHOST_SECONDS,
+    pick_random_maze, choose_power_pellet_cells,
+    BONUS_THRESHOLDS, GHOST_SECONDS,
+    PELLET_POINTS, POWER_PELLET_POINTS, POWER_PELLET_COUNT,
+    PELLET_RESPAWN_SECONDS, SUPER_ASSASSIN_THRESHOLD,
     SPAWN_PROTECT_SECONDS, LASER_INTERVAL_SECONDS, LASER_FIRST_DELAY_SECONDS,
     LASER_PROJECTILE_SPEED, LASER_BOUNCE_DISTANCE, MINES_COUNT,
     PORTAL_COOLDOWN_SECONDS,
@@ -94,8 +96,14 @@ class Player:
         self.points = 0
         self.lives = 1                 # a 50 punti diventa 2: il killer non elimina, fa respawnare
         self.claimed = set()           # soglie bonus gia' riscattate in questo round
-        self.boost_left = 0.0          # (bonus velocita' rimosso dal gioco: resta sempre a 0)
         self.ghost_left = 0.0          # (bonus fantasma rimosso dal gioco: resta sempre a 0)
+        # A SUPER_ASSASSIN_THRESHOLD punti (300): invisibile agli altri,
+        # piu' veloce (stesso 1.1x del killer) e uccide chiunque al solo
+        # contatto. Si attiva/disattiva automaticamente in base ai punti
+        # correnti (vedi update_assassin_status), quindi puo' anche
+        # "spegnersi" se i punti scendono di nuovo sotto la soglia (es. dopo
+        # essere stati uccisi, che azzera i punti).
+        self.is_assassin = False
         self.prot_left = 0.0           # invulnerabilita' dal killer dopo un respawn
         self.has_laser = False         # bonus 100 punti: laser frontale a intermittenza (1 colpo/secondo)
         self.laser_cd = 0.0            # countdown al prossimo colpo di laser
@@ -128,7 +136,7 @@ class Player:
             # ---- nuovi campi per HUD/rendering ----
             "points": self.points, "lives": self.lives,
             "ghost": self.ghost_left > 0,
-            "boost": self.boost_left > 0,
+            "assassin": self.is_assassin,
             "prot": self.prot_left > 0,
             "laser": self.has_laser,
             "bounce": self.has_bounce,
@@ -165,15 +173,7 @@ class Room:
         # Mappa corrente della stanza: viene ripescata a caso tra le 10
         # disponibili a OGNI inizio round (vedi run_round), cosi' ogni
         # partita puo' capitare su una mappa diversa per forma/colore/misura.
-        map_data = pick_random_maze()
-        self.maze = map_data["maze"]
-        self.maze_w = map_data["w"]
-        self.maze_h = map_data["h"]
-        self.maze_name = map_data["name"]
-        self.spawn_points = map_data["spawn_points"]
-        self.theme = map_data["theme"]
-        self.compute_portals()
-        self.reset_pellets()
+        self.pick_new_map()
 
     def pick_new_map(self):
         map_data = pick_random_maze()
@@ -184,18 +184,27 @@ class Room:
         self.spawn_points = map_data["spawn_points"]
         self.theme = map_data["theme"]
         self.compute_portals()
+        # 10 celle (una per angolo/estremita' della mappa) con un pallino
+        # grosso arancione che vale 10 punti invece di 1.
+        self.power_pellets = set(
+            choose_power_pellet_cells(self.maze, self.maze_w, self.maze_h, POWER_PELLET_COUNT)
+        )
+        self.reset_pellets()
         self.reset_pellets()
 
     def reset_pellets(self):
         """Ricrea l'insieme dei pallini: ogni cella libera della mappa ne
-        contiene uno e vale 1 punto. Il server e' l'autorita' (prima erano
-        solo decorativi lato client): cosi' i punti sono uguali per tutti."""
+        contiene uno (1 punto, o 10 se e' una delle celle "power" scelte in
+        pick_new_map). Il server e' l'autorita' (prima erano solo
+        decorativi lato client): cosi' i punti sono uguali per tutti."""
         self.pellets = {
             (x, y)
             for y, row in enumerate(self.maze)
             for x, ch in enumerate(row)
             if ch == "."
         }
+        # Cella -> secondi residui prima che un pallino mangiato ricompaia.
+        self.pellet_respawns = {}
 
     def compute_portals(self):
         """Due portali ai lati opposti della mappa: per ciascuna colonna
@@ -223,6 +232,7 @@ class Room:
             "maze": self.maze, "maze_w": self.maze_w, "maze_h": self.maze_h,
             "maze_name": self.maze_name, "theme": self.theme,
             "portals": [list(p) for p in self.portals],
+            "power_pellets": [list(c) for c in self.power_pellets],
         }
 
     # ---------- lobby ----------
@@ -284,7 +294,7 @@ class Room:
             p.points = 0
             p.lives = 1
             p.claimed = set()
-            p.boost_left = 0.0
+            p.is_assassin = False
             p.ghost_left = 0.0
             p.prot_left = 0.0
             p.has_laser = False
@@ -339,8 +349,6 @@ class Room:
 
             # Timer personali dei bonus/protezioni: scorrono qui, una volta
             # per tick, cosi' restano sincronizzati con la fisica.
-            if p.boost_left > 0:
-                p.boost_left = max(0.0, p.boost_left - TICK_DT)
             if p.ghost_left > 0:
                 p.ghost_left = max(0.0, p.ghost_left - TICK_DT)
             if p.prot_left > 0:
@@ -391,10 +399,10 @@ class Room:
                     p.move_accum = 0.0
                 else:
                     speed = NORMAL_SPEED
-                    if p.is_killer:
+                    if p.is_killer or p.is_assassin:
+                        # Il super assassino (300 punti) e' veloce quanto il
+                        # killer: stesso moltiplicatore 1.0 -> 1.1.
                         speed *= KILLER_SPEED_MULT
-                    if p.boost_left > 0:
-                        speed *= BOOST_MULT  # bonus velocita' rimosso: boost_left resta sempre 0
                     p.move_accum += speed * TICK_DT
                     if p.move_accum >= 1.0:
                         p.move_accum -= 1.0
@@ -414,9 +422,52 @@ class Room:
         if cell not in self.pellets:
             return
         self.pellets.discard(cell)
-        p.points += 1
-        self.push_event({"kind": "pellet", "cells": [[p.x, p.y]], "by": p.id})
+        is_power = cell in self.power_pellets
+        gained = POWER_PELLET_POINTS if is_power else PELLET_POINTS
+        p.points += gained
+        # Il pallino ricompare da solo dopo PELLET_RESPAWN_SECONDS (stesso
+        # tipo, normale o "power", di quello appena mangiato).
+        self.pellet_respawns[cell] = PELLET_RESPAWN_SECONDS
+        self.push_event({
+            "kind": "pellet", "cells": [[p.x, p.y]], "by": p.id,
+            "power": is_power, "points": gained,
+        })
         self.check_bonuses(p)
+        self.update_assassin_status(p)
+
+    def update_pellet_respawns(self):
+        """Fa ricomparire i pallini mangiati dopo PELLET_RESPAWN_SECONDS."""
+        if not self.pellet_respawns:
+            return
+        done = []
+        for cell, left in self.pellet_respawns.items():
+            left -= TICK_DT
+            if left <= 0:
+                done.append(cell)
+            else:
+                self.pellet_respawns[cell] = left
+        for cell in done:
+            del self.pellet_respawns[cell]
+            self.pellets.add(cell)
+            self.push_event({
+                "kind": "pellet_respawn", "cells": [[cell[0], cell[1]]],
+                "power": cell in self.power_pellets,
+            })
+
+    def update_assassin_status(self, p):
+        """A SUPER_ASSASSIN_THRESHOLD punti si diventa il "super assassino":
+        invisibile agli altri, piu' veloce, uccide chiunque al contatto.
+        Si attiva/disattiva in automatico ad ogni variazione di punti (puo'
+        anche spegnersi se i punti scendono di nuovo sotto soglia, ad
+        esempio dopo essere stati uccisi e derubati dei punti)."""
+        should_be = p.alive and p.points >= SUPER_ASSASSIN_THRESHOLD
+        if should_be == p.is_assassin:
+            return
+        p.is_assassin = should_be
+        self.push_event({
+            "kind": "assassin_on" if should_be else "assassin_off",
+            "player": p.id,
+        })
 
     def check_bonuses(self, p):
         """Riscatta i traguardi appena superati (una volta sola per round)."""
@@ -478,11 +529,25 @@ class Room:
         p.portal_cd = 0.5  # se lo spawn fosse vicino a un portale, niente teletrasporto istantaneo
 
     def kill_player(self, victim, cause, shooter_id=None):
-        """Unica via per togliere una vita: usata sia dal tocco del killer
-        sia dal laser. Con vite extra si respawna, altrimenti si e' fuori.
-        Se il laser elimina il killer in carica, ne viene scelto subito uno
-        nuovo tra i vivi."""
+        """Unica via per togliere una vita: usata dal tocco del killer, dal
+        laser, dalle mine e dal super assassino. Con vite extra si
+        respawna, altrimenti si e' fuori. Se il laser elimina il killer in
+        carica, ne viene scelto subito uno nuovo tra i vivi.
+
+        Chi uccide ruba tutti i punti della vittima, che vengono sommati ai
+        propri (vedi richiesta: "ogni volta che un avversario uccide
+        qualcuno gli ruba i punti")."""
         self.last_kill = {"cause": cause, "killer": self.killer_id}
+        killer_id = shooter_id if shooter_id else (self.killer_id if cause == "killer" else None)
+        killer_player = self.players.get(killer_id) if killer_id else None
+        stolen = 0
+        if killer_player is not None and killer_player.id != victim.id:
+            stolen = victim.points
+            if stolen > 0:
+                victim.points = 0
+                killer_player.points += stolen
+                self.check_bonuses(killer_player)
+                self.update_assassin_status(killer_player)
         victim.lives -= 1
         died_at = [victim.x, victim.y]
         if victim.lives > 0:
@@ -496,32 +561,46 @@ class Room:
             respawned = False
             if victim.id == self.killer_id:
                 self.rotate_killer()
+        self.update_assassin_status(victim)
         self.push_event({
             "kind": "kill", "victim": victim.id, "cause": cause,
-            "by": shooter_id, "at": died_at,
+            "by": killer_id, "at": died_at,
             "respawn": respawned, "lives": max(victim.lives, 0),
+            "stolen": stolen,
         })
 
     def check_collisions(self, prev_positions):
-        killer = self.players.get(self.killer_id)
-        if not killer or not killer.alive:
+        """Il killer in carica uccide chiunque tocchi. In piu', a 300 punti
+        un giocatore diventa "super assassino" (vedi update_assassin_status)
+        e uccide chiunque tocchi allo stesso modo, indipendentemente da chi
+        sia il killer ufficiale del round. Due giocatori "letali" (killer o
+        assassino) non si uccidono a vicenda toccandosi."""
+        lethal = [p for p in self.players.values() if p.alive and (p.is_killer or p.is_assassin)]
+        if not lethal:
             return
-        for p in list(self.players.values()):
-            if p.id == killer.id or not p.alive:
+        killed_ids = set()
+        for L in lethal:
+            if L.id in killed_ids or not L.alive:
                 continue
-            # Il tocco del killer non puo' nulla contro la protezione
-            # post-respawn (il bonus fantasma e' stato rimosso dal gioco,
-            # ghost_left resta sempre 0). Laser e mine ignorano comunque
-            # entrambe (vedi move_lasers/check_mines).
-            if p.ghost_left > 0 or p.prot_left > 0:
-                continue
-            same_cell = (p.x == killer.x and p.y == killer.y)
-            swapped = (
-                prev_positions.get(p.id) == (killer.x, killer.y)
-                and prev_positions.get(killer.id) == (p.x, p.y)
-            )
-            if same_cell or swapped:
-                self.kill_player(p, "killer")
+            for p in list(self.players.values()):
+                if p.id == L.id or not p.alive or p.id in killed_ids:
+                    continue
+                if p.is_killer or p.is_assassin:
+                    continue  # due giocatori "letali" non si eliminano a vicenda
+                # Il tocco non puo' nulla contro la protezione post-respawn
+                # (il bonus fantasma e' stato rimosso dal gioco, ghost_left
+                # resta sempre 0). Laser e mine ignorano comunque entrambe.
+                if p.ghost_left > 0 or p.prot_left > 0:
+                    continue
+                same_cell = (p.x == L.x and p.y == L.y)
+                swapped = (
+                    prev_positions.get(p.id) == (L.x, L.y)
+                    and prev_positions.get(L.id) == (p.x, p.y)
+                )
+                if same_cell or swapped:
+                    cause = "killer" if L.is_killer else "assassin"
+                    self.kill_player(p, cause, shooter_id=L.id)
+                    killed_ids.add(p.id)
 
     def update_lasers(self):
         """Bonus 100 punti: ogni LASER_INTERVAL_SECONDS (1 secondo) parte un
@@ -695,7 +774,7 @@ class Room:
                 {"id": lz["id"], "x": lz["x"], "y": lz["y"], "dir": [lz["dx"], lz["dy"]]}
                 for lz in self.lasers
             ],
-            "mines": [{"id": m["id"], "x": m["x"], "y": m["y"]} for m in self.mines],
+            "mines": [{"id": m["id"], "x": m["x"], "y": m["y"], "owner": m["owner"]} for m in self.mines],
         }
 
     async def drain_events(self):
@@ -718,7 +797,7 @@ class Room:
             p.alive = True
             p.is_killer = False
             p.direction = None
-            p.boost_left = 0.0
+            p.is_assassin = False
             p.ghost_left = 0.0
             p.prot_left = 0.0
             p.has_laser = False
@@ -748,7 +827,8 @@ class Room:
             # Il movimento e' attivo sia in countdown che in gioco: ci si puo'
             # muovere subito, ancora prima che il killer venga rivelato.
             prev = self.update_movement()
-            self.check_collisions(prev)  # no-op finche' non c'e' un killer
+            self.update_pellet_respawns()
+            self.check_collisions(prev)  # no-op finche' non c'e' un killer/assassino
 
             if self.state == "COUNTDOWN":
                 self.countdown_left -= TICK_DT

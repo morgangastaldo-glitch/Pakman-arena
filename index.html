@@ -475,9 +475,9 @@ const BASE_CELL = 24; // risoluzione interna del canvas, in px per cella
 // fluida per costruzione e non dipende piu' da quanto arrivano puntuali gli
 // aggiornamenti di rete dal server.
 const NORMAL_SPEED = 4.5;
-const KILLER_SPEED_MULT = 1.1;  // come richiesto: killer a 1.1x
-const BOOST_MULT = 2;           // (bonus rimosso dal gioco, costante tenuta per compatibilita')
-const MINE_DOUBLE_TAP_MS = 350; // finestra del doppio tocco freccia destra/D che sgancia una mina (bonus 200 punti)
+const KILLER_SPEED_MULT = 1.1;  // come richiesto: killer (e super assassino) a 1.1x
+const MINE_DOUBLE_TAP_MS = 350; // finestra del doppio tocco (qualunque tasto di movimento) che sgancia una mina
+const SUPER_ASSASSIN_THRESHOLD = 300; // deve restare identica a SUPER_ASSASSIN_THRESHOLD in common.py
 // Soglie dei bonus, per l'indicazione "prossimo bonus" nell'HUD: devono
 // restare identiche a BONUS_THRESHOLDS in common.py.
 const BONUS_STEPS = [
@@ -485,6 +485,7 @@ const BONUS_STEPS = [
   { at: 100, label: "LASER" },
   { at: 150, label: "LASER RIMBALZANTE" },
   { at: 200, label: "MINE" },
+  { at: 300, label: "SUPER ASSASSINO" },
 ];
 function cellDurationMs(isKiller){
   const speed = NORMAL_SPEED * (isKiller ? KILLER_SPEED_MULT : 1);
@@ -651,6 +652,7 @@ let lastFrameTs = null;
 let lastPhase = null;
 let lastCountdownSecond = null;  // ultimo secondo intero del countdown gia' "ticchettato"
 let eatenPellets = new Set();
+let powerPellets = new Set(); // celle "x,y" dei pallini grossi/arancioni (10 punti) di questa mappa
 let explosions = []; // {x,y,color,start}
 let killerBannerUntil = 0;
 let killerBannerShown = false;
@@ -972,6 +974,7 @@ function applyMapData(msg){
   mazeName = msg.maze_name || "";
   if (msg.theme) mazeTheme = msg.theme;
   portals = Array.isArray(msg.portals) ? msg.portals : [];  // punto 4: due portali
+  powerPellets = new Set((msg.power_pellets || []).map(function(c){ return c[0] + "," + c[1]; }));
   computeWallColors();
   eatenPellets.clear();
   beams = []; swirls = [];
@@ -1401,17 +1404,20 @@ function buildPelletsLayer(){
   pctx.clearRect(0, 0, pelletsLayer.width, pelletsLayer.height);
   pctx.setTransform(canvasScale, 0, 0, canvasScale, 0, 0);
   const pelletColor = mazeTheme.pellet || "#ffe9a8";
-  pctx.fillStyle = pelletColor;
-  pctx.shadowColor = pelletColor;
-  pctx.shadowBlur = 3;
+  const powerColor = "#ff9d1f";
   for (let y = 0; y < mazeH; y++){
     for (let x = 0; x < mazeW; x++){
       if (maze[y][x] === "#") continue;
-      if (eatenPellets.has(x + "," + y)) continue;
+      const key = x + "," + y;
+      if (eatenPellets.has(key)) continue;
+      const isPower = powerPellets.has(key);
       const cx = x * BASE_CELL + BASE_CELL / 2;
       const cy = y * BASE_CELL + BASE_CELL / 2;
+      pctx.fillStyle = isPower ? powerColor : pelletColor;
+      pctx.shadowColor = isPower ? powerColor : pelletColor;
+      pctx.shadowBlur = isPower ? 7 : 3;
       pctx.beginPath();
-      pctx.arc(cx, cy, 2.1, 0, Math.PI * 2);
+      pctx.arc(cx, cy, isPower ? 5.5 : 2.1, 0, Math.PI * 2);
       pctx.fill();
     }
   }
@@ -1693,10 +1699,9 @@ function stepSim(state, dt, speed, hasNextDirQueue){
 // Avanza la simulazione locale del proprio personaggio (wrapper su stepSim
 // che usa le variabili globali pred* per compatibilita' col resto del
 // codice, ad es. gli handler di input che le leggono/scrivono).
-function stepLocalPrediction(dt, isKiller, hasBoost){
+function stepLocalPrediction(dt, isKiller, isAssassin){
   if (!predInited) return;
-  let speed = NORMAL_SPEED * (isKiller ? KILLER_SPEED_MULT : 1);
-  if (hasBoost) speed *= BOOST_MULT;  // bonus 30 punti: velocita' x2
+  let speed = NORMAL_SPEED * ((isKiller || isAssassin) ? KILLER_SPEED_MULT : 1);
   const state = { gridX: predGridX, gridY: predGridY, accum: predAccum, dir: predDir, nextDir: predNextDir };
   stepSim(state, dt, speed, true);
   predGridX = state.gridX; predGridY = state.gridY; predAccum = state.accum;
@@ -1709,8 +1714,7 @@ function stepLocalPrediction(dt, isKiller, hasBoost){
 function stepRemoteSim(p, dt){
   const s = remoteSim[p.id];
   if (!s || !p.alive) return;
-  let speed = NORMAL_SPEED * (p.is_killer ? KILLER_SPEED_MULT : 1);
-  if (p.boost) speed *= BOOST_MULT;
+  let speed = NORMAL_SPEED * ((p.is_killer || p.assassin) ? KILLER_SPEED_MULT : 1);
   stepSim(s, dt, speed, false);
 }
 
@@ -1742,13 +1746,15 @@ function drawPlayers(players, now){
     lastFacingMap[p.id] = facing;
     const isKiller = p.is_killer;
 
-    // ---- MODALITA' FANTASMA (bonus 50 punti) ----
-    // Chi e' in modalita' fantasma e' invisibile agli ALTRI giocatori
-    // (nome incluso); a SE STESSO si vede semitrasparente con un alone
-    // tratteggiato, per sapere che il bonus e' attivo. Il killer in carica
-    // non e' mai "ghost" (il server azzera il bonus finche' e' killer).
+    // ---- MODALITA' FANTASMA (bonus rimosso) e SUPER ASSASSINO (300 punti) ----
+    // Chi e' fantasma o super assassino e' invisibile agli ALTRI giocatori
+    // (nome incluso); a SE STESSO si vede in modo diverso (alone
+    // tratteggiato per il fantasma, alone rosso pulsante per l'assassino),
+    // per sapere che la modalita' e' attiva. Il killer in carica non e' mai
+    // "ghost" (il server azzera il bonus finche' e' killer).
     const iAmGhost = p.ghost && !isKiller;
-    if (iAmGhost && p.id !== myId) return;  // invisibile agli altri
+    const iAmAssassin = !!p.assassin;
+    if ((iAmGhost || iAmAssassin) && p.id !== myId) return;  // invisibile agli altri
 
     const chompSpeed = isKiller ? 11 : 8;
     const mouthDeg = 8 + 24 * Math.abs(Math.sin(now / 1000 * chompSpeed));
@@ -1775,20 +1781,17 @@ function drawPlayers(players, now){
       ctx.stroke();
       ctx.restore();
     }
-
-    // Scia del bonus velocita' x2 (economica: qualche segmento dietro, niente shadowBlur).
-    if (p.boost && facing != null){
-      const rad = facing * Math.PI / 180;
+    // Super assassino visto da me stesso: leggermente trasparente + alone
+    // rosso pulsante, per ricordare che sono invisibile e letale al tocco.
+    if (iAmAssassin){
+      ctx.globalAlpha = Math.min(ctx.globalAlpha, 0.55);
       ctx.save();
-      ctx.strokeStyle = baseColor;
-      for (let i = 1; i <= 3; i++){
-        ctx.globalAlpha = (0.22 / i);
-        ctx.lineWidth = radius * (1.1 - i * 0.2);
-        ctx.beginPath();
-        ctx.moveTo(px - Math.cos(rad) * (i * 4), py - Math.sin(rad) * (i * 4));
-        ctx.lineTo(px - Math.cos(rad) * (i * 4 + 5), py - Math.sin(rad) * (i * 4 + 5));
-        ctx.stroke();
-      }
+      ctx.strokeStyle = "rgba(255,50,50,0.85)";
+      ctx.lineWidth = 2;
+      const pulse = 3 + 3 * Math.abs(Math.sin(now / 150));
+      ctx.beginPath();
+      ctx.arc(px, py, radius + pulse, 0, Math.PI * 2);
+      ctx.stroke();
       ctx.restore();
     }
 
@@ -1942,8 +1945,11 @@ function drawSparks(now){
 }
 
 // Mine posate sulla mappa (bonus 200 punti): un piccolo disco lampeggiante.
+// Visibili SOLO a chi le ha posate: agli avversari restano nascoste finche'
+// non esplodono (vedi richiesta punto 3).
 function drawMines(now){
-  const list = (currSnapshot && currSnapshot.mines) || [];
+  const all = (currSnapshot && currSnapshot.mines) || [];
+  const list = all.filter(function(m){ return m.owner === myId; });
   if (!list.length) return;
   ctx.save();
   list.forEach(function(m){
@@ -2052,7 +2058,7 @@ function renderLoop(now){
   lastFrameTs = now;
   const me0 = findPlayer(currSnapshot, myId);
   if (me0 && me0.alive && roundActive){
-    stepLocalPrediction(dt, !!me0.is_killer, !!me0.boost);
+    stepLocalPrediction(dt, !!me0.is_killer, !!me0.assassin);
   }
   if (roundActive){
     currSnapshot.players.forEach(function(p){
@@ -2361,6 +2367,16 @@ function onGameEvent(msg){
       }
       break;
     }
+    case "pellet_respawn": {
+      // Il pallino mangiato e' ricomparso dopo 20 secondi.
+      let changed = false;
+      (msg.cells || []).forEach(function(c){
+        const key = c[0] + "," + c[1];
+        if (eatenPellets.has(key)){ eatenPellets.delete(key); changed = true; }
+      });
+      if (changed) pelletsLayerDirty = true;
+      break;
+    }
     case "bonus": {
       const labels = {
         extra_life:   "VITA EXTRA! \u2665",
@@ -2387,11 +2403,16 @@ function onGameEvent(msg){
       playEliminate();
       const byLaser = msg.cause === "laser";
       const byMine = msg.cause === "mine";
-      const causeTxt = byLaser ? " dal laser" : (byMine ? " da una mina" : "");
+      const byAssassin = msg.cause === "assassin";
+      const causeTxt = byLaser ? " dal laser" : (byMine ? " da una mina" : (byAssassin ? " dal super assassino" : ""));
+      const stolenTxt = msg.stolen ? (" (-" + msg.stolen + " punti)") : "";
       if (msg.victim === myId){
         showBonusBanner(msg.respawn ? ("HAI PERSO UNA VITA \u2665" + msg.lives) : "SEI STATO ELIMINATO");
       } else if (victim){
-        showToast(victim.name + (msg.respawn ? " colpito!" : " eliminato") + causeTxt);
+        showToast(victim.name + (msg.respawn ? " colpito!" : " eliminato") + causeTxt + stolenTxt);
+      }
+      if (msg.stolen && msg.by === myId){
+        showToast("Hai rubato " + msg.stolen + " punti!");
       }
       break;
     }
@@ -2414,6 +2435,20 @@ function onGameEvent(msg){
     case "mine_place": {
       if (msg.player === myId) showToast("Mina posata (" + msg.left + " rimaste)");
       tone(220, 0.06, "square", 0.1);
+      break;
+    }
+    case "assassin_on": {
+      if (msg.player === myId){
+        showBonusBanner("SUPER ASSASSINO! INVISIBILE E LETALE");
+        playBonus();
+      } else {
+        // Non si rivela CHI e' diventato l'assassino: resta invisibile.
+        showToast("Un giocatore e' diventato il super assassino!");
+      }
+      break;
+    }
+    case "assassin_off": {
+      if (msg.player === myId) showToast("Non sei piu' il super assassino");
       break;
     }
     case "mine_boom": {
@@ -2477,7 +2512,7 @@ function updateScoreCounter(msg){
   const me = findPlayer(msg, myId);
   const pts = me ? (me.points || 0) : 0;
   const lives = me ? (me.lives || 1) : 1;
-  myLine.textContent = "PUNTI " + pts + " · \u2665" + lives;
+  myLine.textContent = "PUNTI " + pts + " · \u2665" + lives + (me && me.assassin ? " · ASSASSINO" : "");
   const next = BONUS_STEPS.find(function(s){ return pts < s.at; });
   nextEl.textContent = next
     ? ("prossimo bonus: " + next.label + " a " + next.at + " pt (mancano " + (next.at - pts) + ")")
@@ -2528,7 +2563,8 @@ function updateGameSidebar(msg){
   const sig = myId + "|" + msg.players.map(function(p){
     return p.id + ":" + p.alive + ":" + p.is_killer + ":" + p.name +
            ":" + (p.colors || []).join(",") + ":" + (p.laser ? "l" : "") +
-           (p.bounce ? "b" : "") + (p.mines ? ("m" + p.mines_left) : "");
+           (p.bounce ? "b" : "") + (p.mines ? ("m" + p.mines_left) : "") +
+           ((p.assassin && p.id === myId) ? "A" : "");
   }).join("|");
 
   if (sig !== lastSidebarSig){
@@ -2556,6 +2592,7 @@ function updateGameSidebar(msg){
       if (p.laser){ const t = document.createElement("span"); t.className="tag killer"; t.textContent="LASER"; li.appendChild(t); }
       if (p.bounce){ const t = document.createElement("span"); t.className="tag killer"; t.textContent="RIMBALZO"; li.appendChild(t); }
       if (p.mines){ const t = document.createElement("span"); t.className="tag killer"; t.textContent="MINE " + p.mines_left; li.appendChild(t); }
+      if (p.assassin && p.id === myId){ const t = document.createElement("span"); t.className="tag killer"; t.textContent="ASSASSINO"; li.appendChild(t); }
       const spacer = document.createElement("span"); spacer.className = "spacer"; li.appendChild(spacer);
       const score = document.createElement("span");
       score.style.fontSize = "10px"; score.style.color = "var(--phosphor-dim)";
@@ -2638,11 +2675,13 @@ function requestDir(dir){
   sendMsg({ type: "move", direction: dir });
 }
 
-// Bonus 200 punti: doppio tocco veloce di freccia destra o tasto D (il
-// tasto destro del movimento) sgancia una mina nella cella corrente. Il
-// server e' l'autorita' su quante mine restano e ignora la richiesta se il
-// bonus non e' ancora sbloccato o non ci sono piu' mine disponibili.
-let lastRightTapAt = 0;
+// Bonus 200 punti: doppio tocco veloce dello STESSO tasto di movimento
+// (una qualunque tra le 4 direzioni) sgancia una mina nella cella
+// corrente. Il server e' l'autorita' su quante mine restano e ignora la
+// richiesta se il bonus non e' ancora sbloccato o non ci sono piu' mine
+// disponibili.
+let lastTapAt = 0;
+let lastTapDir = null;
 
 document.addEventListener("keydown", function(ev){
   if (currentScreen !== "game") return;
@@ -2650,14 +2689,12 @@ document.addEventListener("keydown", function(ev){
   if (dir){
     if (!ev.repeat){
       requestDir(dir);
-      if (dir === "right"){
-        const now = performance.now();
-        if (now - lastRightTapAt < MINE_DOUBLE_TAP_MS){
-          sendMsg({ type: "place_mine" });
-          lastRightTapAt = 0; // evita che un terzo tocco ravvicinato sganci subito un'altra mina
-        } else {
-          lastRightTapAt = now;
-        }
+      const now = performance.now();
+      if (dir === lastTapDir && now - lastTapAt < MINE_DOUBLE_TAP_MS){
+        sendMsg({ type: "place_mine" });
+        lastTapAt = 0; lastTapDir = null; // evita che un terzo tocco ravvicinato sganci subito un'altra mina
+      } else {
+        lastTapAt = now; lastTapDir = dir;
       }
     }
     ev.preventDefault();

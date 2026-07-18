@@ -33,17 +33,23 @@ NORMAL_SPEED = 4.5          # celle al secondo
 KILLER_SPEED_MULT = 1.1     # come richiesto: killer 1.1x rispetto a 1.0 dei giocatori
 
 # ---- sistema punti e bonus a traguardi ----
-# Ogni pallino della mappa vale 1 punto. Al raggiungimento di ogni soglia
-# (una sola volta per round) scatta il bonus corrispondente.
+# Ogni pallino normale vale 1 punto. In 10 punti (angoli/estremita') della
+# mappa si trovano pallini piu' grossi e arancioni che valgono 10 punti.
+# Ogni pallino mangiato ricompare da solo dopo PELLET_RESPAWN_SECONDS.
+# Al raggiungimento di ogni soglia (una sola volta per round) scatta il
+# bonus corrispondente.
 BONUS_THRESHOLDS = [
     (50,  "extra_life"),    # +1 vita: se il killer ti prende, respawni invece di uscire
     (100, "laser"),         # sblocca il laser: un colpo singolo (proiettile) ogni secondo
     (150, "laser_bounce"),  # i colpi laser rimbalzano sui muri invece di sparire
     (200, "mines"),         # sblocca 3 mine sganciabili sulla mappa
 ]
-BOOST_MULT = 2.0               # (bonus rimosso dal gioco, costante tenuta per compatibilita')
-BOOST_SECONDS = 15.0           # (bonus rimosso dal gioco, costante tenuta per compatibilita')
-GHOST_SECONDS = 10.0           # (bonus rimosso dal gioco, costante tenuta per compatibilita')
+PELLET_POINTS = 1                  # valore di un pallino normale
+POWER_PELLET_POINTS = 10           # valore di un pallino grosso/arancione
+POWER_PELLET_COUNT = 10            # quanti pallini grossi su ciascuna mappa
+PELLET_RESPAWN_SECONDS = 20.0      # tempo prima che un pallino mangiato ricompaia
+SUPER_ASSASSIN_THRESHOLD = 300     # punti oltre i quali si diventa "super assassino"
+GHOST_SECONDS = 10.0            # (bonus rimosso dal gioco, costante tenuta per compatibilita')
 SPAWN_PROTECT_SECONDS = 3.0    # invulnerabilita' (solo dal killer) dopo un respawn
 LASER_INTERVAL_SECONDS = 1.0   # ogni quanto il laser spara un colpo, una volta sbloccato (1 al secondo)
 LASER_FIRST_DELAY_SECONDS = 1.0  # attesa del primo colpo dopo lo sblocco
@@ -342,6 +348,32 @@ def is_wall(maze, w, h, x, y):
     if x < 0 or y < 0 or y >= h or x >= w:
         return True
     return maze[y][x] == "#"
+
+
+def choose_power_pellet_cells(maze, w, h, count=POWER_PELLET_COUNT):
+    """Sceglie 'count' celle libere ben distribuite tra loro (algoritmo
+    "farthest point sampling"): si parte dalla cella libera piu' vicina
+    all'angolo in alto a sinistra, poi ad ogni passo si aggiunge la cella
+    libera piu' lontana (in distanza minima) da quelle gia' scelte. Il
+    risultato tende naturalmente a "sparpagliarsi" verso gli estremi/angoli
+    della mappa, esattamente come richiesto."""
+    floor_cells = [(x, y) for y in range(h) for x in range(w) if maze[y][x] == "."]
+    if not floor_cells:
+        return []
+    count = min(count, len(floor_cells))
+    start = min(floor_cells, key=lambda c: c[0] + c[1])
+    chosen = [start]
+    remaining = set(floor_cells)
+    remaining.discard(start)
+    while len(chosen) < count and remaining:
+        best_cell, best_dist = None, -1
+        for c in remaining:
+            d = min((c[0] - s[0]) ** 2 + (c[1] - s[1]) ** 2 for s in chosen)
+            if d > best_dist:
+                best_dist, best_cell = d, c
+        chosen.append(best_cell)
+        remaining.discard(best_cell)
+    return chosen
 
 
 def encode(obj) -> bytes:
