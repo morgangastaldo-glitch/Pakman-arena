@@ -1934,10 +1934,8 @@ function drawMines(now){
 }
 
 // Missile guidato (bonus 400 punti): a differenza delle mine e' visibile a
-// TUTTI (non solo a chi l'ha sparato). Disegnato come un missilino
-// orientato nella direzione di volo, con una fiamma pulsante dietro
-// l'ugello: insegue il nemico piu' vicino seguendo i corridoi.
-var missileDirCache = {};
+// TUTTI (non solo a chi l'ha sparato), con un piccolo nucleo luminoso e un
+// alone azzurro: insegue il nemico piu' vicino seguendo i corridoi.
 function drawMissiles(now){
   const list = (currSnapshot && currSnapshot.missiles) || [];
   if (!list.length) return;
@@ -1945,75 +1943,15 @@ function drawMissiles(now){
   list.forEach(function(mz){
     const cx = mz.x * BASE_CELL + BASE_CELL / 2;
     const cy = mz.y * BASE_CELL + BASE_CELL / 2;
-
-    var angle = missileDirCache[mz.id];
-    if (mz.next){
-      const dx = mz.next[0] - mz.x;
-      const dy = mz.next[1] - mz.y;
-      if (dx !== 0 || dy !== 0){
-        angle = Math.atan2(dy, dx);
-        missileDirCache[mz.id] = angle;
-      }
-    }
-    if (angle === undefined) angle = 0;
-
-    ctx.save();
-    ctx.translate(cx, cy);
-    ctx.rotate(angle);
-
-    const flick = 0.75 + 0.25 * Math.sin(now / 45 + mz.x + mz.y);
-    const flameLen = 8 * flick;
-
-    ctx.globalAlpha = 0.85 * flick;
-    ctx.fillStyle = "#ff9d3c";
-    ctx.beginPath();
-    ctx.moveTo(-5, -2.6);
-    ctx.lineTo(-5 - flameLen, 0);
-    ctx.lineTo(-5, 2.6);
-    ctx.closePath();
-    ctx.fill();
-
-    ctx.globalAlpha = 0.9 * flick;
-    ctx.fillStyle = "#fff6d8";
-    ctx.beginPath();
-    ctx.moveTo(-5, -1.1);
-    ctx.lineTo(-5 - flameLen * 0.55, 0);
-    ctx.lineTo(-5, 1.1);
-    ctx.closePath();
-    ctx.fill();
-
-    ctx.globalAlpha = 1;
-    ctx.fillStyle = "#cfd8e3";
-    ctx.beginPath();
-    ctx.moveTo(7, 0);
-    ctx.lineTo(2, -2.4);
-    ctx.lineTo(-5, -2.2);
-    ctx.lineTo(-5, 2.2);
-    ctx.lineTo(2, 2.4);
-    ctx.closePath();
-    ctx.fill();
-    ctx.strokeStyle = "#5a6b80";
-    ctx.lineWidth = 0.8;
-    ctx.stroke();
-
-    ctx.fillStyle = "#8fa3b8";
-    ctx.beginPath();
-    ctx.moveTo(-3, -2.2);
-    ctx.lineTo(-6.5, -5);
-    ctx.lineTo(-4.5, -2.2);
-    ctx.closePath();
-    ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(-3, 2.2);
-    ctx.lineTo(-6.5, 5);
-    ctx.lineTo(-4.5, 2.2);
-    ctx.closePath();
-    ctx.fill();
-
-    ctx.fillStyle = "#e0453f";
-    ctx.fillRect(1.2, -2.3, 1.6, 4.6);
-
-    ctx.restore();
+    ctx.globalAlpha = 0.3;
+    ctx.fillStyle = "#8fd3ff";
+    ctx.beginPath(); ctx.arc(cx, cy, 7, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 0.95;
+    ctx.fillStyle = "#e8f7ff";
+    ctx.beginPath(); ctx.arc(cx, cy, 3, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "#5ab8ff";
+    ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.arc(cx, cy, 5, 0, Math.PI * 2); ctx.stroke();
   });
   ctx.restore();
 }
@@ -2503,7 +2441,6 @@ function onGameEvent(msg){
     case "missile_end": {
       explosions.push({ x: msg.x, y: msg.y, color: "#8fd3ff", start: now });
       tone(140, 0.15, "sawtooth", 0.12, 0.02);
-      delete missileDirCache[msg.id];
       break;
     }
     case "kill_life_bonus": {
