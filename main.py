@@ -51,6 +51,7 @@ from common import (
     PORTAL_COOLDOWN_SECONDS,
     MISSILE_SPEED_MULT, MISSILES_COUNT, MISSILE_RETARGET_SECONDS,
     TRAP_THRESHOLD, TRAP_DURATION_SECONDS, TRAP_RANGE,
+    TURN_WINDOW,
 )
 
 MAX_PLAYER_COLORS = 2  # colore primario + colore di dettaglio (opzionale)
@@ -1255,7 +1256,26 @@ async def handle_client(ws):
                     continue
                 direction = msg.get("direction")
                 if direction in DIRECTIONS:
-                    player.next_direction = direction
+                    # Finestra di tolleranza: la svolta "prende" solo se il
+                    # tasto arriva vicino al centro della cella corrente
+                    # (move_accum vicino a 0.0 appena entrati in cella, o
+                    # vicino a 1.0 un attimo prima di scattare nella
+                    # prossima). Fuori da questa finestra la richiesta viene
+                    # scartata subito, invece di restare in coda: e' proprio
+                    # l'accumulo di richieste "fuori tempo" a generare la
+                    # sovrapposizione di comandi percepita come lag. Il
+                    # giocatore deve ripremere il tasto piu' vicino
+                    # all'incrocio (proprio come sui cabinati originali).
+                    acc = player.move_accum
+                    on_time = (acc <= TURN_WINDOW) or (acc >= 1.0 - TURN_WINDOW)
+                    # Se il personaggio e' fermo (nessuna direzione ancora
+                    # impostata) o la direzione richiesta e' la stessa gia'
+                    # in corso, non ha senso applicare la finestra: si
+                    # accetta sempre (altrimenti non si potrebbe nemmeno
+                    # partire dallo spawn).
+                    if player.direction is None or direction == player.direction or on_time:
+                        player.next_direction = direction
+                    # else: input scartato, nessuna coda ne' correzione
 
             elif mtype == "place_mine":
                 # Bonus 200 punti: pressione del tasto "1" lato client.
