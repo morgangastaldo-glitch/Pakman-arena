@@ -4,6 +4,7 @@ Costanti condivise, mappe e helper di protocollo per Pac-Man Arena 1vAll.
 import json
 import random
 import string
+from collections import deque
 
 DEFAULT_PORT = 8765
 
@@ -42,6 +43,7 @@ BONUS_THRESHOLDS = [
     (100, "extra_life"),    # +1 seconda vita extra (stesso effetto, soglia diversa)
     (150, "laser"),         # sblocca il laser (un colpo/secondo), ma dura solo LASER_DURATION_SECONDS
     (200, "mines"),         # sblocca 3 mine sganciabili sulla mappa (si attivano col tasto "1")
+    (400, "missile"),       # sblocca MISSILES_COUNT missili guidati (si sparano col tasto "2")
 ]
 PELLET_POINTS = 1                  # valore di un pallino normale
 POWER_PELLET_POINTS = 10           # valore di un pallino grosso/arancione
@@ -59,6 +61,21 @@ LASER_BOUNCE_DISTANCE = 12     # celle percorribili dopo il primo rimbalzo su un
 MINES_COUNT = 3                # numero di mine disponibili una volta sbloccato il bonus 200 punti
 MINE_DOUBLE_TAP_MS = 350       # finestra (ms) del doppio tocco freccia destra/D che sgancia una mina (uso lato client)
 PORTAL_COOLDOWN_SECONDS = 1.2  # anti ping-pong: dopo un teletrasporto i portali si ignorano per un attimo
+
+# ---- bonus 400 punti: missile guidato (tasto "2") ----
+MISSILE_SPEED_MULT = 1.5        # velocita' del missile = NORMAL_SPEED * 1.5 (piu' veloce di un giocatore normale)
+MISSILES_COUNT = 2              # missili disponibili una volta sbloccato il bonus 400 punti
+MISSILE_RETARGET_SECONDS = 0.15  # ogni quanto il missile ricalcola il percorso verso il bersaglio (che si muove)
+
+# ---- bonus 500 punti: trappola (tasto "3") ----
+# Allo sblocco, il nemico piu' vicino viene intrappolato (bloccato sul posto)
+# per TRAP_DURATION_SECONDS: se ci si avvicina entro TRAP_RANGE celle e si
+# preme il tasto "3" in tempo, l'avversario viene distrutto da una piccola
+# esplosione (perde una vita). Se scade il tempo, la trappola si disinnesca
+# da sola e l'avversario torna libero.
+TRAP_THRESHOLD = 500
+TRAP_DURATION_SECONDS = 15.0
+TRAP_RANGE = 1  # distanza massima (in celle, stile scacchi/Chebyshev) per far detonare la trappola
 
 # Nome colore (mostrato all'utente, in italiano) -> id colore interno.
 # Elenco esteso: ogni giocatore puo' scegliere fino a 2 colori (primario +
@@ -349,6 +366,41 @@ def is_wall(maze, w, h, x, y):
     if x < 0 or y < 0 or y >= h or x >= w:
         return True
     return maze[y][x] == "#"
+
+
+def bfs_path(maze, w, h, start, goal):
+    """Percorso piu' breve (in celle, esclusa quella di partenza) da start a
+    goal dentro il labirinto, via breadth-first search: e' cio' che rende il
+    missile del bonus 400 punti "guidato" (segue i corridoi, non attraversa
+    mai un muro) invece che un proiettile a linea retta come il laser.
+    Ritorna None se il bersaglio non e' raggiungibile (non dovrebbe mai
+    succedere: tutte le mappe sono garantite completamente connesse)."""
+    if start == goal:
+        return []
+    frontier = deque([start])
+    came_from = {start: None}
+    while frontier:
+        cur = frontier.popleft()
+        if cur == goal:
+            break
+        cx, cy = cur
+        for ddx, ddy in DIRECTIONS.values():
+            nxt = (cx + ddx, cy + ddy)
+            if nxt in came_from:
+                continue
+            if is_wall(maze, w, h, nxt[0], nxt[1]):
+                continue
+            came_from[nxt] = cur
+            frontier.append(nxt)
+    if goal not in came_from:
+        return None
+    path = []
+    cur = goal
+    while cur != start:
+        path.append(cur)
+        cur = came_from[cur]
+    path.reverse()
+    return path
 
 
 def choose_power_pellet_cells(maze, w, h, count=POWER_PELLET_COUNT):

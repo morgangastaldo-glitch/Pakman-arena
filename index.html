@@ -474,7 +474,11 @@ const BONUS_STEPS = [
   { at: 150, label: "LASER (1 min)" },
   { at: 200, label: "MINE (tasto 1)" },
   { at: 300, label: "SUPER ASSASSINO (30s)" },
+  { at: 400, label: "MISSILE GUIDATO (tasto 2)" },
+  { at: 500, label: "TRAPPOLA (tasto 3)" },
 ];
+const MISSILE_SPEED_MULT = 1.5; // deve restare identica a MISSILE_SPEED_MULT in common.py
+const TRAP_DURATION_SECONDS = 15; // deve restare identica a TRAP_DURATION_SECONDS in common.py
 function cellDurationMs(isAssassin){
   const speed = NORMAL_SPEED * (isAssassin ? ASSASSIN_SPEED_MULT : 1);
   return 1000 / speed;
@@ -1772,6 +1776,22 @@ function drawPlayers(players, now){
       ctx.restore();
     }
 
+    // Bonus 500 punti: nemico intrappolato, immobile per 15s. Visibile a
+    // tutti (cosi' si capisce perche' non si muove), anello dorato tratteggiato
+    // che ruota lentamente.
+    if (p.trapped){
+      ctx.save();
+      ctx.strokeStyle = "rgba(255,209,102,0.9)";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 3]);
+      ctx.translate(px, py);
+      ctx.rotate(now / 500);
+      ctx.beginPath();
+      ctx.arc(0, 0, radius + 5, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
     ctx.restore();
 
     // Nome (il fantasma visto da se' non mostra il nome, per non ingombrare).
@@ -1913,6 +1933,29 @@ function drawMines(now){
   ctx.restore();
 }
 
+// Missile guidato (bonus 400 punti): a differenza delle mine e' visibile a
+// TUTTI (non solo a chi l'ha sparato), con un piccolo nucleo luminoso e un
+// alone azzurro: insegue il nemico piu' vicino seguendo i corridoi.
+function drawMissiles(now){
+  const list = (currSnapshot && currSnapshot.missiles) || [];
+  if (!list.length) return;
+  ctx.save();
+  list.forEach(function(mz){
+    const cx = mz.x * BASE_CELL + BASE_CELL / 2;
+    const cy = mz.y * BASE_CELL + BASE_CELL / 2;
+    ctx.globalAlpha = 0.3;
+    ctx.fillStyle = "#8fd3ff";
+    ctx.beginPath(); ctx.arc(cx, cy, 7, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 0.95;
+    ctx.fillStyle = "#e8f7ff";
+    ctx.beginPath(); ctx.arc(cx, cy, 3, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "#5ab8ff";
+    ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.arc(cx, cy, 5, 0, Math.PI * 2); ctx.stroke();
+  });
+  ctx.restore();
+}
+
 // Effetto di teletrasporto (punto 4): anelli che si espandono dai due portali.
 function drawSwirls(now){
   swirls = swirls.filter(function(s){ return now - s.start < 420; });
@@ -2021,6 +2064,7 @@ function renderLoop(now){
   drawThemeFx(now);
   drawPlayers(currSnapshot.players, now);
   drawMines(now);
+  drawMissiles(now);
   drawLaserProjectiles(now);
   drawSparks(now);
   drawExplosions(now);
@@ -2300,6 +2344,8 @@ function onGameEvent(msg){
         extra_life:   "VITA EXTRA! \u2665",
         laser:        "LASER SBLOCCATO! (1 min)",
         mines:        "MINE SBLOCCATE! (3, tasto 1)",
+        missile:      "MISSILE GUIDATO SBLOCCATO! (tasto 2)",
+        trap:         "TRAPPOLA SBLOCCATA! (tasto 3)",
       };
       const txt = labels[msg.bonus] || "BONUS!";
       if (msg.player === myId){
@@ -2321,7 +2367,10 @@ function onGameEvent(msg){
       const byLaser = msg.cause === "laser";
       const byMine = msg.cause === "mine";
       const byAssassin = msg.cause === "assassin";
-      const causeTxt = byLaser ? " dal laser" : (byMine ? " da una mina" : (byAssassin ? " dal super assassino" : ""));
+      const byMissile = msg.cause === "missile";
+      const byTrap = msg.cause === "trap";
+      const causeTxt = byLaser ? " dal laser" : (byMine ? " da una mina" : (byAssassin ? " dal super assassino"
+        : (byMissile ? " da un missile guidato" : (byTrap ? " da una trappola" : ""))));
       const stolenTxt = msg.stolen ? (" (-" + msg.stolen + " punti)") : "";
       if (msg.victim === myId){
         showBonusBanner(msg.respawn ? ("HAI PERSO UNA VITA \u2665" + msg.lives) : "SEI STATO ELIMINATO");
@@ -2383,6 +2432,43 @@ function onGameEvent(msg){
       tone(120, 0.2, "sawtooth", 0.14, 0.02);
       break;
     }
+    case "missile_fire": {
+      if (msg.owner === myId) showToast("Missile lanciato (" + msg.left + " rimasti)");
+      tone(180, 0.09, "sawtooth", 0.12);
+      break;
+    }
+    case "missile_end": {
+      explosions.push({ x: msg.x, y: msg.y, color: "#8fd3ff", start: now });
+      tone(140, 0.15, "sawtooth", 0.12, 0.02);
+      break;
+    }
+    case "kill_life_bonus": {
+      if (msg.player === myId){
+        showBonusBanner("VITA EXTRA! (" + msg.kills + " uccisioni) \u2665" + msg.lives);
+        playBonus();
+      }
+      break;
+    }
+    case "trap_start": {
+      if (msg.player === myId){
+        showBonusBanner("NEMICO INTRAPPOLATO! Avvicinati e premi 3");
+        playBonus();
+      } else if (msg.victim === myId){
+        showBonusBanner("SEI INTRAPPOLATO!");
+      }
+      tone(300, 0.12, "square", 0.1);
+      break;
+    }
+    case "trap_expired": {
+      if (msg.player === myId) showToast("La trappola si e' disinnescata");
+      break;
+    }
+    case "trap_boom": {
+      explosions.push({ x: msg.x, y: msg.y, color: "#ffd166", start: now });
+      noiseBurst(0.18, 0.16);
+      tone(160, 0.18, "sawtooth", 0.13, 0.02);
+      break;
+    }
     case "teleport": {
       const col = mazeTheme.glow || "#9df6ff";
       swirls.push({ x: msg.from[0], y: msg.from[1], start: now, color: col });
@@ -2399,13 +2485,15 @@ function onGameEvent(msg){
 }
 
 function showBonusBanner(text){
+  // Durata fissata a 1 secondo (richiesta esplicita): il messaggio che
+  // annuncia il bonus appena sbloccato resta a schermo esattamente 1000ms.
   const el = document.getElementById("bonusBanner");
   if (!el) return;
   el.textContent = text;
   el.classList.add("show");
-  bonusBannerUntil = performance.now() + 1600;
+  bonusBannerUntil = performance.now() + 1000;
   clearTimeout(showBonusBanner._t);
-  showBonusBanner._t = setTimeout(function(){ el.classList.remove("show"); }, 1600);
+  showBonusBanner._t = setTimeout(function(){ el.classList.remove("show"); }, 1000);
 }
 
 function updateHud(msg){
@@ -2488,6 +2576,8 @@ function updateGameSidebar(msg){
     return p.id + ":" + p.alive + ":" + p.name +
            ":" + (p.colors || []).join(",") + ":" + (p.laser ? "l" : "") +
            (p.bounce ? "b" : "") + (p.mines ? ("m" + p.mines_left) : "") +
+           (p.missile ? ("r" + p.missiles_left) : "") +
+           (p.trapped ? "t" : "") +
            ((p.assassin && p.id === myId) ? "A" : "");
   }).join("|");
 
@@ -2516,6 +2606,8 @@ function updateGameSidebar(msg){
       if (p.laser){ const t = document.createElement("span"); t.className="tag alert"; t.textContent="LASER"; li.appendChild(t); }
       if (p.bounce){ const t = document.createElement("span"); t.className="tag alert"; t.textContent="RIMBALZO"; li.appendChild(t); }
       if (p.mines){ const t = document.createElement("span"); t.className="tag alert"; t.textContent="MINE " + p.mines_left; li.appendChild(t); }
+      if (p.missile){ const t = document.createElement("span"); t.className="tag alert"; t.textContent="MISSILI " + p.missiles_left; li.appendChild(t); }
+      if (p.trapped){ const t = document.createElement("span"); t.className="tag alert"; t.textContent="INTRAPPOLATO"; li.appendChild(t); }
       if (iAmAssassinRow){ const t = document.createElement("span"); t.className="tag alert"; t.textContent="ASSASSINO"; li.appendChild(t); }
       const spacer = document.createElement("span"); spacer.className = "spacer"; li.appendChild(spacer);
       const score = document.createElement("span");
@@ -2612,6 +2704,19 @@ document.addEventListener("keydown", function(ev){
   }
   if (ev.key === "1" && !ev.repeat){
     sendMsg({ type: "place_mine" });
+    ev.preventDefault();
+  }
+  // Bonus 400 punti: il tasto "2" spara un missile guidato verso il
+  // nemico piu' vicino (finche' restano missili disponibili).
+  if (ev.key === "2" && !ev.repeat){
+    sendMsg({ type: "fire_missile" });
+    ev.preventDefault();
+  }
+  // Bonus 500 punti: il tasto "3", da vicino al nemico intrappolato,
+  // lo fa detonare (l'intrappolamento vero e proprio scatta da solo
+  // appena si sbloccano i 500 punti).
+  if (ev.key === "3" && !ev.repeat){
+    sendMsg({ type: "detonate_trap" });
     ev.preventDefault();
   }
 });
