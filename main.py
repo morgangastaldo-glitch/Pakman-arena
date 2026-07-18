@@ -36,6 +36,8 @@ import sys
 import uuid
 
 import websockets
+from websockets.datastructures import Headers
+from websockets.http11 import Response
 
 from common import (
     TICK_DT, COUNTDOWN_SECONDS, ROUND_SECONDS,
@@ -1456,18 +1458,39 @@ async def handle_client(ws):
                 await room.broadcast_lobby()
 
 
-async def health_check(path, request_headers):
+async def health_check(connection, request):
     """
     Un GET HTTP normale (dal browser che apre il link, o dagli 'health
     check' delle piattaforme di hosting) riceve la pagina del gioco
     (index.html), se presente accanto a questo file. Le vere richieste
     WebSocket del gioco proseguono invece normalmente.
+
+    NB: dalla versione 13 di 'websockets' la firma di process_request e' 
+    process_request(connection, request) -> Response | None (non piu'
+    process_request(path, request_headers) -> tuple | None come nelle
+    versioni vecchie), e il valore di ritorno deve essere un vero oggetto
+    websockets.http11.Response (non una tupla): usare la firma/i tipi
+    sbagliati fa fallire silenziosamente l'intercettazione delle richieste
+    HTTP normali, che finiscono nella pagina d'errore di default del
+    protocollo WebSocket ("Non e' riuscito ad aprire una connessione
+    WebSocket") anche quando il server e' online e funzionante.
     """
-    if "Upgrade" in request_headers and request_headers["Upgrade"].lower() == "websocket":
+    upgrade = request.headers.get("Upgrade", "")
+    if upgrade.lower() == "websocket":
         return None  # lascia proseguire come WebSocket
     if CLIENT_HTML is not None:
-        return (200, [("Content-Type", "text/html; charset=utf-8")], CLIENT_HTML.encode("utf-8"))
-    return (200, [("Content-Type", "text/plain")], b"Pac-Man Arena server OK\n")
+        body = CLIENT_HTML.encode("utf-8")
+        headers = Headers([
+            ("Content-Type", "text/html; charset=utf-8"),
+            ("Content-Length", str(len(body))),
+        ])
+        return Response(200, "OK", headers, body)
+    body = b"Pac-Man Arena server OK\n"
+    headers = Headers([
+        ("Content-Type", "text/plain; charset=utf-8"),
+        ("Content-Length", str(len(body))),
+    ])
+    return Response(200, "OK", headers, body)
 
 
 async def main():
