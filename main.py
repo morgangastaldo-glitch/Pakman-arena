@@ -729,7 +729,34 @@ class Room:
         un muro e senza alcuno scatto visibile (la correzione e' al massimo
         di REWIND_MAX_SECONDS di percorso, meno di mezza cella a velocita'
         normale).
+
+        IMPORTANTE: il riavvolgimento tocca p.x/p.y/p.move_accum, quindi va
+        usato SOLO quando serve davvero. Se la pressione e' gia' in tempo
+        (il giocatore e' fermo, sta invertendo la marcia, o e' gia' esattamente
+        al centro-cella) la svolta scatterebbe comunque, subito e senza
+        alcun problema, con il solito accodamento "leggero" (next_direction),
+        esattamente come prima di questa modifica: quel percorso NON tocca
+        mai la posizione, quindi resta perfettamente fluido. Il
+        riavvolgimento e' riservato al solo caso realmente problematico
+        (svolta perpendicolare richiesta mentre non si e' al centro), che
+        prima di questa fix veniva accodata e rischiava di far sbattere il
+        personaggio contro un muro. Fare passare OGNI pressione dal
+        ricalcolo, invece, introduceva un piccolo scarto numerico ad ogni
+        singolo tasto premuto (il riavvolgimento ricompone la posizione in
+        un solo blocco di tempo, il tick normale la accumula a incrementi
+        di TICK_DT: gli arrotondamenti non coincidono mai esattamente) e con
+        tasti premuti di continuo durante il gioco normale, quello scarto
+        continuo e' quello che si percepiva come "a scatti".
         """
+        if (
+            p.direction is None
+            or p.move_accum <= 1e-9
+            or requested_dir == OPPOSITE_DIR[p.direction]
+        ):
+            # Percorso semplice, invariato: nessun tocco a x/y/move_accum.
+            p.next_direction = requested_dir
+            return
+
         now = time.monotonic()
         delay = min(p.rtt / 2.0, REWIND_MAX_SECONDS)
         if delay <= 1e-9 or not p.pos_history:
