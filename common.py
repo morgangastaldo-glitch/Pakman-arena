@@ -215,7 +215,7 @@ SUPERBOMB_RADIUS_CELLS = 8          # raggio dell'esplosione concentrica (casell
 # round, anche se il proprietario muore o si disconnette (come mortaio e
 # torretta).
 BALLOON_THRESHOLD = 1600
-BALLOON_SPEED = 2.2                       # celle al secondo: vaga lentamente su tutta la mappa
+BALLOON_SPEED = 1.1                       # celle al secondo: vaga lentamente su tutta la mappa (dimezzata: il doppio piu' lenta)
 BALLOON_BOMB_INTERVAL_SECONDS = 3.0       # cadenza di sgancio bombe
 BALLOON_BOMB_RADIUS_CELLS = 4             # raggio dell'esplosione istantanea (caselle, distanza Manhattan)
 BALLOON_RETARGET_EPSILON = 0.15           # sotto questa distanza dalla meta' ne sceglie subito una nuova a caso

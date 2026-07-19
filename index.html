@@ -2588,8 +2588,8 @@ function drawBalloons(now){
     const shadowY = b.y * BASE_CELL + BASE_CELL / 2;
     const owner = findPlayer(currSnapshot, b.owner);
     const col = (owner && COLOR_HEX[(owner.colors || [])[0]]) || "#ff9d3b";
-    const bob = Math.sin(now / 900 + (shadowX + shadowY) * 0.01) * 2;
-    const liftHeight = 15 + bob;
+    const bob = Math.sin(now / 900 + (shadowX + shadowY) * 0.01) * 4;
+    const liftHeight = 30 + bob;
     const cy = shadowY - liftHeight;
 
     // Ombra a terra: coincide esattamente col punto in cui sganciera' la
@@ -2597,43 +2597,43 @@ function drawBalloons(now){
     ctx.globalAlpha = 0.32;
     ctx.fillStyle = "#000";
     ctx.beginPath();
-    ctx.ellipse(shadowX, shadowY, 6, 3, 0, 0, Math.PI * 2);
+    ctx.ellipse(shadowX, shadowY, 12, 6, 0, 0, Math.PI * 2);
     ctx.fill();
 
     // Cesto di vimini appeso sotto il pallone, con le corde di collegamento.
     ctx.globalAlpha = 0.95;
     ctx.strokeStyle = "#5e3b21";
-    ctx.lineWidth = 0.6;
+    ctx.lineWidth = 1.2;
     ctx.beginPath();
-    ctx.moveTo(shadowX - 3, cy + 6); ctx.lineTo(shadowX - 5, cy + 1);
-    ctx.moveTo(shadowX + 3, cy + 6); ctx.lineTo(shadowX + 5, cy + 1);
+    ctx.moveTo(shadowX - 6, cy + 12); ctx.lineTo(shadowX - 10, cy + 2);
+    ctx.moveTo(shadowX + 6, cy + 12); ctx.lineTo(shadowX + 10, cy + 2);
     ctx.stroke();
     ctx.fillStyle = "#8a5a34";
-    ctx.fillRect(shadowX - 3, cy + 6, 6, 4);
-    ctx.lineWidth = 0.8;
-    ctx.strokeRect(shadowX - 3, cy + 6, 6, 4);
+    ctx.fillRect(shadowX - 6, cy + 12, 12, 8);
+    ctx.lineWidth = 1.6;
+    ctx.strokeRect(shadowX - 6, cy + 12, 12, 8);
 
     // Alone morbido dietro il pallone, nel colore del proprietario.
     ctx.globalAlpha = 0.22;
     ctx.fillStyle = col;
-    ctx.beginPath(); ctx.arc(shadowX, cy - 2, 10, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(shadowX, cy - 4, 20, 0, Math.PI * 2); ctx.fill();
 
     // Involucro del pallone: corpo scuro con strisce verticali nel colore
     // del proprietario, cosi' resta subito riconoscibile a chi l'ha
     // lanciata (stessa idea delle fasce colorate di mortaio/bombolone).
     ctx.globalAlpha = 1;
     ctx.fillStyle = "#2a2a2e";
-    ctx.beginPath(); ctx.ellipse(shadowX, cy - 2, 7, 8.5, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(shadowX, cy - 4, 14, 17, 0, 0, Math.PI * 2); ctx.fill();
     ctx.save();
-    ctx.beginPath(); ctx.ellipse(shadowX, cy - 2, 7, 8.5, 0, 0, Math.PI * 2); ctx.clip();
+    ctx.beginPath(); ctx.ellipse(shadowX, cy - 4, 14, 17, 0, 0, Math.PI * 2); ctx.clip();
     ctx.fillStyle = col;
     for (let i = -2; i <= 2; i++){
-      ctx.fillRect(shadowX + i * 3 - 1, cy - 11, 2, 17);
+      ctx.fillRect(shadowX + i * 6 - 2, cy - 22, 4, 34);
     }
     ctx.restore();
     ctx.strokeStyle = col;
-    ctx.lineWidth = 1.2;
-    ctx.beginPath(); ctx.ellipse(shadowX, cy - 2, 7, 8.5, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.lineWidth = 2.4;
+    ctx.beginPath(); ctx.ellipse(shadowX, cy - 4, 14, 17, 0, 0, Math.PI * 2); ctx.stroke();
   });
   ctx.restore();
 }
