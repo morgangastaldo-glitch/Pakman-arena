@@ -490,7 +490,7 @@
     </div>
 
     <div class="controls-row">
-      <span class="hint">WASD / frecce tastiera · Pallini = punti · Bonus a 50/100/150/200/300/400/500/600/1000/1200 · Tasto 5 = torretta · Tasto 9 = evolvi la torretta in navicella · Tasto 0 = mortaio</span>
+      <span class="hint">WASD / frecce tastiera · Pallini = punti · Bonus a 50/100/150/200/300/400/500/600/1000/1100/1200 · Tasto 5 = torretta · Tasto 9 = evolvi la torretta in navicella · Tasto 0 = mortaio</span>
       <button class="ghost danger" id="btnLeaveGame">Esci</button>
     </div>
   </section>
@@ -532,11 +532,15 @@ const BONUS_STEPS = [
   { at: 800, label: "FULMINE (tasto 7)" },
   { at: 900, label: "PET FEDELE (tasto 8)" },
   { at: 1000, label: "NAVICELLA: evolvi la torretta (tasto 9)" },
+  { at: 1100, label: "3 VITE EXTRA" },
   { at: 1200, label: "MORTAIO (tasto 0)" },
+  { at: 1400, label: "BOMBOLONE: dopo il mortaio (tasto 0)" },
 ];
 const MISSILE_SPEED_MULT = 1.1; // deve restare identica a MISSILE_SPEED_MULT in common.py
 const TRAP_DURATION_SECONDS = 3; // deve restare identica a TRAP_DURATION_SECONDS in common.py
 const MINE_VISIBILITY_RANGE = 5; // deve restare identica a MINE_VISIBILITY_RANGE in common.py
+const SUPERBOMB_FUSE_SECONDS = 2.0;   // deve restare identica a SUPERBOMB_FUSE_SECONDS in common.py
+const SUPERBOMB_RADIUS_CELLS = 8;     // deve restare identica a SUPERBOMB_RADIUS_CELLS in common.py
 function cellDurationMs(isAssassin){
   const speed = NORMAL_SPEED * (isAssassin ? ASSASSIN_SPEED_MULT : 1);
   return 1000 / speed;
@@ -564,6 +568,7 @@ const COLOR_HEX = {
 const ASSASSIN_COLOR = "#ff2b4e";
 const ARMOR_COLOR = "#4dffe8";
 const LIGHTNING_COLOR = "#ffe14d";
+const POISON_COLOR = "#7cff3b";
 const COLOR_NAMES = Object.keys(COLOR_HEX);
 const DIR_ANGLE = { right: 0, down: 90, left: 180, up: 270 };
 // Deve restare identico a DIRECTIONS in common.py: usato dalla simulazione
@@ -710,6 +715,8 @@ let lastCountdownSecond = null;  // ultimo secondo intero del countdown gia' "ti
 let eatenPellets = new Set();
 let powerPellets = new Set(); // celle "x,y" dei pallini grossi/arancioni (10 punti) di questa mappa
 let explosions = []; // {x,y,color,start}
+// Onde d'urto del bombolone (bonus 1400 punti): {x,y,color,start,radiusCells}
+let shockwaves = [];
 // Bonus 800 punti: fulmini che "cadono dal cielo" verso ciascun bersaglio
 // colpito. {x,y,start,segs}: x/y in celle (colonna del bersaglio, la
 // discesa e' verticale come un vero fulmine), segs = percorso a zig-zag
@@ -883,6 +890,23 @@ function playMortarImpact(){
   noiseBurst(0.32, 0.22);
   tone(80, 0.32, "sawtooth", 0.18, 0);
   tone(55, 0.4, "sine", 0.14, 0.04);
+}
+// Piazzamento del bombolone (bonus 1400 punti, tasto 0 dopo il mortaio): un
+// "beep" di armamento elettronico, ripetuto e via via piu' insistente, come
+// l'innesco di un ordigno che si sta caricando.
+function playSuperbombPlace(){
+  tone(440, 0.05, "square", 0.13, 0);
+  tone(440, 0.05, "square", 0.13, 0.18);
+  tone(440, 0.05, "square", 0.13, 0.36);
+}
+// Esplosione del bombolone: il boato piu' grosso del gioco (raggio 8
+// caselle), rumore bianco lungo e un basso doppio profondo, per rendere la
+// scala molto piu' grande di un normale impatto di mortaio.
+function playSuperbombExplode(){
+  noiseBurst(0.5, 0.28);
+  tone(60, 0.5, "sawtooth", 0.22, 0);
+  tone(40, 0.6, "sine", 0.18, 0.05);
+  tone(90, 0.35, "square", 0.12, 0.02);
 }
 // Colpo di laser: sweep acuto e secco verso il basso.
 function playLaser(){
@@ -2375,10 +2399,11 @@ function drawPets(now){
   ctx.restore();
 }
 
-// Mortaio permanente (bonus 1200 punti): riusa lo stesso "corpo" ottagonale
-// della torretta fissa (piastra + canna), ma piu' tozzo/pesante e puntato
-// verso l'alto (la canna resta quasi verticale, e' un'arma indiretta ad
-// arco, non punta mai dritta al bersaglio come laser/torretta).
+// Mortaio permanente (bonus 1200 punti): forma stilizzata "da tavolo da
+// gioco" (ispirata al mortaio di Clash Royale) invece di riciclare il corpo
+// ottagonale della torretta - un tronco di legno tozzo su un treppiede,
+// visto dall'alto, con la bocca larga rivolta verso il cielo (e' un'arma
+// indiretta ad arco, non punta mai dritta al bersaglio come laser/torretta).
 function drawMortars(now){
   const list = (currSnapshot && currSnapshot.mortars) || [];
   if (!list.length) return;
@@ -2389,6 +2414,7 @@ function drawMortars(now){
     const owner = findPlayer(currSnapshot, mt.owner);
     const col = (owner && COLOR_HEX[(owner.colors || [])[0]]) || "#ff9d3b";
     const tracking = !!mt.aim;
+    const WOOD = "#8a5a34", WOOD_DARK = "#5e3b21", METAL = "#caa25a";
 
     // Anello del raggio d'azione (15 caselle): visibile solo al
     // proprietario, molto tenue, come per la torretta.
@@ -2402,37 +2428,172 @@ function drawMortars(now){
     }
 
     const pulse = 0.6 + 0.4 * Math.abs(Math.sin(now / (tracking ? 140 : 320)));
+    // Seed per orientare il treppiede in modo stabile per ogni mortaio.
+    let seed = 0;
+    for (let i = 0; i < mt.id.length; i++) seed += mt.id.charCodeAt(i);
 
-    // Base tozza ottagonale, piu' larga della torretta normale.
-    ctx.globalAlpha = tracking ? 0.34 : 0.22;
+    // Alone morbido a terra.
+    ctx.globalAlpha = tracking ? 0.30 : 0.18;
     ctx.fillStyle = col;
-    ctx.beginPath(); ctx.arc(cx, cy, 10, 0, Math.PI * 2); ctx.fill();
-    ctx.globalAlpha = 0.95;
-    ctx.strokeStyle = col;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    for (let i = 0; i < 8; i++){
-      const a = i * Math.PI / 4;
-      const px2 = cx + Math.cos(a) * 7.5, py2 = cy + Math.sin(a) * 7.5;
-      if (i === 0) ctx.moveTo(px2, py2); else ctx.lineTo(px2, py2);
-    }
-    ctx.closePath(); ctx.stroke();
+    ctx.beginPath(); ctx.arc(cx, cy, 11, 0, Math.PI * 2); ctx.fill();
 
-    // Canna spessa e corta, quasi verticale (leggera oscillazione quando ha
-    // agganciato un bersaglio, per dare l'idea del tiro ad arco).
-    const tilt = tracking ? Math.sin(now / 260) * 0.12 : 0;
-    ctx.lineWidth = 4;
+    // Treppiede di legno: tre gambe tozze che spuntano da sotto la base,
+    // ben distinguibili dalle "zampe" rotanti della torretta.
+    ctx.globalAlpha = 0.95;
+    ctx.strokeStyle = WOOD_DARK;
+    ctx.lineWidth = 2.6;
     ctx.lineCap = "round";
-    ctx.strokeStyle = tracking ? "#fff" : col;
-    ctx.beginPath();
-    ctx.moveTo(cx, cy);
-    ctx.lineTo(cx + Math.sin(tilt) * 9, cy - Math.cos(tilt) * 9);
-    ctx.stroke();
+    for (let i = 0; i < 3; i++){
+      const a = seed + i * (Math.PI * 2 / 3);
+      ctx.beginPath();
+      ctx.moveTo(cx + Math.cos(a) * 3, cy + Math.sin(a) * 3);
+      ctx.lineTo(cx + Math.cos(a) * 11, cy + Math.sin(a) * 11);
+      ctx.stroke();
+    }
     ctx.lineCap = "butt";
 
+    // Base rotonda di legno che regge il tronco del mortaio.
+    ctx.globalAlpha = 0.95;
+    ctx.fillStyle = WOOD;
+    ctx.beginPath(); ctx.arc(cx, cy, 7.2, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = WOOD_DARK;
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+
+    // "Respiro" della bocca del mortaio: si allarga leggermente quando ha
+    // agganciato un bersaglio, per dare l'idea che sta per sparare un
+    // colpo ad arco (al posto della canna inclinata della vecchia forma).
+    const mouthR = (tracking ? 5.6 : 5.0) + Math.sin(now / (tracking ? 180 : 500)) * 0.5;
+
+    // Fascia metallica che cinge la bocca, nel colore del proprietario cosi'
+    // resta subito riconoscibile a chi l'ha piazzato.
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = col;
+    ctx.beginPath(); ctx.arc(cx, cy, mouthR + 1.6, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = METAL;
+    ctx.beginPath(); ctx.arc(cx, cy, mouthR + 0.8, 0, Math.PI * 2); ctx.fill();
+
+    // Bocca scura vista dall'alto (il "buco" da cui esce la bomba).
+    ctx.fillStyle = WOOD_DARK;
+    ctx.beginPath(); ctx.arc(cx, cy, mouthR, 0, Math.PI * 2); ctx.fill();
+
+    // Bagliore/nucleo rosso pulsante quando ha un bersaglio agganciato,
+    // come indicatore di "carica pronta al tiro".
     ctx.globalAlpha = pulse;
-    ctx.fillStyle = tracking ? "#ff9d3b" : "#fff";
-    ctx.beginPath(); ctx.arc(cx, cy, 2.4, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = tracking ? "#ff5b5b" : "#3a2213";
+    ctx.beginPath(); ctx.arc(cx, cy, 2.1, 0, Math.PI * 2); ctx.fill();
+
+    // Quattro chiodi/borchie decorative sulla base, per rinforzare il
+    // colpo d'occhio "arma da assedio" a differenza della torretta laser.
+    ctx.globalAlpha = 0.85;
+    ctx.fillStyle = METAL;
+    for (let i = 0; i < 4; i++){
+      const a = seed * 0.5 + i * Math.PI / 2 + Math.PI / 4;
+      ctx.beginPath(); ctx.arc(cx + Math.cos(a) * 6.4, cy + Math.sin(a) * 6.4, 0.9, 0, Math.PI * 2); ctx.fill();
+    }
+  });
+  ctx.restore();
+}
+
+// Bombolone piazzato a terra (bonus 1400 punti, tasto 0 dopo il mortaio):
+// un ordigno rotondo grande quanto una casella, dello stesso colore del
+// proprietario, VISIBILE A TUTTI i giocatori (a differenza delle mine, che
+// restano nascoste da lontano). Esplode SUPERBOMB_FUSE_SECONDS (2s) dopo il
+// piazzamento (server-authoritative, vedi superbomb_public/fuse_left in
+// main.py): l'innesco lampeggia sempre piu' in fretta man mano che il tempo
+// residuo si avvicina allo zero, per anticipare visivamente il boato.
+function drawSuperbombs(now){
+  const list = (currSnapshot && currSnapshot.superbombs) || [];
+  if (!list.length) return;
+  ctx.save();
+  list.forEach(function(bomb){
+    const cx = bomb.x * BASE_CELL + BASE_CELL / 2;
+    const cy = bomb.y * BASE_CELL + BASE_CELL / 2;
+    const owner = findPlayer(currSnapshot, bomb.owner);
+    const col = (owner && COLOR_HEX[(owner.colors || [])[0]]) || "#ff3b3b";
+    const r = BASE_CELL * 0.46;    // grande quanto una casella
+
+    // Anello del raggio d'esplosione (8 caselle): visibile solo al
+    // proprietario, molto tenue, come per gli altri raggi d'azione.
+    if (bomb.owner === myId){
+      ctx.globalAlpha = 0.07;
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 6]);
+      ctx.beginPath(); ctx.arc(cx, cy, SUPERBOMB_RADIUS_CELLS * BASE_CELL, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // L'innesco accelera avvicinandosi allo zero: periodo di lampeggio che
+    // scende da ~500ms a ~110ms quando manca meno di mezzo secondo.
+    const fuseFrac = Math.max(0, Math.min(1, bomb.fuse_left / SUPERBOMB_FUSE_SECONDS));
+    const blinkPeriod = 110 + fuseFrac * 390;
+    const lit = Math.floor(now / blinkPeriod) % 2 === 0;
+
+    // Alone morbido nel colore del proprietario.
+    ctx.globalAlpha = 0.28;
+    ctx.fillStyle = col;
+    ctx.beginPath(); ctx.arc(cx, cy, r + 3, 0, Math.PI * 2); ctx.fill();
+
+    // Corpo sferico dell'ordigno.
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = "#2a2a2e";
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Innesco lampeggiante al centro, nel colore del proprietario.
+    ctx.globalAlpha = lit ? 1 : 0.25;
+    ctx.fillStyle = lit ? "#fff" : col;
+    ctx.beginPath(); ctx.arc(cx, cy, r * 0.4, 0, Math.PI * 2); ctx.fill();
+  });
+  ctx.restore();
+}
+
+// Nuvola velenosa lasciata a terra dall'impatto del mortaio (bonus 1200
+// punti): un'area verde tossica che pulsa e "ribolle" finche' non svanisce
+// (server-authoritative, vedi poison_zones/pz.left in main.py). Il raggio
+// disegnato coincide con POISON_RADIUS_CELLS lato server.
+const poisonBubbleSeeds = {};
+function drawPoisonZones(now){
+  const list = (currSnapshot && currSnapshot.poison_zones) || [];
+  if (!list.length) return;
+  ctx.save();
+  list.forEach(function(pz){
+    const cx = pz.x * BASE_CELL + BASE_CELL / 2;
+    const cy = pz.y * BASE_CELL + BASE_CELL / 2;
+    const r = BASE_CELL * 1.55;
+    // Sfuma dolcemente negli ultimi istanti prima di svanire.
+    const fade = Math.min(1, pz.left / 0.6);
+    const pulse = 0.75 + 0.25 * Math.sin(now / 220);
+
+    ctx.globalAlpha = 0.30 * fade;
+    ctx.fillStyle = POISON_COLOR;
+    ctx.beginPath(); ctx.arc(cx, cy, r * pulse, 0, Math.PI * 2); ctx.fill();
+
+    ctx.globalAlpha = 0.55 * fade;
+    ctx.strokeStyle = POISON_COLOR;
+    ctx.lineWidth = 1.4;
+    ctx.setLineDash([3, 4]);
+    ctx.beginPath(); ctx.arc(cx, cy, r * pulse, 0, Math.PI * 2); ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Bollicine tossiche che salgono, riciclate per id cosi' ogni nuvola
+    // ha un pattern proprio ma stabile (niente Math.random per frame).
+    if (!poisonBubbleSeeds[pz.id]){
+      poisonBubbleSeeds[pz.id] = Array.from({ length: 5 }, function(_, i){
+        return { a: (i / 5) * Math.PI * 2, sp: 0.6 + (i % 3) * 0.15, off: i * 130 };
+      });
+    }
+    ctx.globalAlpha = 0.7 * fade;
+    ctx.fillStyle = "#c8ff9a";
+    poisonBubbleSeeds[pz.id].forEach(function(b){
+      const bt = ((now + b.off) / 700) % 1;
+      const bx = cx + Math.cos(b.a) * r * 0.5;
+      const by = cy - bt * r * 1.1 + r * 0.3;
+      ctx.beginPath(); ctx.arc(bx, by, 1.6 * (1 - bt * 0.5), 0, Math.PI * 2); ctx.fill();
+    });
   });
   ctx.restore();
 }
@@ -2566,6 +2727,43 @@ function drawExplosions(now){
       ctx.arc(px, py, BASE_CELL * 1.5, 0, Math.PI * 2);
       ctx.stroke();
     }
+    ctx.restore();
+  });
+}
+
+// Onda d'urto dell'esplosione del bombolone (bonus 1400 punti): un anello
+// concentrico che si espande dal punto di piazzamento fino a coprire tutte
+// le SUPERBOMB_RADIUS_CELLS (8) caselle di raggio, VISIBILE A TUTTI i
+// giocatori, nel colore di chi l'ha piazzato, con un flash centrale piu'
+// breve per dare l'idea del boato iniziale.
+const SHOCKWAVE_DURATION_MS = 550;
+function drawShockwaves(now){
+  shockwaves = shockwaves.filter(function(s){ return now - s.start < SHOCKWAVE_DURATION_MS; });
+  shockwaves.forEach(function(s){
+    const t = (now - s.start) / SHOCKWAVE_DURATION_MS;
+    const px = s.x * BASE_CELL + BASE_CELL / 2;
+    const py = s.y * BASE_CELL + BASE_CELL / 2;
+    const maxR = s.radiusCells * BASE_CELL;
+    ctx.save();
+    // Flash centrale, rapido.
+    ctx.globalAlpha = Math.max(0, 0.6 - t * 1.2);
+    ctx.fillStyle = "#fff";
+    ctx.beginPath(); ctx.arc(px, py, BASE_CELL * 1.4 * (1 - t * 0.5), 0, Math.PI * 2); ctx.fill();
+
+    // Anello concentrico che si espande fino al raggio massimo (8 caselle).
+    ctx.globalAlpha = 1 - t;
+    ctx.strokeStyle = s.color;
+    ctx.lineWidth = 4 * (1 - t) + 1;
+    ctx.beginPath();
+    ctx.arc(px, py, maxR * t, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Secondo anello, leggermente in ritardo, per dare spessore all'onda.
+    ctx.globalAlpha = (1 - t) * 0.5;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(px, py, Math.max(0, maxR * t - BASE_CELL * 1.2), 0, Math.PI * 2);
+    ctx.stroke();
     ctx.restore();
   });
 }
@@ -2721,14 +2919,17 @@ function renderLoop(now){
   drawThemeFx(now);
   drawPlayers(currSnapshot.players, now);
   drawMines(now);
+  drawPoisonZones(now);
   drawTurrets(now);
   drawPets(now);
   drawMortars(now);
+  drawSuperbombs(now);
   drawMissiles(now);
   drawBombs(now);
   drawLaserProjectiles(now);
   drawSparks(now);
   drawExplosions(now);
+  drawShockwaves(now);
   drawSkyBolts(now);
   drawSwirls(now);
 }
@@ -3142,6 +3343,7 @@ function onGameEvent(msg){
       // resta leggibile a colpo d'occhio anche in piena azione.
       const labels = {
         extra_life:   ["VITA EXTRA! \u2665", ""],
+        extra_life_3: ["3 VITE EXTRA! \u2665\u2665\u2665", ""],
         laser:        ["LASER SBLOCCATO!", "spara da solo quando un nemico e' entro 12 caselle"],
         mines:        ["MINE SBLOCCATE!", "2 mine \u00b7 premi 1 per posarle"],
         ninja:        ["NINJA SBLOCCATO!", "invisibilit\u00e0 \u00b7 premi 2 per attivarla"],
@@ -3169,6 +3371,7 @@ function onGameEvent(msg){
       const victim = findPlayer(currSnapshot, msg.victim);
       const at = msg.at || (victim ? [victim.x, victim.y] : [0, 0]);
       const col = (msg.cause === "lightning") ? LIGHTNING_COLOR
+                : (msg.cause === "poison") ? POISON_COLOR
                 : (victim && victim.assassin) ? ASSASSIN_COLOR
                 : (victim && victim.armor_on) ? ARMOR_COLOR
                 : (victim ? (COLOR_HEX[(victim.colors && victim.colors[0])] || "#fff") : "#fff");
@@ -3183,9 +3386,11 @@ function onGameEvent(msg){
       const byLightning = msg.cause === "lightning";
       const byPet = msg.cause === "pet";
       const byMortar = msg.cause === "mortar";
+      const byPoison = msg.cause === "poison";
       const causeTxt = byLaser ? " dal laser" : (byMine ? " da una mina" : (byAssassin ? " da un ninja invisibile"
         : (byMissile ? " da un missile guidato" : (byTrap ? " da una trappola" : (byArmor ? " dalla corazza laser"
-        : (byLightning ? " da un fulmine" : (byPet ? " dal pet avversario" : (byMortar ? " da una bomba di mortaio" : ""))))))));
+        : (byLightning ? " da un fulmine" : (byPet ? " dal pet avversario" : (byMortar ? " da una bomba di mortaio"
+        : (byPoison ? " dalla nuvola velenosa" : "")))))))));
       const stolenTxt = msg.stolen ? (" (-" + msg.stolen + " punti)") : "";
       if (msg.victim === myId){
         showBonusBanner(msg.respawn ? ("HAI PERSO UNA VITA \u2665" + msg.lives) : "SEI STATO ELIMINATO");
@@ -3253,16 +3458,49 @@ function onGameEvent(msg){
       playMortarImpact();
       break;
     }
+    case "superbomb_place": {
+      if (msg.player === myId) showToast("Bombolone piazzato! Esplode tra 2 secondi.");
+      playSuperbombPlace();
+      break;
+    }
+    case "superbomb_explode": {
+      // Onda d'urto grande quanto SUPERBOMB_RADIUS_CELLS (8) caselle,
+      // visibile a TUTTI, nel colore di chi l'ha piazzato (vedi
+      // drawShockwaves). Chi era abbastanza vicino perde una vita e ogni
+      // struttura avversaria nel raggio viene neutralizzata separatamente
+      // dai suoi stessi eventi (mine_destroyed/turret_destroyed/
+      // mortar_destroyed/pet_destroyed con cause "superbomb").
+      const col = (findPlayer(currSnapshot, msg.by) &&
+        COLOR_HEX[(findPlayer(currSnapshot, msg.by).colors || [])[0]]) || "#ff3b3b";
+      shockwaves.push({ x: msg.x, y: msg.y, color: col, start: now, radiusCells: msg.radius || SUPERBOMB_RADIUS_CELLS });
+      playSuperbombExplode();
+      if (msg.by === myId) showToast("Bombolone esploso!");
+      break;
+    }
+    case "poison_spawn": {
+      // Suono acido/gorgogliante distinto dal boato dell'impatto diretto,
+      // per far capire che resta un pericolo a terra.
+      noiseBurst(0.22, 0.1);
+      tone(300, 0.14, "sawtooth", 0.08, 0.05);
+      break;
+    }
+    case "poison_expire": {
+      delete poisonBubbleSeeds[msg.id];
+      break;
+    }
     case "mortar_destroyed": {
       explosions.push({ x: msg.x, y: msg.y, color: ARMOR_COLOR, start: now });
       noiseBurst(0.2, 0.16);
       tone(120, 0.18, "sawtooth", 0.13, 0.02);
-      if (msg.by === myId) showToast("Mortaio avversario distrutto dalla corazza!");
+      if (msg.by === myId){
+        showToast(msg.cause === "superbomb" ? "Mortaio avversario distrutto dal bombolone!" : "Mortaio avversario distrutto dalla corazza!");
+      }
       break;
     }
     case "pet_destroyed": {
       const causeTxt = { mine: "una mina", missile: "un missile guidato", laser: "un colpo laser",
-                          armor: "la corazza laser", lightning: "un fulmine" }[msg.cause] || "un nemico";
+                          armor: "la corazza laser", lightning: "un fulmine",
+                          superbomb: "un bombolone" }[msg.cause] || "un nemico";
       explosions.push({ x: msg.x, y: msg.y, color: (findPlayer(currSnapshot, msg.owner) &&
         COLOR_HEX[(findPlayer(currSnapshot, msg.owner).colors || [])[0]]) || "#fff", start: now });
       noiseBurst(0.18, 0.15);
@@ -3358,16 +3596,22 @@ function onGameEvent(msg){
       } else {
         tone(130, 0.18, "sawtooth", 0.13, 0.02);
       }
-      if (msg.by === myId) showToast((msg.evolved ? "Navicella avversaria" : "Torretta avversaria") + " distrutta dalla corazza!");
+      if (msg.by === myId){
+        const what = msg.evolved ? "Navicella avversaria" : "Torretta avversaria";
+        showToast(what + (msg.cause === "superbomb" ? " distrutta dal bombolone!" : " distrutta dalla corazza!"));
+      }
       break;
     }
     case "mine_destroyed": {
-      // Bonus 700 punti: la corazza laser ha disinnescato una mina
-      // AVVERSARIA calpestata (le proprie mine restano sempre intatte).
+      // La corazza laser (bonus 700 punti) o il bombolone (bonus 1400
+      // punti) ha disinnescato una mina AVVERSARIA (le proprie mine restano
+      // sempre intatte).
       explosions.push({ x: msg.x, y: msg.y, color: ARMOR_COLOR, start: now });
       noiseBurst(0.16, 0.14);
       tone(180, 0.14, "square", 0.11);
-      if (msg.by === myId) showToast("Mina avversaria disinnescata dalla corazza!");
+      if (msg.by === myId){
+        showToast(msg.cause === "superbomb" ? "Mina avversaria distrutta dal bombolone!" : "Mina avversaria disinnescata dalla corazza!");
+      }
       break;
     }
     // Nota: il laser (bonus 150 punti, arma principale) non scade piu' -
@@ -3590,7 +3834,8 @@ function updateGameSidebar(msg){
            (p.lightning && p.id === myId ? ("F" + (p.lightning_used ? "1" : "0")) : "") +
            (p.pet && p.id === myId ? ("P" + (p.pet_summoned ? "1" : "0")) : "") +
            (p.robot && p.id === myId ? ("R" + (p.robot_used ? "1" : "0")) : "") +
-           (p.mortar && p.id === myId ? ("M" + (p.mortar_placed ? "1" : "0")) : "");
+           (p.mortar && p.id === myId ? ("M" + (p.mortar_placed ? "1" : "0")) : "") +
+           (p.superbomb && p.id === myId ? ("B" + (p.superbomb_placed ? "1" : "0")) : "");
   }).join("|");
 
   if (sig !== lastSidebarSig){
@@ -3656,6 +3901,13 @@ function updateGameSidebar(msg){
       if (p.mortar && p.id === myId){
         const t = document.createElement("span"); t.className="tag alert";
         t.textContent = p.mortar_placed ? "MORTAIO ATTIVO" : "MORTAIO (tasto 0)";
+        li.appendChild(t);
+      }
+      if (p.superbomb && p.id === myId){
+        const t = document.createElement("span"); t.className="tag alert";
+        t.textContent = !p.mortar_placed
+          ? "BOMBOLONE (dopo il mortaio)"
+          : (p.superbomb_placed ? "BOMBOLONE ATTIVO" : "BOMBOLONE (tasto 0)");
         li.appendChild(t);
       }
       const spacer = document.createElement("span"); spacer.className = "spacer"; li.appendChild(spacer);
@@ -3826,8 +4078,12 @@ document.addEventListener("keydown", function(ev){
     ev.preventDefault();
   }
   // Bonus 1200 punti: il tasto "0" schiera il mortaio permanente nella
-  // cella corrente. Utilizzabile una sola volta per round: il server
-  // ignora richieste successive (vedi try_place_mortar).
+  // cella corrente. Una volta che il mortaio e' gia' stato piazzato, la
+  // stessa pressione del tasto "0" innesca invece il bombolone (bonus 1400
+  // punti): il server decide da solo quale dei due in base allo stato del
+  // giocatore (vedi il dispatch di "place_mortar" in main.py). Ciascuno dei
+  // due e' utilizzabile una sola volta per round: il server ignora
+  // richieste successive (vedi try_place_mortar/try_place_superbomb).
   if (ev.key === "0" && !ev.repeat){
     sendMsg({ type: "place_mortar" });
     ev.preventDefault();

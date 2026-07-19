@@ -34,6 +34,7 @@ import random
 import socket
 import sys
 import uuid
+from collections import deque
 
 import websockets
 from websockets.datastructures import Headers
@@ -63,6 +64,8 @@ from common import (
     ROBOT_WANDER_RETARGET_SECONDS, ROBOT_LEVELUP_DISPLAY_SECONDS,
     MORTAR_THRESHOLD, MORTAR_RANGE_CELLS, MORTAR_FIRE_INTERVAL_SECONDS,
     MORTAR_FLIGHT_SECONDS_PER_CELL, MORTAR_BLAST_RADIUS_CELLS,
+    POISON_DURATION_SECONDS, POISON_TICK_SECONDS, POISON_RADIUS_CELLS,
+    SUPERBOMB_THRESHOLD, SUPERBOMB_FUSE_SECONDS, SUPERBOMB_RADIUS_CELLS,
 )
 
 # Direzione opposta di ciascuna direzione: serve per l'inversione di marcia
@@ -197,6 +200,15 @@ class Player:
         # sblocco/utilizzo, come per gli altri bonus a comando.
         self.has_mortar = False        # bonus sbloccato (una volta per round)
         self.mortar_placed = False     # True dopo lo schieramento: il tasto "0" e' utilizzabile una sola volta
+        # ---- bonus 1400 punti: bombolone ad area (tasto "0", DOPO il mortaio) ----
+        # Allo sblocco NON scatta nulla in automatico: si piazza a comando
+        # riusando il tasto "0" (vedi try_place_superbomb), UNA SOLA VOLTA
+        # per round, ma solo DOPO che il mortaio (bonus 1200 punti) e' gia'
+        # stato schierato. Il bombolone vero e proprio vive in
+        # self.superbombs (lista della Room), non qui: qui si tiene solo lo
+        # stato dello sblocco/utilizzo, come per gli altri bonus a comando.
+        self.has_superbomb = False     # bonus sbloccato (una volta per round)
+        self.superbomb_placed = False  # True dopo il piazzamento: il tasto "0" (dopo il mortaio) e' utilizzabile una sola volta
         # Uccisioni fatte in questo round: ogni 2 kill si guadagna una vita extra.
         self.kills = 0
 
@@ -249,6 +261,8 @@ class Player:
             "robot_used": self.robot_used,
             "mortar": self.has_mortar,
             "mortar_placed": self.mortar_placed,
+            "superbomb": self.has_superbomb,
+            "superbomb_placed": self.superbomb_placed,
         }
 
 
@@ -282,11 +296,16 @@ class Room:
         # non vengono mai svuotati durante il round, solo ad ogni nuovo
         # round (vedi assign_spawns/reset_to_lobby).
         self.pets = []
+        # Bomboloni piazzati (bonus 1400 punti): permanenti fino
+        # all'esplosione (SUPERBOMB_FUSE_SECONDS dopo il piazzamento),
+        # azzerati ad ogni nuovo round (vedi assign_spawns/reset_to_lobby).
+        self.superbombs = []
         # Mortai schierati (bonus 1200 punti): permanenti come le torrette.
         # self.bombs sono le bombe attualmente "in volo" sparate dai mortai,
         # svuotate anch'esse solo ad ogni nuovo round.
         self.mortars = []
         self.bombs = []
+        self.poison_zones = []  # nuvole velenose lasciate a terra dagli impatti del mortaio
         # Mappa corrente della stanza: viene ripescata a caso tra le 10
         # disponibili a OGNI inizio round (vedi run_round), cosi' ogni
         # partita puo' capitare su una mappa diversa per forma/colore/misura.
@@ -334,23 +353,33 @@ class Room:
         self.pellet_respawns = {}
 
     def compute_portals(self):
-        """Due portali ai lati opposti della mappa: per ciascuna colonna
-        interna estrema (x=1 a sinistra, x=w-2 a destra) sceglie la cella
-        libera piu' vicina alla meta' verticale. Entrare in uno teletrasporta
-        all'altro (vedi try_portal)."""
-        def best_open_y(x):
-            best = None
-            mid = self.maze_h // 2
-            for y in range(1, self.maze_h - 1):
-                if self.maze[y][x] == ".":
-                    d = abs(y - mid)
-                    if best is None or d < best[0]:
-                        best = (d, y)
-            return best[1] if best else None
-        left_y = best_open_y(1)
-        right_y = best_open_y(self.maze_w - 2)
-        if left_y is not None and right_y is not None:
-            self.portals = [(1, left_y), (self.maze_w - 2, right_y)]
+        """Due portali su una coppia di angoli diagonalmente opposti della
+        mappa: in alto a sinistra e in basso a destra. Tutte le mappe
+        standard (39x19) hanno quei due angoli esatti gia' aperti per
+        costruzione (vedi commento sopra MAZES in common.py); per sicurezza,
+        se un angolo fosse un muro, si cerca con una BFS la cella libera
+        raggiungibile piu' vicina all'angolo. Entrare in un portale
+        teletrasporta all'altro (vedi try_portal)."""
+        def nearest_open(tx, ty):
+            if self.maze[ty][tx] == ".":
+                return (tx, ty)
+            seen = {(tx, ty)}
+            frontier = deque([(tx, ty)])
+            while frontier:
+                x, y = frontier.popleft()
+                for dx, dy in ((0, -1), (0, 1), (-1, 0), (1, 0)):
+                    nx, ny = x + dx, y + dy
+                    if 0 <= nx < self.maze_w and 0 <= ny < self.maze_h and (nx, ny) not in seen:
+                        seen.add((nx, ny))
+                        if self.maze[ny][nx] == ".":
+                            return (nx, ny)
+                        frontier.append((nx, ny))
+            return (tx, ty)
+
+        top_left = nearest_open(1, 1)
+        bottom_right = nearest_open(self.maze_w - 2, self.maze_h - 2)
+        if top_left != bottom_right:
+            self.portals = [top_left, bottom_right]
         else:
             self.portals = []
         # I portali partono accesi ad ogni nuova mappa/round, poi si
@@ -459,6 +488,8 @@ class Room:
             p.robot_used = False
             p.has_mortar = False
             p.mortar_placed = False
+            p.has_superbomb = False
+            p.superbomb_placed = False
             p.kills = 0
         self.lasers = []
         self.mines = []
@@ -466,7 +497,9 @@ class Room:
         self.turrets = []
         self.pets = []
         self.mortars = []
+        self.superbombs = []
         self.bombs = []
+        self.poison_zones = []  # nuvole velenose lasciate a terra dagli impatti del mortaio
 
     def begin_playing(self):
         """Fine countdown iniziale: il round entra nel vivo. Non c'e' piu'
@@ -674,6 +707,8 @@ class Room:
             p.claimed.add(threshold)
             if kind == "extra_life":
                 p.lives += 1
+            elif kind == "extra_life_3":
+                p.lives += 3
             elif kind == "laser":
                 p.has_laser = True
                 p.laser_cd = LASER_FIRST_DELAY_SECONDS
@@ -799,6 +834,23 @@ class Room:
             self.push_event({
                 "kind": "bonus", "player": p.id,
                 "bonus": "mortar", "points": MORTAR_THRESHOLD,
+            })
+        # Bonus 1400 punti: sblocca il bombolone ad area, ma NON lo piazza
+        # subito. Si piazza a comando RIUSANDO il tasto "0" (vedi
+        # try_place_superbomb), UNA SOLA VOLTA per giocatore per round, ma
+        # solo DOPO aver gia' schierato il mortaio (bonus 1200 punti): finche'
+        # il mortaio non e' stato piazzato, il tasto "0" resta dedicato a
+        # quello (vedi il dispatch del messaggio "place_mortar").
+        if (
+            p.alive
+            and p.points >= SUPERBOMB_THRESHOLD
+            and SUPERBOMB_THRESHOLD not in p.claimed
+        ):
+            p.claimed.add(SUPERBOMB_THRESHOLD)
+            p.has_superbomb = True
+            self.push_event({
+                "kind": "bonus", "player": p.id,
+                "bonus": "superbomb", "points": SUPERBOMB_THRESHOLD,
             })
 
     def try_portal(self, p):
@@ -1132,14 +1184,19 @@ class Room:
         Eccezione: la modalita' ninja (300 punti) rende immuni alle mine,
         esattamente come rende invisibili e letali al tocco - camminarci
         sopra da ninja non la fa esplodere (la mina resta innescata, pronta
-        per chi non e' ninja)."""
+        per chi non e' ninja).
+
+        Eccezione 2: chi ha la corazza laser ATTIVA (bonus 700 punti) e'
+        immune al contatto con una mina AVVERSARIA - non la fa esplodere e
+        non subisce danno, la mina resta sul posto pronta per essere
+        disinnescata subito dopo da check_armor_effects (stesso tick)."""
         if not self.mines:
             return
         remaining = []
         for m in self.mines:
             victims = [
                 q for q in self.players.values()
-                if q.alive and not q.is_assassin and q.id != m["owner"]
+                if q.alive and not q.is_assassin and not q.armor_active and q.id != m["owner"]
                 and q.x == m["x"] and q.y == m["y"]
             ]
             pet_victims = [
@@ -1685,6 +1742,127 @@ class Room:
             "x": player.x, "y": player.y,
         })
 
+    # ---- bonus 1400 punti: bombolone ad area (tasto "0", DOPO il mortaio) ----
+
+    def try_place_superbomb(self, player):
+        """Tasto '0', RIUSATO: viene chiamato dal dispatch del messaggio
+        "place_mortar" solo quando player.mortar_placed e' gia' True (finche'
+        il mortaio non e' stato piazzato, quella stessa pressione richiama
+        invece try_place_mortar). Piazza UNA SOLA VOLTA (per tutto il round)
+        un bombolone nella cella corrente del giocatore: un ordigno rotondo,
+        grande quanto una casella, dello stesso colore del proprietario e
+        visibile a TUTTI. Resta a terra per SUPERBOMB_FUSE_SECONDS, poi
+        esplode (vedi update_superbombs/explode_superbomb) con un'onda
+        concentrica che distrugge/neutralizza tutto cio' che si trova entro
+        SUPERBOMB_RADIUS_CELLS caselle.
+
+        Se il giocatore e' intrappolato dalla trappola di un avversario,
+        NON puo' usare alcun bonus finche' non torna libero di muoversi."""
+        if not player.alive or player.trapped_left > 0 or not player.has_superbomb or player.superbomb_placed:
+            return
+        player.superbomb_placed = True
+        bomb = {
+            "id": uuid.uuid4().hex[:8],
+            "owner": player.id,
+            "x": player.x, "y": player.y,
+            "t": 0.0,
+        }
+        self.superbombs.append(bomb)
+        self.push_event({
+            "kind": "superbomb_place", "id": bomb["id"], "player": player.id,
+            "x": player.x, "y": player.y,
+        })
+
+    def superbomb_public(self, bomb):
+        return {
+            "id": bomb["id"], "x": bomb["x"], "y": bomb["y"],
+            "owner": bomb["owner"],
+            "fuse_left": round(max(SUPERBOMB_FUSE_SECONDS - bomb["t"], 0), 2),
+        }
+
+    def update_superbombs(self):
+        """Avanza il conto alla rovescia di ogni bombolone piazzato: dopo
+        SUPERBOMB_FUSE_SECONDS esplode (vedi explode_superbomb) e viene
+        rimosso dalla mappa."""
+        if not self.superbombs:
+            return
+        remaining = []
+        for bomb in self.superbombs:
+            bomb["t"] += TICK_DT
+            if bomb["t"] >= SUPERBOMB_FUSE_SECONDS:
+                self.explode_superbomb(bomb)
+            else:
+                remaining.append(bomb)
+        self.superbombs = remaining
+
+    def explode_superbomb(self, bomb):
+        """Esplosione del bombolone (bonus 1400 punti): onda concentrica di
+        SUPERBOMB_RADIUS_CELLS caselle (distanza Manhattan) che distrugge o
+        neutralizza tutto cio' che trova nel raggio, tranne le cose del
+        proprietario stesso:
+          - fa perdere una vita a ogni avversario vivo nel raggio (stessa
+            immunita' ghost/protezione post-respawn di mortaio/mine/laser);
+          - disinnesca ogni mina avversaria nel raggio;
+          - distrugge ogni torretta/robot avversario nel raggio;
+          - distrugge ogni mortaio avversario nel raggio;
+          - distrugge ogni pet avversario nel raggio (vedi destroy_pet)."""
+        ox, oy = bomb["x"], bomb["y"]
+        owner = bomb["owner"]
+        self.push_event({
+            "kind": "superbomb_explode", "id": bomb["id"],
+            "x": ox, "y": oy, "by": owner, "radius": SUPERBOMB_RADIUS_CELLS,
+        })
+
+        victims = [
+            p for p in self.players.values()
+            if p.alive and p.id != owner
+            and p.ghost_left <= 0 and p.prot_left <= 0
+            and abs(p.x - ox) + abs(p.y - oy) <= SUPERBOMB_RADIUS_CELLS
+        ]
+        for victim in victims:
+            self.kill_player(victim, "superbomb", shooter_id=owner)
+
+        if self.mines:
+            remaining_mines = []
+            for m in self.mines:
+                if m["owner"] != owner and abs(m["x"] - ox) + abs(m["y"] - oy) <= SUPERBOMB_RADIUS_CELLS:
+                    self.push_event({
+                        "kind": "mine_destroyed", "id": m["id"],
+                        "x": m["x"], "y": m["y"], "by": owner, "cause": "superbomb",
+                    })
+                else:
+                    remaining_mines.append(m)
+            self.mines = remaining_mines
+
+        if self.turrets:
+            remaining_turrets = []
+            for t in self.turrets:
+                if t["owner"] != owner and abs(t["x"] - ox) + abs(t["y"] - oy) <= SUPERBOMB_RADIUS_CELLS:
+                    self.push_event({
+                        "kind": "turret_destroyed", "id": t["id"],
+                        "x": t["x"], "y": t["y"], "by": owner, "cause": "superbomb",
+                        "evolved": t.get("evolved", False),
+                    })
+                else:
+                    remaining_turrets.append(t)
+            self.turrets = remaining_turrets
+
+        if self.mortars:
+            remaining_mortars = []
+            for mt in self.mortars:
+                if mt["owner"] != owner and abs(mt["x"] - ox) + abs(mt["y"] - oy) <= SUPERBOMB_RADIUS_CELLS:
+                    self.push_event({
+                        "kind": "mortar_destroyed", "id": mt["id"],
+                        "x": mt["x"], "y": mt["y"], "by": owner, "cause": "superbomb",
+                    })
+                else:
+                    remaining_mortars.append(mt)
+            self.mortars = remaining_mortars
+
+        for pet in list(self.pets):
+            if pet["owner"] != owner and abs(pet["x"] - ox) + abs(pet["y"] - oy) <= SUPERBOMB_RADIUS_CELLS:
+                self.destroy_pet(pet, "superbomb", owner)
+
     def mortar_public(self, mt):
         return {
             "id": mt["id"], "x": mt["x"], "y": mt["y"],
@@ -1769,7 +1947,11 @@ class Room:
         fa perdere una vita a chiunque si trovi entro MORTAR_BLAST_RADIUS_CELLS
         caselle (distanza Manhattan) dal punto di impatto - un solo colpo
         puo' quindi coinvolgere piu' avversari vicini tra loro. Come per il
-        tocco del ninja/corazza, la protezione post-respawn resta immune."""
+        tocco del ninja/corazza, la protezione post-respawn resta immune.
+
+        Oltre al colpo diretto, sul punto di impatto resta a terra una
+        nuvola di gas velenoso (vedi update_poison_zones) che continua a
+        fare danno ad area nel tempo per POISON_DURATION_SECONDS."""
         self.push_event({
             "kind": "mortar_impact", "id": bomb["id"],
             "x": bomb["x1"], "y": bomb["y1"], "by": bomb["owner"],
@@ -1782,6 +1964,49 @@ class Room:
         ]
         for victim in victims:
             self.kill_player(victim, "mortar", shooter_id=bomb["owner"])
+
+        poison = {
+            "id": uuid.uuid4().hex[:8],
+            "owner": bomb["owner"],
+            "x": bomb["x1"], "y": bomb["y1"],
+            "left": POISON_DURATION_SECONDS,
+            "tick_cd": POISON_TICK_SECONDS,
+        }
+        self.poison_zones.append(poison)
+        self.push_event({
+            "kind": "poison_spawn", "id": poison["id"],
+            "x": poison["x"], "y": poison["y"],
+            "duration": POISON_DURATION_SECONDS, "radius": POISON_RADIUS_CELLS,
+        })
+
+    def update_poison_zones(self):
+        """Avanza ogni nuvola velenosa lasciata a terra dagli impatti del
+        mortaio: ogni POISON_TICK_SECONDS toglie una vita a chiunque
+        (avversario del proprietario) si trovi ancora entro
+        POISON_RADIUS_CELLS caselle dal centro, esattamente come il colpo
+        diretto (stessa immunita' di ghost/protezione post-respawn). La
+        nuvola svanisce da sola dopo POISON_DURATION_SECONDS."""
+        if not self.poison_zones:
+            return
+        remaining = []
+        for pz in self.poison_zones:
+            pz["left"] -= TICK_DT
+            pz["tick_cd"] -= TICK_DT
+            if pz["tick_cd"] <= 0:
+                pz["tick_cd"] += POISON_TICK_SECONDS
+                victims = [
+                    p for p in self.players.values()
+                    if p.alive and p.id != pz["owner"]
+                    and p.ghost_left <= 0 and p.prot_left <= 0
+                    and abs(p.x - pz["x"]) + abs(p.y - pz["y"]) <= POISON_RADIUS_CELLS
+                ]
+                for victim in victims:
+                    self.kill_player(victim, "poison", shooter_id=pz["owner"])
+            if pz["left"] > 0:
+                remaining.append(pz)
+            else:
+                self.push_event({"kind": "poison_expire", "id": pz["id"]})
+        self.poison_zones = remaining
 
     def check_armor_effects(self):
         """Bonus 700 punti: chi ha la corazza laser ATTIVA distrugge ogni
@@ -1837,12 +2062,18 @@ class Room:
                 else:
                     remaining_mortars.append(mt)
             self.mortars = remaining_mortars
-        # Bonus 900 punti: chi ha la corazza distrugge anche ogni pet la cui
-        # cella tocca (proprietario incluso, stessa regola delle torrette).
+        # Bonus 900 punti: chi ha la corazza distrugge ogni pet AVVERSARIO
+        # (di un altro giocatore, NON il proprio) la cui cella tocca, stessa
+        # regola di mine/torrette/mortai qui sopra. NOTA: il proprietario va
+        # escluso (a.id != pet["owner"]), altrimenti il proprio pet, che
+        # nasce esattamente sulla cella del giocatore, si autodistrugge
+        # all'istante se la corazza e' gia' attiva al momento dell'evocazione
+        # (bug corretto: il pet "spariva" prima ancora di essere visibile).
         if self.pets:
             for pet in list(self.pets):
                 destroyer = next(
-                    (a for a in armored if a.x == pet["x"] and a.y == pet["y"]), None
+                    (a for a in armored if a.id != pet["owner"] and a.x == pet["x"] and a.y == pet["y"]),
+                    None,
                 )
                 if destroyer is not None:
                     self.destroy_pet(pet, "armor", destroyer.id)
@@ -1984,7 +2215,12 @@ class Room:
             "turrets": [self.turret_public(t) for t in self.turrets],
             "pets": [self.pet_public(pt) for pt in self.pets],
             "mortars": [self.mortar_public(mt) for mt in self.mortars],
+            "poison_zones": [
+                {"id": pz["id"], "x": pz["x"], "y": pz["y"], "left": round(pz["left"], 2)}
+                for pz in self.poison_zones
+            ],
             "bombs": [self.bomb_public(bomb) for bomb in self.bombs],
+            "superbombs": [self.superbomb_public(b) for b in self.superbombs],
             "portal_on": self.portal_on,
             "portal_cycle_left": round(max(self.portal_cycle_left, 0), 1),
             "missiles": [self.missile_public(mz) for mz in self.missiles],
@@ -2008,7 +2244,9 @@ class Room:
         self.turrets = []
         self.pets = []
         self.mortars = []
+        self.superbombs = []
         self.bombs = []
+        self.poison_zones = []  # nuvole velenose lasciate a terra dagli impatti del mortaio
         for p in self.players.values():
             p.alive = True
             p.direction = None
@@ -2043,6 +2281,8 @@ class Room:
             p.robot_used = False
             p.has_mortar = False
             p.mortar_placed = False
+            p.has_superbomb = False
+            p.superbomb_placed = False
             p.kills = 0
 
     # ---------- main loop ----------
@@ -2086,6 +2326,8 @@ class Room:
                 self.check_mines()    # bonus 200 punti: fa esplodere le mine calpestate
                 self.move_missiles()  # bonus 400 punti: avanza i missili guidati verso il bersaglio
                 self.update_bombs()   # bonus 1200 punti: avanza le bombe di mortaio in volo e le fa esplodere all'impatto
+                self.update_poison_zones()  # bonus 1200 punti: le nuvole velenose lasciate dagli impatti continuano a fare danno nel tempo
+                self.update_superbombs()  # bonus 1400 punti: avanza il conto alla rovescia dei bomboloni piazzati e li fa esplodere dopo 2 secondi
                 self.check_armor_effects()  # bonus 700 punti: la corazza distrugge torrette/mine/pet/mortai avversari toccati
                 winners, reason = self.check_win()
                 if winners is None and self.timer_left <= 0:
@@ -2328,12 +2570,19 @@ async def handle_client(ws):
                 room.try_evolve_turret(player)
 
             elif mtype == "place_mortar":
-                # Bonus 1200 punti: pressione del tasto "0" lato client.
-                # Utilizzabile una sola volta per giocatore (vedi
-                # try_place_mortar): il server resta l'autorita'.
+                # Tasto "0" lato client: la PRIMA pressione schiera il
+                # mortaio (bonus 1200 punti). Una volta che il mortaio e'
+                # gia' stato piazzato, la stessa pressione innesca invece il
+                # bombolone (bonus 1400 punti, vedi try_place_superbomb).
+                # Utilizzabile una sola volta ciascuno per giocatore (vedi
+                # try_place_mortar/try_place_superbomb): il server resta
+                # l'autorita'.
                 if not room or not player:
                     continue
-                room.try_place_mortar(player)
+                if player.mortar_placed:
+                    room.try_place_superbomb(player)
+                else:
+                    room.try_place_mortar(player)
 
             elif mtype == "stop":
                 # Il tasto/direzione e' stato rilasciato: il personaggio si
