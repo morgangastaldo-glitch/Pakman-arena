@@ -57,10 +57,12 @@ from common import (
     TURRET_RANGE_CELLS, KILL_STEAL_FRACTION,
     ARMOR_THRESHOLD, ARMOR_DURATION_SECONDS,
     LIGHTNING_THRESHOLD,
-    PET_THRESHOLD, PET_RANGE_CELLS, PET_FIRE_INTERVAL_SECONDS,
+    PET_THRESHOLD, PET_RANGE_CELLS,
     PET_SPEED_MULT, PET_RETARGET_SECONDS, PET_STAY_RANGE,
     ROBOT_THRESHOLD, ROBOT_FIRE_INTERVAL_SECONDS, ROBOT_SPEED_MULT,
     ROBOT_WANDER_RETARGET_SECONDS, ROBOT_LEVELUP_DISPLAY_SECONDS,
+    MORTAR_THRESHOLD, MORTAR_RANGE_CELLS, MORTAR_FIRE_INTERVAL_SECONDS,
+    MORTAR_FLIGHT_SECONDS_PER_CELL, MORTAR_BLAST_RADIUS_CELLS,
 )
 
 # Direzione opposta di ciascuna direzione: serve per l'inversione di marcia
@@ -187,6 +189,14 @@ class Player:
         # sblocco/utilizzo, come per gli altri bonus a comando.
         self.has_robot = False         # bonus sbloccato (una volta per round)
         self.robot_used = False        # True dopo l'evoluzione: il tasto "9" e' utilizzabile una sola volta
+        # ---- bonus 1200 punti: mortaio (tasto "0") ----
+        # Allo sblocco NON scatta nulla in automatico: si schiera a comando
+        # col tasto "0" (vedi try_place_mortar), UNA SOLA VOLTA per round,
+        # come la torretta. Il mortaio vero e proprio vive in self.mortars
+        # (lista della Room), non qui: qui si tiene solo lo stato dello
+        # sblocco/utilizzo, come per gli altri bonus a comando.
+        self.has_mortar = False        # bonus sbloccato (una volta per round)
+        self.mortar_placed = False     # True dopo lo schieramento: il tasto "0" e' utilizzabile una sola volta
         # Uccisioni fatte in questo round: ogni 2 kill si guadagna una vita extra.
         self.kills = 0
 
@@ -237,6 +247,8 @@ class Player:
             "pet_summoned": self.pet_summoned,
             "robot": self.has_robot,
             "robot_used": self.robot_used,
+            "mortar": self.has_mortar,
+            "mortar_placed": self.mortar_placed,
         }
 
 
@@ -270,6 +282,11 @@ class Room:
         # non vengono mai svuotati durante il round, solo ad ogni nuovo
         # round (vedi assign_spawns/reset_to_lobby).
         self.pets = []
+        # Mortai schierati (bonus 1200 punti): permanenti come le torrette.
+        # self.bombs sono le bombe attualmente "in volo" sparate dai mortai,
+        # svuotate anch'esse solo ad ogni nuovo round.
+        self.mortars = []
+        self.bombs = []
         # Mappa corrente della stanza: viene ripescata a caso tra le 10
         # disponibili a OGNI inizio round (vedi run_round), cosi' ogni
         # partita puo' capitare su una mappa diversa per forma/colore/misura.
@@ -440,12 +457,16 @@ class Room:
             p.pet_summoned = False
             p.has_robot = False
             p.robot_used = False
+            p.has_mortar = False
+            p.mortar_placed = False
             p.kills = 0
         self.lasers = []
         self.mines = []
         self.missiles = []
         self.turrets = []
         self.pets = []
+        self.mortars = []
+        self.bombs = []
 
     def begin_playing(self):
         """Fine countdown iniziale: il round entra nel vivo. Non c'e' piu'
@@ -764,6 +785,20 @@ class Room:
             self.push_event({
                 "kind": "bonus", "player": p.id,
                 "bonus": "robot", "points": ROBOT_THRESHOLD,
+            })
+        # Bonus 1200 punti: sblocca il mortaio, ma NON lo schiera subito. Si
+        # schiera a comando col tasto "0" (vedi try_place_mortar), UNA SOLA
+        # VOLTA per giocatore, per round.
+        if (
+            p.alive
+            and p.points >= MORTAR_THRESHOLD
+            and MORTAR_THRESHOLD not in p.claimed
+        ):
+            p.claimed.add(MORTAR_THRESHOLD)
+            p.has_mortar = True
+            self.push_event({
+                "kind": "bonus", "player": p.id,
+                "bonus": "mortar", "points": MORTAR_THRESHOLD,
             })
 
     def try_portal(self, p):
@@ -1623,6 +1658,131 @@ class Room:
                 "x": t["x"], "y": t["y"], "dir": dir_name, "turret": True,
             })
 
+    # ---- bonus 1200 punti: mortaio (tasto "0") ----
+
+    def try_place_mortar(self, player):
+        """Tasto '0': schiera UNA SOLA VOLTA (per tutto il round) un
+        mortaio nella cella corrente del giocatore. Da quel momento il
+        mortaio e' permanente (resta sulla mappa fino a fine round, anche
+        se il proprietario muore o si disconnette) e spara da solo bombe
+        ad arco contro il nemico vivo piu' vicino entro MORTAR_RANGE_CELLS
+        caselle (vedi update_mortars).
+
+        Se il giocatore e' intrappolato dalla trappola di un avversario,
+        NON puo' usare alcun bonus finche' non torna libero di muoversi."""
+        if not player.alive or player.trapped_left > 0 or not player.has_mortar or player.mortar_placed:
+            return
+        player.mortar_placed = True
+        mortar = {
+            "id": uuid.uuid4().hex[:8],
+            "owner": player.id,
+            "x": player.x, "y": player.y,
+            "cd": LASER_FIRST_DELAY_SECONDS,
+        }
+        self.mortars.append(mortar)
+        self.push_event({
+            "kind": "mortar_place", "id": mortar["id"], "player": player.id,
+            "x": player.x, "y": player.y,
+        })
+
+    def mortar_public(self, mt):
+        return {
+            "id": mt["id"], "x": mt["x"], "y": mt["y"],
+            "owner": mt["owner"], "aim": mt.get("aim"),
+        }
+
+    def bomb_public(self, bomb):
+        """Posizione "in volo" della bomba: interpolazione lineare (in
+        linea d'aria, NON sui corridoi) tra il punto di lancio e il punto
+        di impatto, in base alla frazione di tempo di volo trascorsa. Serve
+        al client per disegnare l'arco e l'ombra proiettata a terra."""
+        frac = min(1.0, bomb["t"] / bomb["duration"]) if bomb["duration"] > 0 else 1.0
+        fx = bomb["x0"] + (bomb["x1"] - bomb["x0"]) * frac
+        fy = bomb["y0"] + (bomb["y1"] - bomb["y0"]) * frac
+        return {
+            "id": bomb["id"], "x": round(fx, 4), "y": round(fy, 4),
+            "tx": bomb["x1"], "ty": bomb["y1"], "owner": bomb["owner"],
+            "frac": round(frac, 4),
+        }
+
+    def update_mortars(self):
+        """Ogni mortaio schierato individua ad OGNI tick il nemico vivo
+        piu' vicino e, se e' entro MORTAR_RANGE_CELLS (15 caselle,
+        distanza Manhattan), gli spara contro una bomba ogni
+        MORTAR_FIRE_INTERVAL_SECONDS (cadenza piu' lenta della torretta,
+        e' un'arma d'area molto piu' potente). La bomba non segue i
+        corridoi come laser/missili: vola in linea retta SOPRA la mappa
+        (vedi update_bombs/bomb_public), scavalcando qualsiasi muro, e
+        ricade esplodendo sul bersaglio."""
+        if not self.mortars:
+            return
+        for mt in self.mortars:
+            target = self.nearest_alive(mt["x"], mt["y"], {mt["owner"]})
+            in_range = (
+                target is not None
+                and abs(target.x - mt["x"]) + abs(target.y - mt["y"]) <= MORTAR_RANGE_CELLS
+            )
+            mt["aim"] = [target.x, target.y] if in_range else None
+            mt["cd"] -= TICK_DT
+            if mt["cd"] > 0:
+                continue
+            if not in_range:
+                # Nessuno nel raggio: il mortaio resta carico (cd fermo a
+                # zero) e spara ISTANTANEAMENTE appena qualcuno entra nelle
+                # 15 caselle, invece di sprecare colpi a vuoto.
+                mt["cd"] = 0.0
+                continue
+            mt["cd"] = MORTAR_FIRE_INTERVAL_SECONDS
+            dist = abs(target.x - mt["x"]) + abs(target.y - mt["y"])
+            duration = max(0.15, dist * MORTAR_FLIGHT_SECONDS_PER_CELL)
+            bomb = {
+                "id": uuid.uuid4().hex[:8],
+                "owner": mt["owner"],
+                "x0": mt["x"], "y0": mt["y"],
+                "x1": target.x, "y1": target.y,
+                "t": 0.0, "duration": duration,
+            }
+            self.bombs.append(bomb)
+            self.push_event({
+                "kind": "mortar_fire", "id": bomb["id"], "shooter": mt["owner"],
+                "x0": mt["x"], "y0": mt["y"], "x1": target.x, "y1": target.y,
+                "duration": duration,
+            })
+
+    def update_bombs(self):
+        """Avanza il tempo di volo di ogni bomba in aria; quando raggiunge
+        il punto di impatto esplode (vedi land_bomb) e viene rimossa."""
+        if not self.bombs:
+            return
+        remaining = []
+        for bomb in self.bombs:
+            bomb["t"] += TICK_DT
+            if bomb["t"] >= bomb["duration"]:
+                self.land_bomb(bomb)
+            else:
+                remaining.append(bomb)
+        self.bombs = remaining
+
+    def land_bomb(self, bomb):
+        """Impatto di una bomba di mortaio (bonus 1200 punti): colpendo
+        dall'alto non le importa cosa c'e' nella cella (muro compreso), e
+        fa perdere una vita a chiunque si trovi entro MORTAR_BLAST_RADIUS_CELLS
+        caselle (distanza Manhattan) dal punto di impatto - un solo colpo
+        puo' quindi coinvolgere piu' avversari vicini tra loro. Come per il
+        tocco del ninja/corazza, la protezione post-respawn resta immune."""
+        self.push_event({
+            "kind": "mortar_impact", "id": bomb["id"],
+            "x": bomb["x1"], "y": bomb["y1"], "by": bomb["owner"],
+        })
+        victims = [
+            p for p in self.players.values()
+            if p.alive and p.id != bomb["owner"]
+            and p.ghost_left <= 0 and p.prot_left <= 0
+            and abs(p.x - bomb["x1"]) + abs(p.y - bomb["y1"]) <= MORTAR_BLAST_RADIUS_CELLS
+        ]
+        for victim in victims:
+            self.kill_player(victim, "mortar", shooter_id=bomb["owner"])
+
     def check_armor_effects(self):
         """Bonus 700 punti: chi ha la corazza laser ATTIVA distrugge ogni
         torretta AVVERSARIA (di un altro giocatore, NON la propria) la cui
@@ -1662,6 +1822,21 @@ class Room:
                 else:
                     remaining_mines.append(m)
             self.mines = remaining_mines
+        if self.mortars:
+            remaining_mortars = []
+            for mt in self.mortars:
+                destroyer = next(
+                    (a for a in armored if a.id != mt["owner"] and a.x == mt["x"] and a.y == mt["y"]),
+                    None,
+                )
+                if destroyer is not None:
+                    self.push_event({
+                        "kind": "mortar_destroyed", "id": mt["id"],
+                        "x": mt["x"], "y": mt["y"], "by": destroyer.id,
+                    })
+                else:
+                    remaining_mortars.append(mt)
+            self.mortars = remaining_mortars
         # Bonus 900 punti: chi ha la corazza distrugge anche ogni pet la cui
         # cella tocca (proprietario incluso, stessa regola delle torrette).
         if self.pets:
@@ -1679,10 +1854,12 @@ class Room:
         Pac-Man "pet" dello stesso colore del proprietario, nella sua cella
         corrente. Da quel momento il pet e' permanente: segue il
         proprietario per tutto il resto del round (anche se muore e
-        respawna altrove) e attacca da solo chiunque si avvicini, finche'
-        non viene distrutto (vedi update_pets/check_mines/move_missiles/
-        move_lasers/try_activate_lightning/check_armor_effects): a quel
-        punto sparisce per il resto del round e NON si puo' rievocare.
+        respawna altrove) finche' non aggancia un nemico entro
+        PET_RANGE_CELLS caselle, nel qual caso lo insegue attivamente fino
+        al contatto (vedi update_pets), finche' non viene distrutto (vedi
+        check_mines/move_missiles/move_lasers/try_activate_lightning/
+        check_armor_effects): a quel punto sparisce per il resto del round
+        e NON si puo' rievocare.
 
         Se il giocatore e' intrappolato dalla trappola di un avversario,
         NON puo' usare alcun bonus finche' non torna libero di muoversi."""
@@ -1696,7 +1873,7 @@ class Room:
             "move_accum": 0.0,
             "path": [],
             "retarget_cd": 0.0,
-            "fire_cd": LASER_FIRST_DELAY_SECONDS,
+            "target_id": None,
             "aim": None,
         }
         self.pets.append(pet)
@@ -1706,15 +1883,15 @@ class Room:
         })
 
     def update_pets(self):
-        """Ogni pet insegue il proprietario finche' non gli e' vicino (entro
-        PET_STAY_RANGE caselle: a quel punto smette di muoversi, gli sta
-        gia' "vicino" come richiesto) usando lo stesso pathfinding a corridoi
-        del missile guidato (bfs_path, mai attraverso i muri). Ad ogni tick
-        individua anche da solo il nemico vivo piu' vicino entro
-        PET_RANGE_CELLS caselle e, se in raggio, gli spara contro con la
-        stessa cadenza/meccanica di proiettile della torretta (self.lasers):
-        appena un avversario si avvicina abbastanza, il pet lo attacca e gli
-        fa perdere una vita."""
+        """Il pet NON spara piu' alcun proiettile. Finche' non ha agganciato
+        nessuno insegue il proprietario (come prima, fermandosi entro
+        PET_STAY_RANGE caselle). Ad ogni tick, se non ha gia' un bersaglio,
+        cerca il nemico vivo piu' vicino entro PET_RANGE_CELLS (6) caselle:
+        appena lo trova lo aggancia e da quel momento lo insegue ATTIVAMENTE
+        (bfs_path, mai attraverso i muri, esattamente come il missile
+        guidato) ovunque vada, finche' non lo raggiunge o il bersaglio non
+        muore/si disconnette. Al contatto (stessa cella) gli fa perdere una
+        vita con il tocco, come il ninja o la corazza laser."""
         if not self.pets:
             return
         for pet in list(self.pets):
@@ -1722,22 +1899,35 @@ class Room:
             if owner is None:
                 continue
 
-            # ---- inseguimento del proprietario ----
-            # Il pet punta sempre verso l'ultima posizione nota del
-            # proprietario, anche se in questo momento e' morto: se e'
-            # stato eliminato definitivamente, il pet percorre tutta la
-            # strada fino a li' (attaccando chiunque incontri lungo il
-            # tragitto, vedi attacco automatico piu' sotto) invece di
-            # restare fermo dov'era ad aspettare un respawn che potrebbe
-            # non arrivare mai.
-            dist_owner = abs(owner.x - pet["x"]) + abs(owner.y - pet["y"])
-            if dist_owner > PET_STAY_RANGE:
+            # ---- mantenimento/selezione del bersaglio agganciato ----
+            target = self.players.get(pet.get("target_id"))
+            if target is not None and not target.alive:
+                target = None
+            if target is None:
+                pet["target_id"] = None
+                candidate = self.nearest_alive(pet["x"], pet["y"], {pet["owner"]})
+                if candidate is not None and \
+                        abs(candidate.x - pet["x"]) + abs(candidate.y - pet["y"]) <= PET_RANGE_CELLS:
+                    target = candidate
+                    pet["target_id"] = candidate.id
+                    pet["path"] = []  # forza un ricalcolo immediato del percorso verso il nuovo bersaglio
+            pet["aim"] = [target.x, target.y] if target is not None else None
+
+            # ---- movimento: insegue il bersaglio agganciato, altrimenti il proprietario ----
+            if target is not None:
+                chase_x, chase_y = target.x, target.y
+                stay_range = 0  # nessuna distanza di sicurezza: deve arrivare a contatto
+            else:
+                chase_x, chase_y = owner.x, owner.y
+                stay_range = PET_STAY_RANGE
+            dist = abs(chase_x - pet["x"]) + abs(chase_y - pet["y"])
+            if dist > stay_range:
                 pet["retarget_cd"] -= TICK_DT
                 if pet["retarget_cd"] <= 0 or not pet["path"]:
                     pet["retarget_cd"] = PET_RETARGET_SECONDS
                     path = bfs_path(
                         self.maze, self.maze_w, self.maze_h,
-                        (pet["x"], pet["y"]), (owner.x, owner.y),
+                        (pet["x"], pet["y"]), (chase_x, chase_y),
                     )
                     pet["path"] = path or []
                 speed = NORMAL_SPEED * PET_SPEED_MULT
@@ -1747,56 +1937,23 @@ class Room:
                     nx, ny = pet["path"].pop(0)
                     pet["x"], pet["y"] = nx, ny
                     # Appena e' arrivato abbastanza vicino si ferma subito,
-                    # invece di continuare a scavalcare il proprietario ad
-                    # ogni tick: cosi' gli resta accanto in modo stabile.
-                    if abs(owner.x - pet["x"]) + abs(owner.y - pet["y"]) <= PET_STAY_RANGE:
+                    # invece di continuare a scavalcare il bersaglio/il
+                    # proprietario ad ogni tick.
+                    if abs(chase_x - pet["x"]) + abs(chase_y - pet["y"]) <= stay_range:
                         pet["path"] = []
                         break
             else:
                 pet["path"] = []
                 pet["move_accum"] = 0.0
 
-            # ---- attacco automatico ----
-            target = self.nearest_alive(pet["x"], pet["y"], {pet["owner"]})
-            in_range = (
-                target is not None
-                and abs(target.x - pet["x"]) + abs(target.y - pet["y"]) <= PET_RANGE_CELLS
-            )
-            pet["aim"] = [target.x, target.y] if in_range else None
-            pet["fire_cd"] -= TICK_DT
-            if pet["fire_cd"] > 0:
-                continue
-            if not in_range:
-                # Nessuno nel raggio: resta carico e spara ISTANTANEAMENTE
-                # appena qualcuno entra nelle PET_RANGE_CELLS caselle,
-                # invece di sprecare colpi a vuoto (stessa regola della
-                # torretta).
-                pet["fire_cd"] = 0.0
-                continue
-            pet["fire_cd"] = PET_FIRE_INTERVAL_SECONDS
-            ddx, ddy = target.x - pet["x"], target.y - pet["y"]
-            horiz = (1, 0) if ddx >= 0 else (-1, 0)
-            vert = (0, 1) if ddy >= 0 else (0, -1)
-            cand = [horiz, vert] if abs(ddx) >= abs(ddy) else [vert, horiz]
-            dx, dy = cand[0]
-            if is_wall(self.maze, self.maze_w, self.maze_h, pet["x"] + dx, pet["y"] + dy) \
-                    and not is_wall(self.maze, self.maze_w, self.maze_h,
-                                    pet["x"] + cand[1][0], pet["y"] + cand[1][1]):
-                dx, dy = cand[1]
-            dir_name = next((k for k, v in DIRECTIONS.items() if v == (dx, dy)), "right")
-            laser = {
-                "id": uuid.uuid4().hex[:8],
-                "owner": pet["owner"],
-                "x": pet["x"], "y": pet["y"],
-                "dx": dx, "dy": dy,
-                "move_accum": 0.0,
-                "bounce_left": None,
-            }
-            self.lasers.append(laser)
-            self.push_event({
-                "kind": "laser_fire", "id": laser["id"], "shooter": pet["owner"],
-                "x": pet["x"], "y": pet["y"], "dir": dir_name, "pet": True,
-            })
+            # ---- attacco al contatto (nessun proiettile, come il ninja/la corazza) ----
+            if target is not None and target.alive \
+                    and target.ghost_left <= 0 and target.prot_left <= 0 \
+                    and pet["x"] == target.x and pet["y"] == target.y:
+                self.kill_player(target, "pet", shooter_id=pet["owner"])
+                pet["target_id"] = None
+                pet["aim"] = None
+                pet["path"] = []
 
     def check_win(self):
         """Il round finisce quando resta UN SOLO giocatore vivo: quello e'
@@ -1826,6 +1983,8 @@ class Room:
             "mines": [{"id": m["id"], "x": m["x"], "y": m["y"], "owner": m["owner"]} for m in self.mines],
             "turrets": [self.turret_public(t) for t in self.turrets],
             "pets": [self.pet_public(pt) for pt in self.pets],
+            "mortars": [self.mortar_public(mt) for mt in self.mortars],
+            "bombs": [self.bomb_public(bomb) for bomb in self.bombs],
             "portal_on": self.portal_on,
             "portal_cycle_left": round(max(self.portal_cycle_left, 0), 1),
             "missiles": [self.missile_public(mz) for mz in self.missiles],
@@ -1848,6 +2007,8 @@ class Room:
         self.missiles = []
         self.turrets = []
         self.pets = []
+        self.mortars = []
+        self.bombs = []
         for p in self.players.values():
             p.alive = True
             p.direction = None
@@ -1880,6 +2041,8 @@ class Room:
             p.pet_summoned = False
             p.has_robot = False
             p.robot_used = False
+            p.has_mortar = False
+            p.mortar_placed = False
             p.kills = 0
 
     # ---------- main loop ----------
@@ -1918,10 +2081,12 @@ class Room:
                 self.update_lasers()  # bonus 150 punti: arma principale permanente, un colpo al secondo se un nemico e' entro 12 caselle
                 self.update_turrets() # bonus 600 punti: torretta automatica, stessa cadenza del laser
                 self.update_pets()    # bonus 900 punti: il pet insegue il proprietario e attacca chi si avvicina
+                self.update_mortars() # bonus 1200 punti: il mortaio spara bombe ad arco contro il nemico piu' vicino entro 15 caselle
                 self.move_lasers()    # avanza i proiettili laser in volo (con eventuale rimbalzo)
                 self.check_mines()    # bonus 200 punti: fa esplodere le mine calpestate
                 self.move_missiles()  # bonus 400 punti: avanza i missili guidati verso il bersaglio
-                self.check_armor_effects()  # bonus 700 punti: la corazza distrugge torrette/mine/pet avversari toccati
+                self.update_bombs()   # bonus 1200 punti: avanza le bombe di mortaio in volo e le fa esplodere all'impatto
+                self.check_armor_effects()  # bonus 700 punti: la corazza distrugge torrette/mine/pet/mortai avversari toccati
                 winners, reason = self.check_win()
                 if winners is None and self.timer_left <= 0:
                     alive = [p for p in self.players.values() if p.alive]
@@ -2161,6 +2326,14 @@ async def handle_client(ws):
                 if not room or not player:
                     continue
                 room.try_evolve_turret(player)
+
+            elif mtype == "place_mortar":
+                # Bonus 1200 punti: pressione del tasto "0" lato client.
+                # Utilizzabile una sola volta per giocatore (vedi
+                # try_place_mortar): il server resta l'autorita'.
+                if not room or not player:
+                    continue
+                room.try_place_mortar(player)
 
             elif mtype == "stop":
                 # Il tasto/direzione e' stato rilasciato: il personaggio si

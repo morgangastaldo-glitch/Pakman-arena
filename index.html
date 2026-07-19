@@ -490,7 +490,7 @@
     </div>
 
     <div class="controls-row">
-      <span class="hint">WASD / frecce tastiera · Pallini = punti · Bonus a 50/100/150/200/300/400/500/600/1000 · Tasto 5 = torretta · Tasto 9 = evolvi la torretta in navicella</span>
+      <span class="hint">WASD / frecce tastiera · Pallini = punti · Bonus a 50/100/150/200/300/400/500/600/1000/1200 · Tasto 5 = torretta · Tasto 9 = evolvi la torretta in navicella · Tasto 0 = mortaio</span>
       <button class="ghost danger" id="btnLeaveGame">Esci</button>
     </div>
   </section>
@@ -532,6 +532,7 @@ const BONUS_STEPS = [
   { at: 800, label: "FULMINE (tasto 7)" },
   { at: 900, label: "PET FEDELE (tasto 8)" },
   { at: 1000, label: "NAVICELLA: evolvi la torretta (tasto 9)" },
+  { at: 1200, label: "MORTAIO (tasto 0)" },
 ];
 const MISSILE_SPEED_MULT = 1.1; // deve restare identica a MISSILE_SPEED_MULT in common.py
 const TRAP_DURATION_SECONDS = 3; // deve restare identica a TRAP_DURATION_SECONDS in common.py
@@ -861,6 +862,27 @@ function playRobotDestroy(){
   noiseBurst(0.18, 0.15);
   tone(150, 0.14, "sawtooth", 0.12, 0.02);
   [500, 380, 260, 140].forEach(function(f, i){ tone(f, 0.045, "square", 0.1, 0.1 + i * 0.04); });
+}
+// Schieramento del mortaio (bonus 1200 punti, tasto 0): un "thunk" grave e
+// metallico, come una pesante base che tocca terra.
+function playMortarPlace(){
+  tone(140, 0.16, "square", 0.14, 0);
+  tone(90, 0.2, "sawtooth", 0.12, 0.05);
+}
+// Lancio di una bomba di mortaio: "thump" sordo e attutito (sparo indiretto,
+// niente colpo secco come il laser), seguito da un fischio leggero che
+// accompagna la bomba mentre sale in volo.
+function playMortarFire(){
+  tone(110, 0.1, "sine", 0.16, 0);
+  sweep(700, 1400, 0.35, "sine", 0.03);
+}
+// Impatto/esplosione della bomba: boato basso con rumore bianco, molto piu'
+// pesante di un'eliminazione normale, per rendere la sensazione di un colpo
+// d'area caduto dall'alto.
+function playMortarImpact(){
+  noiseBurst(0.32, 0.22);
+  tone(80, 0.32, "sawtooth", 0.18, 0);
+  tone(55, 0.4, "sine", 0.14, 0.04);
 }
 // Colpo di laser: sweep acuto e secco verso il basso.
 function playLaser(){
@@ -2353,7 +2375,107 @@ function drawPets(now){
   ctx.restore();
 }
 
-// Effetto di teletrasporto (punto 4): anelli che si espandono dai due portali.
+// Mortaio permanente (bonus 1200 punti): riusa lo stesso "corpo" ottagonale
+// della torretta fissa (piastra + canna), ma piu' tozzo/pesante e puntato
+// verso l'alto (la canna resta quasi verticale, e' un'arma indiretta ad
+// arco, non punta mai dritta al bersaglio come laser/torretta).
+function drawMortars(now){
+  const list = (currSnapshot && currSnapshot.mortars) || [];
+  if (!list.length) return;
+  ctx.save();
+  list.forEach(function(mt){
+    const cx = mt.x * BASE_CELL + BASE_CELL / 2;
+    const cy = mt.y * BASE_CELL + BASE_CELL / 2;
+    const owner = findPlayer(currSnapshot, mt.owner);
+    const col = (owner && COLOR_HEX[(owner.colors || [])[0]]) || "#ff9d3b";
+    const tracking = !!mt.aim;
+
+    // Anello del raggio d'azione (15 caselle): visibile solo al
+    // proprietario, molto tenue, come per la torretta.
+    if (mt.owner === myId){
+      ctx.globalAlpha = 0.08;
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 6]);
+      ctx.beginPath(); ctx.arc(cx, cy, 15 * BASE_CELL, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    const pulse = 0.6 + 0.4 * Math.abs(Math.sin(now / (tracking ? 140 : 320)));
+
+    // Base tozza ottagonale, piu' larga della torretta normale.
+    ctx.globalAlpha = tracking ? 0.34 : 0.22;
+    ctx.fillStyle = col;
+    ctx.beginPath(); ctx.arc(cx, cy, 10, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 0.95;
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let i = 0; i < 8; i++){
+      const a = i * Math.PI / 4;
+      const px2 = cx + Math.cos(a) * 7.5, py2 = cy + Math.sin(a) * 7.5;
+      if (i === 0) ctx.moveTo(px2, py2); else ctx.lineTo(px2, py2);
+    }
+    ctx.closePath(); ctx.stroke();
+
+    // Canna spessa e corta, quasi verticale (leggera oscillazione quando ha
+    // agganciato un bersaglio, per dare l'idea del tiro ad arco).
+    const tilt = tracking ? Math.sin(now / 260) * 0.12 : 0;
+    ctx.lineWidth = 4;
+    ctx.lineCap = "round";
+    ctx.strokeStyle = tracking ? "#fff" : col;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + Math.sin(tilt) * 9, cy - Math.cos(tilt) * 9);
+    ctx.stroke();
+    ctx.lineCap = "butt";
+
+    ctx.globalAlpha = pulse;
+    ctx.fillStyle = tracking ? "#ff9d3b" : "#fff";
+    ctx.beginPath(); ctx.arc(cx, cy, 2.4, 0, Math.PI * 2); ctx.fill();
+  });
+  ctx.restore();
+}
+
+// Bombe di mortaio in volo (bonus 1200 punti): NON seguono i corridoi come
+// laser/missili, viaggiano in linea d'aria dal mortaio al bersaglio
+// (bomb_public interpola x0/y0 -> x1/y1 in base al tempo di volo, vedi
+// main.py). Per rendere leggibile l'arco, la bomba viene disegnata piu' in
+// alto (piu' piccola/con ombra staccata a terra) a meta' del tragitto, e
+// "atterra" sull'ombra esattamente quando frac arriva a 1.
+function drawBombs(now){
+  const list = (currSnapshot && currSnapshot.bombs) || [];
+  if (!list.length) return;
+  ctx.save();
+  list.forEach(function(b){
+    const gx = b.x, gy = b.y;
+    const shadowX = gx * BASE_CELL + BASE_CELL / 2;
+    const shadowY = gy * BASE_CELL + BASE_CELL / 2;
+    // Altezza dell'arco: massima a meta' volo (frac=0.5), zero a partenza e
+    // arrivo, cosi' la bomba "sale e ricade" invece di scivolare in piano.
+    const arcHeight = Math.sin(Math.PI * Math.min(1, b.frac)) * 16;
+
+    // Ombra a terra: si restringe man mano che la bomba e' "in alto".
+    ctx.globalAlpha = 0.35 * (1 - arcHeight / 20);
+    ctx.fillStyle = "#000";
+    ctx.beginPath();
+    ctx.ellipse(shadowX, shadowY, 5 - arcHeight * 0.12, 2.5 - arcHeight * 0.06, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Corpo della bomba, sollevato dall'ombra in base all'altezza dell'arco.
+    ctx.globalAlpha = 0.95;
+    ctx.fillStyle = "#2b2b2b";
+    ctx.beginPath();
+    ctx.arc(shadowX, shadowY - arcHeight, 3.4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "#ff9d3b";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  });
+  ctx.restore();
+}
+
+
 function drawSwirls(now){
   swirls = swirls.filter(function(s){ return now - s.start < 420; });
   swirls.forEach(function(s){
@@ -2421,18 +2543,29 @@ function drawThemeFx(now){
 }
 
 function drawExplosions(now){
-  explosions = explosions.filter(function(e){ return now - e.start < 550; });
+  explosions = explosions.filter(function(e){ return now - e.start < (e.big ? 700 : 550); });
   explosions.forEach(function(e){
-    const t = (now - e.start) / 550;
+    const dur = e.big ? 700 : 550;
+    const t = (now - e.start) / dur;
     const px = e.x * BASE_CELL + BASE_CELL / 2;
     const py = e.y * BASE_CELL + BASE_CELL / 2;
     ctx.save();
     ctx.globalAlpha = 1 - t;
     ctx.strokeStyle = e.color;
-    ctx.lineWidth = 2;
+    ctx.lineWidth = e.big ? 3 : 2;
     ctx.beginPath();
-    ctx.arc(px, py, 4 + t * 16, 0, Math.PI * 2);
+    ctx.arc(px, py, 4 + t * (e.big ? 26 : 16), 0, Math.PI * 2);
     ctx.stroke();
+    if (e.big){
+      // Anello aggiuntivo che indica visivamente il raggio del danno ad
+      // area (bomba di mortaio, bonus 1200 punti): una casella intorno al
+      // punto di impatto, cosi' si capisce a colpo d'occhio chi era abbastanza
+      // vicino da essere coinvolto.
+      ctx.globalAlpha = (1 - t) * 0.5;
+      ctx.beginPath();
+      ctx.arc(px, py, BASE_CELL * 1.5, 0, Math.PI * 2);
+      ctx.stroke();
+    }
     ctx.restore();
   });
 }
@@ -2590,7 +2723,9 @@ function renderLoop(now){
   drawMines(now);
   drawTurrets(now);
   drawPets(now);
+  drawMortars(now);
   drawMissiles(now);
+  drawBombs(now);
   drawLaserProjectiles(now);
   drawSparks(now);
   drawExplosions(now);
@@ -3015,8 +3150,9 @@ function onGameEvent(msg){
         turret:       ["TORRETTA SBLOCCATA!", "raggio 10 caselle \u00b7 premi 5 per piazzarla"],
         armor:        ["CORAZZA LASER SBLOCCATA!", "20 secondi \u00b7 premi 6 per attivarla"],
         lightning:    ["FULMINE SBLOCCATO!", "colpisce tutti \u00b7 premi 7 per scatenarlo"],
-        pet:          ["PET FEDELE SBLOCCATO!", "premi 8 per evocarlo \u00b7 attacca chi si avvicina"],
+        pet:          ["PET FEDELE SBLOCCATO!", "premi 8 per evocarlo \u00b7 aggancia e insegue chi si avvicina entro 6 caselle"],
         robot:        ["EVOLUZIONE NAVICELLA SBLOCCATA!", "premi 9 per evolvere la torretta, se e' ancora viva"],
+        mortar:       ["MORTAIO SBLOCCATO!", "raggio 15 caselle \u00b7 premi 0 per schierarlo \u00b7 scavalca i muri"],
       };
       const lb = labels[msg.bonus] || ["BONUS!", ""];
       const txt = lb[0] + (lb[1] ? " \u00b7 " + lb[1] : "");
@@ -3045,9 +3181,11 @@ function onGameEvent(msg){
       const byTrap = msg.cause === "trap";
       const byArmor = msg.cause === "armor";
       const byLightning = msg.cause === "lightning";
+      const byPet = msg.cause === "pet";
+      const byMortar = msg.cause === "mortar";
       const causeTxt = byLaser ? " dal laser" : (byMine ? " da una mina" : (byAssassin ? " da un ninja invisibile"
         : (byMissile ? " da un missile guidato" : (byTrap ? " da una trappola" : (byArmor ? " dalla corazza laser"
-        : (byLightning ? " da un fulmine" : ""))))));
+        : (byLightning ? " da un fulmine" : (byPet ? " dal pet avversario" : (byMortar ? " da una bomba di mortaio" : ""))))))));
       const stolenTxt = msg.stolen ? (" (-" + msg.stolen + " punti)") : "";
       if (msg.victim === myId){
         showBonusBanner(msg.respawn ? ("HAI PERSO UNA VITA \u2665" + msg.lives) : "SEI STATO ELIMINATO");
@@ -3097,6 +3235,29 @@ function onGameEvent(msg){
     case "pet_summon": {
       if (msg.player === myId) showToast("Pet evocato! Ti seguira' finche' non viene distrutto.");
       playPetSpawn();
+      break;
+    }
+    case "mortar_place": {
+      if (msg.player === myId) showToast("Mortaio schierato! E' permanente.");
+      playMortarPlace();
+      break;
+    }
+    case "mortar_fire": {
+      // Solo suono: la bomba in volo viene disegnata ad ogni frame leggendo
+      // currSnapshot.bombs (autorita' server, vedi drawBombs).
+      playMortarFire();
+      break;
+    }
+    case "mortar_impact": {
+      explosions.push({ x: msg.x, y: msg.y, color: "#ffb347", start: now, big: true });
+      playMortarImpact();
+      break;
+    }
+    case "mortar_destroyed": {
+      explosions.push({ x: msg.x, y: msg.y, color: ARMOR_COLOR, start: now });
+      noiseBurst(0.2, 0.16);
+      tone(120, 0.18, "sawtooth", 0.13, 0.02);
+      if (msg.by === myId) showToast("Mortaio avversario distrutto dalla corazza!");
       break;
     }
     case "pet_destroyed": {
@@ -3428,7 +3589,8 @@ function updateGameSidebar(msg){
            (p.armor_on ? "O" : "") +
            (p.lightning && p.id === myId ? ("F" + (p.lightning_used ? "1" : "0")) : "") +
            (p.pet && p.id === myId ? ("P" + (p.pet_summoned ? "1" : "0")) : "") +
-           (p.robot && p.id === myId ? ("R" + (p.robot_used ? "1" : "0")) : "");
+           (p.robot && p.id === myId ? ("R" + (p.robot_used ? "1" : "0")) : "") +
+           (p.mortar && p.id === myId ? ("M" + (p.mortar_placed ? "1" : "0")) : "");
   }).join("|");
 
   if (sig !== lastSidebarSig){
@@ -3489,6 +3651,11 @@ function updateGameSidebar(msg){
       if (p.robot && p.id === myId){
         const t = document.createElement("span"); t.className="tag alert";
         t.textContent = p.robot_used ? "NAVICELLA ATTIVA" : "NAVICELLA (tasto 9)";
+        li.appendChild(t);
+      }
+      if (p.mortar && p.id === myId){
+        const t = document.createElement("span"); t.className="tag alert";
+        t.textContent = p.mortar_placed ? "MORTAIO ATTIVO" : "MORTAIO (tasto 0)";
         li.appendChild(t);
       }
       const spacer = document.createElement("span"); spacer.className = "spacer"; li.appendChild(spacer);
@@ -3656,6 +3823,13 @@ document.addEventListener("keydown", function(ev){
   // richieste successive (vedi try_evolve_turret).
   if (ev.key === "9" && !ev.repeat){
     sendMsg({ type: "evolve_turret" });
+    ev.preventDefault();
+  }
+  // Bonus 1200 punti: il tasto "0" schiera il mortaio permanente nella
+  // cella corrente. Utilizzabile una sola volta per round: il server
+  // ignora richieste successive (vedi try_place_mortar).
+  if (ev.key === "0" && !ev.repeat){
+    sendMsg({ type: "place_mortar" });
     ev.preventDefault();
   }
 });

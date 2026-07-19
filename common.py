@@ -132,19 +132,19 @@ LIGHTNING_THRESHOLD = 800
 # Allo sblocco NON scatta nulla in automatico: premendo il tasto "8" il
 # giocatore evoca UNA SOLA VOLTA (per round) un piccolo Pac-Man "pet", dello
 # stesso colore del proprietario e grande la meta', che lo segue per tutto
-# il resto del round. Il pet individua da solo il nemico vivo piu' vicino
-# entro PET_RANGE_CELLS caselle e gli spara contro, con la stessa cadenza di
-# fuoco e la stessa meccanica di proiettile della torretta (bonus 600
-# punti). Resta sulla mappa finche' non viene distrutto da una mina, un
-# missile guidato, un colpo laser nemico, un fulmine o il contatto con la
-# corazza laser di un avversario: a quel punto sparisce per il resto del
-# round e NON si puo' rievocare.
+# il resto del round. Il pet NON spara piu': appena un nemico vivo entra
+# entro PET_RANGE_CELLS caselle lo aggancia e lo insegue attivamente
+# (bfs_path, come il missile guidato) finche' non lo raggiunge, ovunque
+# vada, poi gli fa perdere una vita al solo contatto (stessa meccanica del
+# ninja/corazza). Resta sulla mappa finche' non viene distrutto da una
+# mina, un missile guidato, un colpo laser nemico, un fulmine o il contatto
+# con la corazza laser di un avversario: a quel punto sparisce per il resto
+# del round e NON si puo' rievocare.
 PET_THRESHOLD = 900
-PET_RANGE_CELLS = 6             # raggio (in caselle, distanza Manhattan) entro cui il pet individua e attacca i nemici
-PET_FIRE_INTERVAL_SECONDS = LASER_INTERVAL_SECONDS  # stessa cadenza di fuoco della torretta/laser
+PET_RANGE_CELLS = 6             # raggio (in caselle, distanza Manhattan) entro cui il pet aggancia un nemico da inseguire
 PET_SPEED_MULT = 1.15           # leggermente piu' veloce del proprietario, per riuscire a stargli dietro
-PET_RETARGET_SECONDS = 0.15     # ogni quanto il pet ricalcola il percorso per raggiungere il proprietario
-PET_STAY_RANGE = 1              # entro questa distanza (a scacchi) dal proprietario il pet smette di muoversi: gli sta gia' "vicino"
+PET_RETARGET_SECONDS = 0.15     # ogni quanto il pet ricalcola il percorso (verso il proprietario o verso il bersaglio agganciato)
+PET_STAY_RANGE = 1              # entro questa distanza (a scacchi) dal proprietario il pet smette di muoversi quando non sta inseguendo nessuno
 
 # ---- bonus 1000 punti: evoluzione della torretta in robot (tasto "9") ----
 # Allo sblocco NON scatta nulla in automatico: premendo il tasto "9" il
@@ -162,6 +162,24 @@ ROBOT_FIRE_INTERVAL_SECONDS = TURRET_FIRE_INTERVAL_SECONDS / 2  # cadenza di fuo
 ROBOT_SPEED_MULT = 0.4          # velocita' di movimento della navicella = NORMAL_SPEED * 0.4 (dimezzata rispetto a prima: 0.8 -> 0.4)
 ROBOT_WANDER_RETARGET_SECONDS = 0.15  # ogni quanto ricalcola il percorso verso il nemico piu' vicino (che si muove, stessa cadenza del missile)
 ROBOT_LEVELUP_DISPLAY_SECONDS = 1.0  # durata della scritta "LEVEL UP" mostrata sopra alla navicella appena evoluta
+
+# ---- bonus 1200 punti: mortaio (tasto "0") ----
+# Allo sblocco NON scatta nulla in automatico: premendo il tasto "0" UNA
+# SOLA VOLTA il giocatore schiera un mortaio nella cella in cui si trova in
+# quel momento. Il mortaio e' permanente (resta sulla mappa per tutto il
+# resto del round, anche se il proprietario muore) e individua da solo il
+# nemico vivo piu' vicino entro MORTAR_RANGE_CELLS (15) caselle: quando lo
+# trova gli spara contro una bomba "in aria" ad arco, che NON segue i
+# corridoi e scavalca qualsiasi muro (a differenza di laser/missili/torretta)
+# perche' viaggia in linea retta sopra la mappa per MORTAR_FLIGHT_SECONDS_PER_CELL
+# secondi per casella percorsa, per poi ricadere ed esplodere sul bersaglio,
+# uccidendo (colpendola dall'alto) chiunque si trovi entro
+# MORTAR_BLAST_RADIUS_CELLS caselle dal punto di impatto.
+MORTAR_THRESHOLD = 1200
+MORTAR_RANGE_CELLS = 15                    # raggio (in caselle, distanza Manhattan) entro cui il mortaio individua i nemici
+MORTAR_FIRE_INTERVAL_SECONDS = 2.5         # cadenza di fuoco: piu' lenta di laser/torretta, e' un'arma d'area molto piu' potente
+MORTAR_FLIGHT_SECONDS_PER_CELL = 0.09      # tempo di volo della bomba per casella di distanza in linea d'aria (arco sopra i muri)
+MORTAR_BLAST_RADIUS_CELLS = 1              # raggio dell'esplosione (caselle, distanza Manhattan) intorno al punto di impatto
 
 # Distanza (in caselle, stile scacchi/Chebyshev) entro la quale le mine
 # ALTRUI diventano visibili: da piu' lontano restano nascoste finche' non
