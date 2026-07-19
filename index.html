@@ -1823,8 +1823,9 @@ function stepSim(state, dt, speed, hasNextDirQueue){
     //  2. svolta perpendicolare: solo AL CENTRO della cella (accum == 0),
     //     come nell'arcade originale - niente piu' azzeramento dell'accum
     //     a meta' cella, quindi niente scattino all'indietro in curva;
-    //  3. svolta bloccata da un muro: resta in coda e scatta da sola al
-    //     primo incrocio utile.
+    //  3. svolta bloccata da un muro nel momento del controllo: si SCARTA
+    //     subito, niente attesa per un incrocio futuro (un input troppo
+    //     tardivo per il varco a cui era destinato viene dimenticato).
     if (hasNextDirQueue && state.nextDir){
       if (state.dir && OPPOSITE_DIR[state.dir] === state.nextDir && state.accum > 1e-9){
         const v0 = DIR_VEC[state.dir];
@@ -1837,6 +1838,12 @@ function stepSim(state, dt, speed, hasNextDirQueue){
         const v = DIR_VEC[state.nextDir];
         if (!isWallCell(state.gridX + v[0], state.gridY + v[1])){
           state.dir = state.nextDir;
+          state.nextDir = null;
+        } else {
+          // Input arrivato troppo tardi per questo varco: si scarta subito
+          // invece di lasciarlo in coda per un incrocio futuro (evita che
+          // il personaggio "si ricordi" una svolta vecchia e giri a una
+          // curva molto piu' avanti, comportamento percepito come bug).
           state.nextDir = null;
         }
       }

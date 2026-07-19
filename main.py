@@ -663,8 +663,10 @@ class Room:
             sulla cella successiva).
          2. Svolta perpendicolare in coda: applicata solo AL CENTRO della
             cella (accum == 0), come nel Pac-Man originale.
-         3. Se la svolta e' bloccata da un muro, la coda RESTA in attesa e
-            scatta da sola al primo incrocio utile.
+         3. Se la svolta e' bloccata da un muro nel momento in cui viene
+            controllata, si SCARTA subito: niente attesa per un incrocio
+            futuro. Un input arrivato troppo tardi per il varco a cui era
+            destinato viene dimenticato, non rimesso in coda per dopo.
 
         Pura funzione di stato (non tocca self.players ne' side-effect come
         pallini/eventi): usata sia dal tick normale (update_movement) sia
@@ -695,7 +697,13 @@ class Room:
                                    x + ndx, y + ndy):
                         direction = next_direction
                         next_direction = None
-                    # se e' muro: la coda resta in memoria (regola 3)
+                    else:
+                        # Input arrivato troppo tardi per questo varco: si
+                        # scarta subito invece di restare in coda per un
+                        # incrocio futuro (evita che il personaggio "si
+                        # ricordi" una svolta vecchia e giri a una curva
+                        # molto piu' avanti, percepito come bug).
+                        next_direction = None
             if direction is None:
                 break
             facing = direction
