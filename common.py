@@ -25,7 +25,7 @@ TICK_HZ = 60
 TICK_DT = 1.0 / TICK_HZ
 
 COUNTDOWN_SECONDS = 15
-ROUND_SECONDS = 300  # durata di un round: 5 minuti
+ROUND_SECONDS = 600  # durata di un round: 10 minuti
 MAX_PLAYERS = 5
 MIN_PLAYERS = 2
 
@@ -145,6 +145,22 @@ PET_FIRE_INTERVAL_SECONDS = LASER_INTERVAL_SECONDS  # stessa cadenza di fuoco de
 PET_SPEED_MULT = 1.15           # leggermente piu' veloce del proprietario, per riuscire a stargli dietro
 PET_RETARGET_SECONDS = 0.15     # ogni quanto il pet ricalcola il percorso per raggiungere il proprietario
 PET_STAY_RANGE = 1              # entro questa distanza (a scacchi) dal proprietario il pet smette di muoversi: gli sta gia' "vicino"
+
+# ---- bonus 1000 punti: evoluzione della torretta in robot (tasto "9") ----
+# Allo sblocco NON scatta nulla in automatico: premendo il tasto "9" il
+# giocatore fa evolvere, UNA SOLA VOLTA per round, la propria torretta
+# automatica (bonus 600 punti) in un robot mobile su 3 gambe, MA SOLO SE
+# la torretta e' ancora viva sulla mappa (non distrutta dalla corazza di un
+# avversario). Da quel momento il robot smette di restare fermo: pattuglia
+# la mappa muovendosi a caso in cerca di nemici, con la cadenza di fuoco
+# raddoppiata rispetto a una torretta normale e una velocita' di
+# camminata pari a NORMAL_SPEED * ROBOT_SPEED_MULT (piu' lenta di un
+# giocatore normale, per restare bilanciata nonostante il fuoco doppio).
+ROBOT_THRESHOLD = 1000
+ROBOT_FIRE_INTERVAL_SECONDS = TURRET_FIRE_INTERVAL_SECONDS / 2  # cadenza di fuoco raddoppiata
+ROBOT_SPEED_MULT = 0.8          # velocita' di camminata del robot = NORMAL_SPEED * 0.8
+ROBOT_WANDER_RETARGET_SECONDS = 3.0  # ogni quanto sceglie una nuova cella a caso da raggiungere
+ROBOT_LEVELUP_DISPLAY_SECONDS = 1.0  # durata della scritta "LEVEL UP" mostrata sopra al robot appena evoluto
 
 # Distanza (in caselle, stile scacchi/Chebyshev) entro la quale le mine
 # ALTRUI diventano visibili: da piu' lontano restano nascoste finche' non

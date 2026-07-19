@@ -490,7 +490,7 @@
     </div>
 
     <div class="controls-row">
-      <span class="hint">WASD / frecce tastiera · Pallini = punti · Bonus a 50/100/150/200/300/400/500/600 · Tasto 5 = torretta</span>
+      <span class="hint">WASD / frecce tastiera · Pallini = punti · Bonus a 50/100/150/200/300/400/500/600/1000 · Tasto 5 = torretta · Tasto 9 = evolvi la torretta in robot</span>
       <button class="ghost danger" id="btnLeaveGame">Esci</button>
     </div>
   </section>
@@ -515,6 +515,7 @@ const BASE_CELL = 24; // risoluzione interna del canvas, in px per cella
 // aggiornamenti di rete dal server.
 const NORMAL_SPEED = 4.5;
 const ASSASSIN_SPEED_MULT = 1.1;  // il super assassino e' 1.1x rispetto a 1.0 dei giocatori normali
+const PET_SPEED_MULT = 1.15;      // deve restare identica a PET_SPEED_MULT in common.py
 const SUPER_ASSASSIN_THRESHOLD = 300; // deve restare identica a SUPER_ASSASSIN_THRESHOLD in common.py
 // Soglie dei bonus, per l'indicazione "prossimo bonus" nell'HUD: devono
 // restare identiche a BONUS_THRESHOLDS in common.py.
@@ -530,6 +531,7 @@ const BONUS_STEPS = [
   { at: 700, label: "CORAZZA LASER (tasto 6)" },
   { at: 800, label: "FULMINE (tasto 7)" },
   { at: 900, label: "PET FEDELE (tasto 8)" },
+  { at: 1000, label: "ROBOT: evolvi la torretta (tasto 9)" },
 ];
 const MISSILE_SPEED_MULT = 1.1; // deve restare identica a MISSILE_SPEED_MULT in common.py
 const TRAP_DURATION_SECONDS = 3; // deve restare identica a TRAP_DURATION_SECONDS in common.py
@@ -696,6 +698,7 @@ let predInited = false;
 // limita ad ammorbidire i dati che arrivano, si continua a SIMULARE finche'
 // non arriva una correzione dal server (che resta comunque l'autorita').
 let remoteSim = {}; // { [playerId]: { gridX, gridY, accum, dir } }
+let remotePetSim = {}; // { [petId]: { gridX, gridY, accum, dir } } - stesso trucco, applicato ai pet (bonus 900 punti)
 let snapshotInterpMs = 1000 / 30;
 let lastStateArrival = null;
 let lastFrameTs = null;
@@ -824,9 +827,39 @@ function playGameOver(){
 function playClockTick(){
   tone(1800, 0.02, "square", 0.07);
 }
-// Arpeggio brillante quando SI raggiunge un proprio traguardo-bonus.
+// Arpeggio brillante quando SI raggiunge un proprio traguardo-bonus,
+// preceduto da un piccolo "ding" acuto tipo moneta digitale raccolta: da'
+// subito la sensazione di "hai sbloccato/guadagnato qualcosa" ancora prima
+// che parta la melodia.
 function playBonus(){
-  [523, 659, 784, 1047].forEach(function(f, i){ tone(f, 0.14, "square", 0.13, i * 0.06); });
+  tone(1568, 0.05, "square", 0.14, 0);
+  tone(2093, 0.09, "square", 0.15, 0.045);
+  [523, 659, 784, 1047].forEach(function(f, i){ tone(f, 0.14, "square", 0.13, 0.11 + i * 0.06); });
+}
+// Evocazione del pet fedele (bonus 900 punti): un cinguettio a 3 note
+// rapide e acute, tipo verso di un piccolo animaletto/giocattolo digitale
+// (stile Tamagotchi) che "prende vita" accanto al giocatore.
+function playPetSpawn(){
+  tone(660, 0.05, "square", 0.11, 0);
+  tone(880, 0.05, "square", 0.12, 0.055);
+  tone(1175, 0.08, "square", 0.13, 0.11);
+}
+// Evoluzione della torretta in robot (bonus 1000 punti, tasto 9): sequenza
+// di bip meccanici che salgono di tono, tipo macchinario che si "assembla"
+// e si accende, chiusa da un tono piu' lungo e ruvido (sawtooth) che da'
+// il senso del "corpo" meccanico appena completato.
+function playRobotEvolve(){
+  [220, 330, 440, 660].forEach(function(f, i){ tone(f, 0.06, "square", 0.13, i * 0.05); });
+  tone(880, 0.12, "sawtooth", 0.1, 0.22);
+}
+// Distruzione del robot (torretta evoluta): stessa base sonora della
+// torretta normale (esplosione + tono grave) con in piu' un "glitch"
+// meccanico finale, bip discendenti rapidi, per far capire che si trattava
+// di una macchina che cammina e non di un semplice impianto fisso.
+function playRobotDestroy(){
+  noiseBurst(0.18, 0.15);
+  tone(150, 0.14, "sawtooth", 0.12, 0.02);
+  [500, 380, 260, 140].forEach(function(f, i){ tone(f, 0.045, "square", 0.1, 0.1 + i * 0.04); });
 }
 // Colpo di laser: sweep acuto e secco verso il basso.
 function playLaser(){
@@ -1654,6 +1687,21 @@ function getRenderedPos(p, now){
   return { x: p.x, y: p.y };
 }
 
+// Stessa logica di getRenderedPos, per i pet (bonus 900 punti): il server
+// ora manda anche per loro la posizione continua + direzione (vedi
+// pet_public in main.py), quindi si puo' riusare la stessa simulazione
+// "dead reckoning" gia' collaudata sugli altri giocatori, invece del vecchio
+// disegno diretto da currSnapshot che scattava da una cella intera alla
+// successiva.
+function getRenderedPetPos(pet, now){
+  const s = remotePetSim[pet.id];
+  if (s){
+    return { x: s.gridX + (s.dir ? DIR_VEC[s.dir][0] * s.accum : 0),
+             y: s.gridY + (s.dir ? DIR_VEC[s.dir][1] * s.accum : 0) };
+  }
+  return { x: pet.x, y: pet.y };
+}
+
 // Funzione generica di avanzamento simulazione, usata sia per il proprio
 // personaggio (con coda di direzione "next", alimentata dall'input locale)
 // sia per tutti gli altri (con direzione presa dall'ultimo stato ricevuto
@@ -1750,6 +1798,14 @@ function stepRemoteSim(p, dt){
   if (!s || !p.alive) return;
   let speed = NORMAL_SPEED * (p.assassin ? ASSASSIN_SPEED_MULT : 1);
   stepSim(s, dt, speed, false);
+}
+
+// Il pet (bonus 900 punti) e' leggermente piu' veloce del proprietario, per
+// riuscire a stargli dietro (stessa costante PET_SPEED_MULT del server).
+function stepRemotePetSim(pet, dt){
+  const s = remotePetSim[pet.id];
+  if (!s) return;
+  stepSim(s, dt, NORMAL_SPEED * PET_SPEED_MULT, false);
 }
 
 let lastFacingMap = {};
@@ -2078,6 +2134,11 @@ function drawTurrets(now){
     const owner = findPlayer(currSnapshot, t.owner);
     const col = (owner && COLOR_HEX[(owner.colors || [])[0]]) || "#ff3b5c";
     const tracking = !!t.aim;
+    // Bonus 1000 punti: torretta evoluta in robot mobile su 3 gambe, un
+    // po' piu' grande di una torretta normale per farsi notare a colpo
+    // d'occhio come "potenziata".
+    const evolved = !!t.evolved;
+    const scale = evolved ? 1.4 : 1;
     const pulse = 0.6 + 0.4 * Math.abs(Math.sin(now / (tracking ? 140 : 320)));
 
     // Anello del raggio d'azione (10 caselle): visibile solo al
@@ -2110,17 +2171,35 @@ function drawTurrets(now){
     }
     const ang = turretAim[t.id];
 
+    // Gambe del robot (bonus 1000 punti): 3 zampe meccaniche disegnate
+    // sotto la piastra, che ruotano lentamente attorno al corpo per dare
+    // l'idea di una "camminata" mentre il robot pattuglia la mappa a caso.
+    if (evolved){
+      ctx.globalAlpha = 0.85;
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 2;
+      for (let i = 0; i < 3; i++){
+        const legAng = (Math.PI * 2 / 3) * i + now / 260;
+        const kx = cx + Math.cos(legAng) * 10 * scale;
+        const ky = cy + Math.sin(legAng) * 10 * scale;
+        const fx2 = cx + Math.cos(legAng) * 13 * scale;
+        const fy2 = cy + Math.sin(legAng) * 13 * scale;
+        ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(kx, ky); ctx.lineTo(fx2, fy2); ctx.stroke();
+        ctx.beginPath(); ctx.arc(fx2, fy2, 1.4, 0, Math.PI * 2); ctx.fillStyle = col; ctx.fill();
+      }
+    }
+
     // Base: alone + piastra ottagonale
     ctx.globalAlpha = tracking ? 0.34 : 0.22;
     ctx.fillStyle = col;
-    ctx.beginPath(); ctx.arc(cx, cy, 9, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx, cy, 9 * scale, 0, Math.PI * 2); ctx.fill();
     ctx.globalAlpha = 0.95;
     ctx.strokeStyle = col;
     ctx.lineWidth = 2;
     ctx.beginPath();
     for (let i = 0; i < 8; i++){
       const a = ang / 3 + i * Math.PI / 4;
-      const px2 = cx + Math.cos(a) * 6, py2 = cy + Math.sin(a) * 6;
+      const px2 = cx + Math.cos(a) * 6 * scale, py2 = cy + Math.sin(a) * 6 * scale;
       if (i === 0) ctx.moveTo(px2, py2); else ctx.lineTo(px2, py2);
     }
     ctx.closePath(); ctx.stroke();
@@ -2130,13 +2209,25 @@ function drawTurrets(now){
     ctx.strokeStyle = tracking ? "#fff" : col;
     ctx.beginPath();
     ctx.moveTo(cx + Math.cos(ang) * 2, cy + Math.sin(ang) * 2);
-    ctx.lineTo(cx + Math.cos(ang) * 10, cy + Math.sin(ang) * 10);
+    ctx.lineTo(cx + Math.cos(ang) * 10 * scale, cy + Math.sin(ang) * 10 * scale);
     ctx.stroke();
     ctx.lineCap = "butt";
     // Nucleo: rosso pulsante quando ha agganciato un bersaglio
     ctx.globalAlpha = pulse;
     ctx.fillStyle = tracking ? "#ff5b5b" : "#fff";
-    ctx.beginPath(); ctx.arc(cx, cy, 2.2, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx, cy, 2.2 * scale, 0, Math.PI * 2); ctx.fill();
+
+    // Scritta "LEVEL UP" che compare per ~1 secondo appena la torretta
+    // evolve in robot: t.level_up e' server-authoritative (vedi
+    // ROBOT_LEVELUP_DISPLAY_SECONDS/level_up_left in main.py), quindi
+    // sparisce da sola senza bisogno di un timer lato client.
+    if (t.level_up){
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = "#fff";
+      ctx.font = "bold 8px monospace";
+      ctx.textAlign = "center";
+      ctx.fillText("LEVEL UP", cx, cy - 15 * scale);
+    }
   });
   ctx.restore();
 }
@@ -2176,8 +2267,9 @@ function drawPets(now){
   if (!list.length) return;
   ctx.save();
   list.forEach(function(pet){
-    const cx = pet.x * BASE_CELL + BASE_CELL / 2;
-    const cy = pet.y * BASE_CELL + BASE_CELL / 2;
+    const pos = getRenderedPetPos(pet, now);
+    const cx = pos.x * BASE_CELL + BASE_CELL / 2;
+    const cy = pos.y * BASE_CELL + BASE_CELL / 2;
     const owner = findPlayer(currSnapshot, pet.owner);
     const colors = (owner && owner.colors) || [];
     const baseColor = COLOR_HEX[colors[0]] || "#ffd400";
@@ -2194,7 +2286,7 @@ function drawPets(now){
     const chompSpeed = 8;
     const mouthDeg = 8 + 24 * Math.abs(Math.sin(now / 1000 * chompSpeed));
     const facing = pet.aim
-      ? Math.atan2(pet.aim[1] - pet.y, pet.aim[0] - pet.x) * 180 / Math.PI
+      ? Math.atan2(pet.aim[1] - pos.y, pet.aim[0] - pos.x) * 180 / Math.PI
       : (lastFacingMap[pet.owner] || 0);
     drawPacmanVariant(cx, cy, radius, mouthDeg, facing, baseColor, detailColor, "classic", 0);
 
@@ -2436,6 +2528,7 @@ function renderLoop(now){
     currSnapshot.players.forEach(function(p){
       if (p.id !== myId) stepRemoteSim(p, dt);
     });
+    (currSnapshot.pets || []).forEach(function(pet){ stepRemotePetSim(pet, dt); });
   }
   updateThemeFx(dt);
 
@@ -2521,6 +2614,7 @@ function onState(msg){
     sparks = [];
     swirls = [];
     remoteSim = {};
+    remotePetSim = {};
     lastServerPos = {};
     lastFacingMap = {};
     lastRequestedDir = null;
@@ -2617,6 +2711,72 @@ function onState(msg){
     }
 
     lastServerPos[p.id] = { x: p.x, y: p.y };
+  });
+
+  // Stessa identica logica di riconciliazione "dead reckoning" di sopra,
+  // ma per i pet (bonus 900 punti): il server ora manda anche per loro
+  // x/y continui + direzione (vedi pet_public in main.py), quindi il
+  // client puo' continuare a farli avanzare da solo tra un pacchetto e
+  // l'altro invece di scattare da una cella intera alla successiva.
+  const seenPetIds = new Set();
+  (msg.pets || []).forEach(function(pet){
+    seenPetIds.add(pet.id);
+    const dir = pet.dir;
+    let gx, gy, ac;
+    if (dir){
+      const v = DIR_VEC[dir];
+      if (v[0] !== 0){
+        gx = v[0] > 0 ? Math.floor(pet.x) : Math.ceil(pet.x);
+        gy = Math.round(pet.y);
+        ac = Math.max(0, Math.min(1, (pet.x - gx) * v[0]));
+      } else {
+        gx = Math.round(pet.x);
+        gy = v[1] > 0 ? Math.floor(pet.y) : Math.ceil(pet.y);
+        ac = Math.max(0, Math.min(1, (pet.y - gy) * v[1]));
+      }
+    } else {
+      gx = Math.round(pet.x); gy = Math.round(pet.y); ac = 0;
+    }
+
+    const prev = remotePetSim[pet.id];
+    if (!prev){
+      remotePetSim[pet.id] = { gridX: gx, gridY: gy, accum: ac, dir: dir };
+    } else {
+      const cur = getRenderedPetPos(pet, now);
+      const dx = cur.x - pet.x, dy = cur.y - pet.y;
+      const errDist = Math.hypot(dx, dy);
+      if (errDist > 0.6){
+        // Scarto grande (evocazione appena avvenuta, distruzione/ricomparsa
+        // o correzione forte): snap diretto, niente scivolamento visibile.
+        remotePetSim[pet.id] = { gridX: gx, gridY: gy, accum: ac, dir: dir };
+      } else {
+        prev.dir = dir;
+        if (errDist > 0.02){
+          const corrX = cur.x - dx * 0.8, corrY = cur.y - dy * 0.8;
+          if (dir){
+            const v = DIR_VEC[dir];
+            if (v[0] !== 0){
+              prev.gridX = v[0] > 0 ? Math.floor(corrX) : Math.ceil(corrX);
+              prev.gridY = Math.round(corrY);
+              prev.accum = Math.max(0, Math.min(1, (corrX - prev.gridX) * v[0]));
+            } else {
+              prev.gridX = Math.round(corrX);
+              prev.gridY = v[1] > 0 ? Math.floor(corrY) : Math.ceil(corrY);
+              prev.accum = Math.max(0, Math.min(1, (corrY - prev.gridY) * v[1]));
+            }
+          } else {
+            prev.gridX = Math.round(corrX); prev.gridY = Math.round(corrY); prev.accum = 0;
+          }
+        } else {
+          prev.gridX = gx; prev.gridY = gy; prev.accum = ac;
+        }
+      }
+    }
+  });
+  // Pulizia: un pet distrutto (o mai evocato) non deve lasciare in giro
+  // una simulazione "fantasma" che occupa memoria per tutto il round.
+  Object.keys(remotePetSim).forEach(function(id){
+    if (!seenPetIds.has(id)) delete remotePetSim[id];
   });
   lastPhase = msg.phase;
 
@@ -2739,6 +2899,7 @@ function onGameEvent(msg){
         armor:        ["CORAZZA LASER SBLOCCATA!", "20 secondi \u00b7 premi 6 per attivarla"],
         lightning:    ["FULMINE SBLOCCATO!", "colpisce tutti \u00b7 premi 7 per scatenarlo"],
         pet:          ["PET FEDELE SBLOCCATO!", "premi 8 per evocarlo \u00b7 attacca chi si avvicina"],
+        robot:        ["EVOLUZIONE ROBOT SBLOCCATA!", "premi 9 per evolvere la torretta, se e' ancora viva"],
       };
       const lb = labels[msg.bonus] || ["BONUS!", ""];
       const txt = lb[0] + (lb[1] ? " \u00b7 " + lb[1] : "");
@@ -2807,10 +2968,18 @@ function onGameEvent(msg){
       tone(160, 0.14, "square", 0.12);
       break;
     }
+    case "turret_evolve": {
+      // Bonus 1000 punti: la torretta e' evoluta in robot mobile. La
+      // scritta "LEVEL UP" sopra al robot viene disegnata leggendo
+      // currSnapshot.turrets[].level_up (server-authoritative, sparisce da
+      // sola dopo 1 secondo), qui serve solo il feedback sonoro/toast.
+      playRobotEvolve();
+      if (msg.player === myId) showToast("La torretta si e' evoluta in un robot!");
+      break;
+    }
     case "pet_summon": {
       if (msg.player === myId) showToast("Pet evocato! Ti seguira' finche' non viene distrutto.");
-      tone(340, 0.1, "sine", 0.12);
-      tone(520, 0.09, "sine", 0.1, 0.06);
+      playPetSpawn();
       break;
     }
     case "pet_destroyed": {
@@ -2906,8 +3075,21 @@ function onGameEvent(msg){
     case "turret_destroyed": {
       explosions.push({ x: msg.x, y: msg.y, color: ARMOR_COLOR, start: now });
       noiseBurst(0.2, 0.16);
-      tone(130, 0.18, "sawtooth", 0.13, 0.02);
-      if (msg.by === myId) showToast("Torretta distrutta dalla corazza!");
+      if (msg.evolved){
+        playRobotDestroy();
+      } else {
+        tone(130, 0.18, "sawtooth", 0.13, 0.02);
+      }
+      if (msg.by === myId) showToast((msg.evolved ? "Robot avversario" : "Torretta avversaria") + " distrutto dalla corazza!");
+      break;
+    }
+    case "mine_destroyed": {
+      // Bonus 700 punti: la corazza laser ha disinnescato una mina
+      // AVVERSARIA calpestata (le proprie mine restano sempre intatte).
+      explosions.push({ x: msg.x, y: msg.y, color: ARMOR_COLOR, start: now });
+      noiseBurst(0.16, 0.14);
+      tone(180, 0.14, "square", 0.11);
+      if (msg.by === myId) showToast("Mina avversaria disinnescata dalla corazza!");
       break;
     }
     case "laser_expired": {
@@ -2927,6 +3109,10 @@ function onGameEvent(msg){
     }
     case "missile_end": {
       explosions.push({ x: msg.x, y: msg.y, color: "#8fd3ff", start: now });
+      // Stesso "scoppio" (rumore bianco in dissolvenza + tono grave) di
+      // mina/trappola: prima qui c'era solo il tono, che suonava piu'
+      // fioco e meno "esplosivo" delle altre due armi.
+      noiseBurst(0.2, 0.17);
       tone(140, 0.15, "sawtooth", 0.12, 0.02);
       break;
     }
@@ -3124,7 +3310,8 @@ function updateGameSidebar(msg){
            (p.armor && p.id === myId ? ("C" + (p.armor_used ? "1" : "0")) : "") +
            (p.armor_on ? "O" : "") +
            (p.lightning && p.id === myId ? ("F" + (p.lightning_used ? "1" : "0")) : "") +
-           (p.pet && p.id === myId ? ("P" + (p.pet_summoned ? "1" : "0")) : "");
+           (p.pet && p.id === myId ? ("P" + (p.pet_summoned ? "1" : "0")) : "") +
+           (p.robot && p.id === myId ? ("R" + (p.robot_used ? "1" : "0")) : "");
   }).join("|");
 
   if (sig !== lastSidebarSig){
@@ -3180,6 +3367,11 @@ function updateGameSidebar(msg){
       if (p.pet && p.id === myId){
         const t = document.createElement("span"); t.className="tag alert";
         t.textContent = p.pet_summoned ? "PET ATTIVO" : "PET (tasto 8)";
+        li.appendChild(t);
+      }
+      if (p.robot && p.id === myId){
+        const t = document.createElement("span"); t.className="tag alert";
+        t.textContent = p.robot_used ? "ROBOT ATTIVO" : "ROBOT (tasto 9)";
         li.appendChild(t);
       }
       const spacer = document.createElement("span"); spacer.className = "spacer"; li.appendChild(spacer);
@@ -3336,6 +3528,17 @@ document.addEventListener("keydown", function(ev){
   // successive (vedi try_summon_pet).
   if (ev.key === "8" && !ev.repeat){
     sendMsg({ type: "activate_pet" });
+    ev.preventDefault();
+  }
+  // Bonus 1000 punti: il tasto "9" evolve la torretta automatica (bonus 600
+  // punti) in un robot mobile su 3 gambe, MA SOLO SE la torretta e' ancora
+  // viva sulla mappa in quel momento (il server ignora la richiesta se e'
+  // gia' stata distrutta). Da quel momento il robot cammina da solo per la
+  // mappa a caccia di nemici, con cadenza di fuoco raddoppiata. Utilizzabile
+  // una sola volta per round: il server ignora richieste successive (vedi
+  // try_evolve_turret).
+  if (ev.key === "9" && !ev.repeat){
+    sendMsg({ type: "evolve_turret" });
     ev.preventDefault();
   }
 });

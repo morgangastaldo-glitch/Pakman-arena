@@ -59,6 +59,8 @@ from common import (
     LIGHTNING_THRESHOLD,
     PET_THRESHOLD, PET_RANGE_CELLS, PET_FIRE_INTERVAL_SECONDS,
     PET_SPEED_MULT, PET_RETARGET_SECONDS, PET_STAY_RANGE,
+    ROBOT_THRESHOLD, ROBOT_FIRE_INTERVAL_SECONDS, ROBOT_SPEED_MULT,
+    ROBOT_WANDER_RETARGET_SECONDS, ROBOT_LEVELUP_DISPLAY_SECONDS,
 )
 
 # Direzione opposta di ciascuna direzione: serve per l'inversione di marcia
@@ -113,7 +115,7 @@ class Player:
         self.connected = True
         # ---- sistema punti / bonus (azzerato ad ogni round) ----
         self.points = 0
-        self.lives = 1                 # a 50 punti diventa 2: un'eliminazione non ti fa uscire, fa respawnare
+        self.lives = 3                 # si parte con 3 vite; a 50 punti diventa 4, ecc.: un'eliminazione non ti fa uscire finche' hai vite, fa respawnare
         self.claimed = set()           # soglie bonus gia' riscattate in questo round
         self.ghost_left = 0.0          # (bonus fantasma rimosso dal gioco: resta sempre a 0)
         # A SUPER_ASSASSIN_THRESHOLD punti (300): sblocca la modalita' ninja
@@ -176,6 +178,16 @@ class Player:
         # Room), non qui: qui si tiene solo lo stato dello sblocco/utilizzo.
         self.has_pet = False           # bonus sbloccato (una volta per round)
         self.pet_summoned = False      # True dopo l'evocazione: il tasto "8" e' utilizzabile una sola volta
+        # ---- bonus 1000 punti: evoluzione della torretta in robot (tasto "9") ----
+        # Allo sblocco NON scatta nulla in automatico: si evolve a comando col
+        # tasto "9" (vedi try_evolve_turret), UNA SOLA VOLTA per round, e solo
+        # se la torretta (bonus 600 punti) e' ancora viva sulla mappa. Lo
+        # stato vero e proprio dell'evoluzione (evolved/level_up_left/
+        # wander_path/...) vive dentro il dict della torretta in
+        # self.turrets, non qui: qui si tiene solo lo stato dello
+        # sblocco/utilizzo, come per gli altri bonus a comando.
+        self.has_robot = False         # bonus sbloccato (una volta per round)
+        self.robot_used = False        # True dopo l'evoluzione: il tasto "9" e' utilizzabile una sola volta
         # Uccisioni fatte in questo round: ogni 2 kill si guadagna una vita extra.
         self.kills = 0
 
@@ -224,6 +236,8 @@ class Player:
             "lightning_used": self.lightning_used,
             "pet": self.has_pet,
             "pet_summoned": self.pet_summoned,
+            "robot": self.has_robot,
+            "robot_used": self.robot_used,
         }
 
 
@@ -278,6 +292,16 @@ class Room:
         )
         self.reset_pellets()
         self.reset_pellets()
+        # Tutte le celle libere (non muro) della mappa: servono al robot
+        # (torretta evoluta, bonus 1000 punti) per scegliere a caso una
+        # meta' da raggiungere mentre pattuglia (vedi update_robot_wander).
+        # Calcolate una sola volta per mappa, non ad ogni ricalcolo.
+        self.free_cells = [
+            (x, y)
+            for y, row in enumerate(self.maze)
+            for x, ch in enumerate(row)
+            if ch != "#"
+        ]
 
     def reset_pellets(self):
         """Ricrea l'insieme dei pallini: ogni cella libera della mappa ne
@@ -383,7 +407,7 @@ class Room:
             p.alive = True
             # reset del sistema punti/bonus per il nuovo round
             p.points = 0
-            p.lives = 1
+            p.lives = 3             # si parte con 3 vite ad ogni nuovo round
             p.claimed = set()
             p.has_ninja = False
             p.is_assassin = False
@@ -416,6 +440,8 @@ class Room:
             p.lightning_used = False
             p.has_pet = False
             p.pet_summoned = False
+            p.has_robot = False
+            p.robot_used = False
             p.kills = 0
         self.lasers = []
         self.mines = []
@@ -729,6 +755,21 @@ class Room:
                 "kind": "bonus", "player": p.id,
                 "bonus": "pet", "points": PET_THRESHOLD,
             })
+        # Bonus 1000 punti: sblocca l'evoluzione della torretta in robot
+        # mobile, ma NON la evolve subito. Si evolve a comando col tasto "9"
+        # (vedi try_evolve_turret), UNA SOLA VOLTA per round, e solo se la
+        # torretta e' ancora viva sulla mappa in quel momento.
+        if (
+            p.alive
+            and p.points >= ROBOT_THRESHOLD
+            and ROBOT_THRESHOLD not in p.claimed
+        ):
+            p.claimed.add(ROBOT_THRESHOLD)
+            p.has_robot = True
+            self.push_event({
+                "kind": "bonus", "player": p.id,
+                "bonus": "robot", "points": ROBOT_THRESHOLD,
+            })
 
     def try_portal(self, p):
         """Se il giocatore e' su un portale (e non e' appena arrivato da un
@@ -1019,8 +1060,12 @@ class Room:
     def try_place_mine(self, player):
         """Bonus 200 punti: sgancia una mina nella cella corrente del
         giocatore (finche' ne ha ancora disponibili). Chiamato dalla
-        pressione del tasto "1" lato client."""
-        if not player.alive or not player.has_mines or player.mines_left <= 0:
+        pressione del tasto "1" lato client.
+
+        Se il giocatore e' intrappolato dalla trappola di un avversario
+        (bonus 500 punti), NON puo' usare alcun bonus finche' non torna
+        libero di muoversi (vedi player.trapped_left)."""
+        if not player.alive or player.trapped_left > 0 or not player.has_mines or player.mines_left <= 0:
             return
         if any(m["x"] == player.x and m["y"] == player.y for m in self.mines):
             return  # niente due mine sulla stessa cella
@@ -1036,14 +1081,20 @@ class Room:
         """Fa esplodere le mine calpestate: elimina chiunque le tocchi
         (proprietario escluso), ignorando protezioni, come il laser. Se sulla
         stessa cella c'e' il pet (bonus 900 punti) di un altro giocatore, la
-        mina distrugge anche lui."""
+        mina distrugge anche lui.
+
+        Eccezione: la modalita' ninja (300 punti) rende immuni alle mine,
+        esattamente come rende invisibili e letali al tocco - camminarci
+        sopra da ninja non la fa esplodere (la mina resta innescata, pronta
+        per chi non e' ninja)."""
         if not self.mines:
             return
         remaining = []
         for m in self.mines:
             victims = [
                 q for q in self.players.values()
-                if q.alive and q.id != m["owner"] and q.x == m["x"] and q.y == m["y"]
+                if q.alive and not q.is_assassin and q.id != m["owner"]
+                and q.x == m["x"] and q.y == m["y"]
             ]
             pet_victims = [
                 pet for pet in self.pets
@@ -1071,12 +1122,45 @@ class Room:
             "x": pet["x"], "y": pet["y"], "cause": cause, "by": by,
         })
 
+    def pet_public(self, pt):
+        """Come Player.to_public: la griglia interna (pt['x']/pt['y'],
+        interi) resta l'autorita' per collisioni, ma al client mandiamo
+        anche l'avanzamento reale dentro la cella corrente (move_accum,
+        verso la prossima cella del percorso), cosi' il pet si muove in
+        modo fluido come un giocatore invece di scattare da una cella
+        intera alla successiva solo quando il movimento e' completato."""
+        dx = dy = 0
+        path = pt.get("path")
+        if path:
+            nx, ny = path[0]
+            dx, dy = nx - pt["x"], ny - pt["y"]
+        accum = pt.get("move_accum", 0.0)
+        fx = pt["x"] + dx * accum
+        fy = pt["y"] + dy * accum
+        dir_name = next((k for k, v in DIRECTIONS.items() if v == (dx, dy)), None)
+        return {
+            "id": pt["id"], "x": round(fx, 4), "y": round(fy, 4),
+            "owner": pt["owner"], "aim": pt.get("aim"), "dir": dir_name,
+        }
+
     def nearest_alive(self, x, y, exclude_ids):
         """Giocatore vivo piu' vicino (distanza Manhattan) a (x, y), tra
         quelli il cui id non e' in exclude_ids. None se nessuno qualifica."""
         candidates = [
             q for q in self.players.values()
             if q.alive and q.id not in exclude_ids
+        ]
+        if not candidates:
+            return None
+        return min(candidates, key=lambda q: abs(q.x - x) + abs(q.y - y))
+
+    def nearest_alive_non_ninja(self, x, y, exclude_ids):
+        """Come nearest_alive, ma esclude anche chi e' attualmente in
+        modalita' ninja (invisibile): usata dal missile guidato, che non
+        puo' agganciare un bersaglio che non vede."""
+        candidates = [
+            q for q in self.players.values()
+            if q.alive and not q.is_assassin and q.id not in exclude_ids
         ]
         if not candidates:
             return None
@@ -1091,8 +1175,11 @@ class Room:
         piu' veloce, uccide chiunque tocchi). UTILIZZABILE UNA SOLA VOLTA
         per round: una volta terminata (scaduto il tempo o dopo
         un'eliminazione) non si puo' piu' riattivare, a differenza di
-        prima."""
-        if not player.alive or not player.has_ninja or player.is_assassin or player.ninja_used:
+        prima.
+
+        Se il giocatore e' intrappolato dalla trappola di un avversario,
+        NON puo' usare alcun bonus finche' non torna libero di muoversi."""
+        if not player.alive or player.trapped_left > 0 or not player.has_ninja or player.is_assassin or player.ninja_used:
             return
         player.ninja_used = True
         player.is_assassin = True
@@ -1111,8 +1198,11 @@ class Room:
         (vedi move_lasers/move_missiles), distrugge le torrette toccate
         (vedi check_armor_effects) e uccide chiunque tocchi (vedi
         check_collisions). Resta visibile a tutti (niente invisibilita').
-        UTILIZZABILE UNA SOLA VOLTA per round."""
-        if not player.alive or not player.has_armor or player.armor_active or player.armor_used:
+        UTILIZZABILE UNA SOLA VOLTA per round.
+
+        Se il giocatore e' intrappolato dalla trappola di un avversario,
+        NON puo' usare alcun bonus finche' non torna libero di muoversi."""
+        if not player.alive or player.trapped_left > 0 or not player.has_armor or player.armor_active or player.armor_used:
             return
         player.armor_used = True
         player.armor_active = True
@@ -1132,8 +1222,11 @@ class Room:
         torretta): ciascuno perde una vita tramite kill_player (la stessa
         unica via usata da laser/mine/missili/trappola), con lo stesso
         furto del 50% dei punti e lo stesso conteggio kill/vita-extra-ogni-
-        2-uccisioni del killer. UTILIZZABILE UNA SOLA VOLTA per round."""
-        if not player.alive or not player.has_lightning or player.lightning_used:
+        2-uccisioni del killer. UTILIZZABILE UNA SOLA VOLTA per round.
+
+        Se il giocatore e' intrappolato dalla trappola di un avversario,
+        NON puo' usare alcun bonus finche' non torna libero di muoversi."""
+        if not player.alive or player.trapped_left > 0 or not player.has_lightning or player.lightning_used:
             return
         player.lightning_used = True
         targets = [
@@ -1163,10 +1256,15 @@ class Room:
         in questo istante. Il missile e' 'guidato': segue i corridoi via
         pathfinding (vedi move_missiles), non attraversa mai i muri, e si
         aggancia di nuovo al bersaglio piu' vicino se quello originale muore
-        prima dell'impatto."""
-        if not player.alive or not player.has_missile or player.missiles_left <= 0:
+        prima dell'impatto.
+
+        Se il giocatore e' intrappolato dalla trappola di un avversario,
+        NON puo' usare alcun bonus finche' non torna libero di muoversi."""
+        if not player.alive or player.trapped_left > 0 or not player.has_missile or player.missiles_left <= 0:
             return
-        target = self.nearest_alive(player.x, player.y, {player.id})
+        # Un ninja e' invisibile: il missile non puo' agganciarlo nemmeno al
+        # lancio (vedi anche move_missiles per il riaggancio in volo).
+        target = self.nearest_alive_non_ninja(player.x, player.y, {player.id})
         if target is None:
             return
         player.missiles_left -= 1
@@ -1198,8 +1296,14 @@ class Room:
         for mz in self.missiles:
             destroyed = False
             target = self.players.get(mz["target"])
-            if target is None or not target.alive:
-                target = self.nearest_alive(mz["x"], mz["y"], {mz["owner"]})
+            # La modalita' ninja (300 punti) rende invisibili: un missile
+            # guidato che aveva agganciato un giocatore diventato ninja
+            # DEVE perdere il bersaglio (non puo' colpire un nemico che non
+            # vede piu') e riagganciarsi subito al nemico vivo, non-ninja,
+            # piu' vicino, esattamente come quando il bersaglio originale
+            # muore prima dell'impatto.
+            if target is None or not target.alive or target.is_assassin:
+                target = self.nearest_alive_non_ninja(mz["x"], mz["y"], {mz["owner"]})
                 if target is None:
                     destroyed = True
                 else:
@@ -1223,9 +1327,13 @@ class Room:
                     mz["move_accum"] -= 1.0
                     nx, ny = mz["path"].pop(0)
                     mz["x"], mz["y"] = nx, ny
+                    # Un ninja e' immune: il missile lo attraversa senza
+                    # detonare, invece di colpirlo (coerente col riaggancio
+                    # automatico al bersaglio piu' vicino non-ninja sopra).
                     victims = [
                         q for q in self.players.values()
-                        if q.alive and q.id != mz["owner"] and q.x == nx and q.y == ny
+                        if q.alive and not q.is_assassin
+                        and q.id != mz["owner"] and q.x == nx and q.y == ny
                     ]
                     if victims:
                         armored = [v for v in victims if v.armor_active]
@@ -1274,8 +1382,12 @@ class Room:
           esplosione (perde una vita).
         L'INNESCO (intrappolare un nuovo bersaglio) e' limitato a
         TRAP_MAX_USES volte per giocatore, per round: la detonazione di una
-        trappola gia' innescata non consuma un uso extra."""
-        if not player.alive or not player.has_trap:
+        trappola gia' innescata non consuma un uso extra.
+
+        Se il giocatore e' intrappolato dalla trappola di un avversario,
+        NON puo' usare alcun bonus (nemmeno far detonare una sua trappola
+        gia' innescata) finche' non torna libero di muoversi."""
+        if not player.alive or player.trapped_left > 0 or not player.has_trap:
             return
 
         if player.trap_target:
@@ -1316,8 +1428,11 @@ class Room:
         torretta e' permanente (resta sulla mappa fino a fine round, anche
         se il proprietario muore o si disconnette) e spara da sola verso il
         nemico vivo piu' vicino, con la stessa cadenza del laser (vedi
-        update_turrets)."""
-        if not player.alive or not player.has_turret or player.turret_placed:
+        update_turrets).
+
+        Se il giocatore e' intrappolato dalla trappola di un avversario,
+        NON puo' usare alcun bonus finche' non torna libero di muoversi."""
+        if not player.alive or player.trapped_left > 0 or not player.has_turret or player.turret_placed:
             return
         player.turret_placed = True
         turret = {
@@ -1332,15 +1447,98 @@ class Room:
             "x": player.x, "y": player.y,
         })
 
+    def try_evolve_turret(self, player):
+        """Tasto '9': se il giocatore ha sbloccato il bonus 1000 punti, non
+        lo ha ancora usato in questo round, e la sua torretta (bonus 600
+        punti) e' ANCORA VIVA sulla mappa (non distrutta dalla corazza di un
+        avversario), la fa evolvere in un robot mobile su 3 gambe. Da quel
+        momento il robot smette di restare fermo: pattuglia la mappa a caso
+        cercando nemici (vedi update_robot_wander), con cadenza di fuoco
+        raddoppiata (vedi update_turrets) e velocita' di camminata pari a
+        NORMAL_SPEED * ROBOT_SPEED_MULT. Utilizzabile una sola volta per
+        round, come la torretta stessa.
+
+        Se il giocatore e' intrappolato dalla trappola di un avversario,
+        NON puo' usare alcun bonus finche' non torna libero di muoversi."""
+        if not player.alive or player.trapped_left > 0 or not player.has_robot or player.robot_used:
+            return
+        turret = next((t for t in self.turrets if t["owner"] == player.id), None)
+        if turret is None:
+            # La torretta non e' mai stata piazzata, oppure e' gia' stata
+            # distrutta dalla corazza di un avversario: niente da evolvere.
+            return
+        player.robot_used = True
+        turret["evolved"] = True
+        turret["level_up_left"] = ROBOT_LEVELUP_DISPLAY_SECONDS
+        turret["wander_path"] = []
+        turret["wander_cd"] = 0.0
+        turret["move_accum"] = 0.0
+        self.push_event({
+            "kind": "turret_evolve", "id": turret["id"], "player": player.id,
+            "x": turret["x"], "y": turret["y"],
+        })
+
+    def update_robot_wander(self, t):
+        """Bonus 1000 punti: il robot (torretta evoluta) si muove da solo
+        sulla mappa in cerca di nemici. Ogni ROBOT_WANDER_RETARGET_SECONDS
+        (o quando raggiunge la meta' precedente) sceglie a caso una cella
+        libera tra self.free_cells e ci si dirige seguendo il percorso via
+        bfs_path (mai attraverso i muri, stessa meccanica del missile
+        guidato/pet), alla velocita' NORMAL_SPEED * ROBOT_SPEED_MULT."""
+        t["wander_cd"] = t.get("wander_cd", 0.0) - TICK_DT
+        if t["wander_cd"] <= 0 or not t.get("wander_path"):
+            t["wander_cd"] = ROBOT_WANDER_RETARGET_SECONDS
+            if self.free_cells:
+                goal = random.choice(self.free_cells)
+                path = bfs_path(self.maze, self.maze_w, self.maze_h, (t["x"], t["y"]), goal)
+                t["wander_path"] = path or []
+        speed = NORMAL_SPEED * ROBOT_SPEED_MULT
+        t["move_accum"] = t.get("move_accum", 0.0) + speed * TICK_DT
+        while t["move_accum"] >= 1.0 and t["wander_path"]:
+            t["move_accum"] -= 1.0
+            nx, ny = t["wander_path"].pop(0)
+            t["x"], t["y"] = nx, ny
+
+    def turret_public(self, t):
+        """Come pet_public: se il robot (torretta evoluta) si sta muovendo
+        lungo il proprio percorso di pattugliamento, manda anche
+        l'avanzamento reale dentro la cella corrente (move_accum), cosi' il
+        client lo disegna scivolare in modo fluido invece di scattare da una
+        cella intera alla successiva. Una torretta non ancora evoluta resta
+        ferma (dx=dy=0), esattamente come prima."""
+        dx = dy = 0
+        if t.get("evolved") and t.get("wander_path"):
+            nx, ny = t["wander_path"][0]
+            dx, dy = nx - t["x"], ny - t["y"]
+        accum = t.get("move_accum", 0.0)
+        fx = t["x"] + dx * accum
+        fy = t["y"] + dy * accum
+        return {
+            "id": t["id"], "x": round(fx, 4), "y": round(fy, 4),
+            "owner": t["owner"], "aim": t.get("aim"),
+            "evolved": t.get("evolved", False),
+            "level_up": t.get("level_up_left", 0) > 0,
+        }
+
     def update_turrets(self):
         """Ogni torretta piazzata spara automaticamente verso il nemico
         vivo piu' vicino ogni TURRET_FIRE_INTERVAL_SECONDS (stessa cadenza
         del laser): riusa esattamente la stessa meccanica dei proiettili
         laser (self.lasers / move_lasers), scegliendo la direzione cardinale
-        piu' vicina al bersaglio dato che la torretta non si muove."""
+        piu' vicina al bersaglio dato che la torretta non si muove.
+
+        Se la torretta si e' evoluta in robot (bonus 1000 punti, tasto "9"):
+        pattuglia la mappa a caso (vedi update_robot_wander) invece di
+        restare ferma, e spara con cadenza raddoppiata
+        (ROBOT_FIRE_INTERVAL_SECONDS invece di TURRET_FIRE_INTERVAL_SECONDS)."""
         if not self.turrets:
             return
         for t in self.turrets:
+            if t.get("level_up_left", 0) > 0:
+                t["level_up_left"] = max(0.0, t["level_up_left"] - TICK_DT)
+            evolved = t.get("evolved", False)
+            if evolved:
+                self.update_robot_wander(t)
             # Tracciamento continuo: ad OGNI tick la torretta individua il
             # nemico vivo piu' vicino e, se e' entro TURRET_RANGE_CELLS (10
             # caselle, distanza Manhattan), gli punta contro la canna. La
@@ -1361,7 +1559,7 @@ class Room:
                 # 10 caselle, invece di sprecare colpi a vuoto.
                 t["cd"] = 0.0
                 continue
-            t["cd"] = TURRET_FIRE_INTERVAL_SECONDS
+            t["cd"] = ROBOT_FIRE_INTERVAL_SECONDS if evolved else TURRET_FIRE_INTERVAL_SECONDS
             ddx, ddy = target.x - t["x"], target.y - t["y"]
             # Scelta della direzione di fuoco: prima l'asse con lo scarto
             # maggiore, ma se quella canna e' subito contro un muro si prova
@@ -1393,26 +1591,43 @@ class Room:
 
     def check_armor_effects(self):
         """Bonus 700 punti: chi ha la corazza laser ATTIVA distrugge ogni
-        torretta la cui cella tocca, a prescindere da chi l'ha piazzata
-        (proprietario incluso)."""
-        if not self.turrets:
-            return
+        torretta AVVERSARIA (di un altro giocatore, NON la propria) la cui
+        cella tocca, e allo stesso modo disinnesca ogni mina AVVERSARIA
+        calpestata (anche qui, la propria resta intatta)."""
         armored = [p for p in self.players.values() if p.alive and p.armor_active]
         if not armored:
             return
-        remaining = []
-        for t in self.turrets:
-            destroyer = next(
-                (a for a in armored if a.x == t["x"] and a.y == t["y"]), None
-            )
-            if destroyer is not None:
-                self.push_event({
-                    "kind": "turret_destroyed", "id": t["id"],
-                    "x": t["x"], "y": t["y"], "by": destroyer.id,
-                })
-            else:
-                remaining.append(t)
-        self.turrets = remaining
+        if self.turrets:
+            remaining = []
+            for t in self.turrets:
+                destroyer = next(
+                    (a for a in armored if a.id != t["owner"] and a.x == t["x"] and a.y == t["y"]),
+                    None,
+                )
+                if destroyer is not None:
+                    self.push_event({
+                        "kind": "turret_destroyed", "id": t["id"],
+                        "x": t["x"], "y": t["y"], "by": destroyer.id,
+                        "evolved": t.get("evolved", False),
+                    })
+                else:
+                    remaining.append(t)
+            self.turrets = remaining
+        if self.mines:
+            remaining_mines = []
+            for m in self.mines:
+                destroyer = next(
+                    (a for a in armored if a.id != m["owner"] and a.x == m["x"] and a.y == m["y"]),
+                    None,
+                )
+                if destroyer is not None:
+                    self.push_event({
+                        "kind": "mine_destroyed", "id": m["id"],
+                        "x": m["x"], "y": m["y"], "by": destroyer.id,
+                    })
+                else:
+                    remaining_mines.append(m)
+            self.mines = remaining_mines
         # Bonus 900 punti: chi ha la corazza distrugge anche ogni pet la cui
         # cella tocca (proprietario incluso, stessa regola delle torrette).
         if self.pets:
@@ -1433,8 +1648,11 @@ class Room:
         respawna altrove) e attacca da solo chiunque si avvicini, finche'
         non viene distrutto (vedi update_pets/check_mines/move_missiles/
         move_lasers/try_activate_lightning/check_armor_effects): a quel
-        punto sparisce per il resto del round e NON si puo' rievocare."""
-        if not player.alive or not player.has_pet or player.pet_summoned:
+        punto sparisce per il resto del round e NON si puo' rievocare.
+
+        Se il giocatore e' intrappolato dalla trappola di un avversario,
+        NON puo' usare alcun bonus finche' non torna libero di muoversi."""
+        if not player.alive or player.trapped_left > 0 or not player.has_pet or player.pet_summoned:
             return
         player.pet_summoned = True
         pet = {
@@ -1471,13 +1689,15 @@ class Room:
                 continue
 
             # ---- inseguimento del proprietario ----
+            # Il pet punta sempre verso l'ultima posizione nota del
+            # proprietario, anche se in questo momento e' morto: se e'
+            # stato eliminato definitivamente, il pet percorre tutta la
+            # strada fino a li' (attaccando chiunque incontri lungo il
+            # tragitto, vedi attacco automatico piu' sotto) invece di
+            # restare fermo dov'era ad aspettare un respawn che potrebbe
+            # non arrivare mai.
             dist_owner = abs(owner.x - pet["x"]) + abs(owner.y - pet["y"])
-            if not owner.alive:
-                # Nessuno da seguire in questo momento (il proprietario e'
-                # in attesa di respawn o eliminato): il pet resta fermo
-                # dov'e', pronto a difendersi, invece di vagare a vuoto.
-                pet["path"] = []
-            elif dist_owner > PET_STAY_RANGE:
+            if dist_owner > PET_STAY_RANGE:
                 pet["retarget_cd"] -= TICK_DT
                 if pet["retarget_cd"] <= 0 or not pet["path"]:
                     pet["retarget_cd"] = PET_RETARGET_SECONDS
@@ -1570,16 +1790,8 @@ class Room:
                 for lz in self.lasers
             ],
             "mines": [{"id": m["id"], "x": m["x"], "y": m["y"], "owner": m["owner"]} for m in self.mines],
-            "turrets": [
-                {"id": t["id"], "x": t["x"], "y": t["y"], "owner": t["owner"],
-                 "aim": t.get("aim")}
-                for t in self.turrets
-            ],
-            "pets": [
-                {"id": pt["id"], "x": pt["x"], "y": pt["y"], "owner": pt["owner"],
-                 "aim": pt.get("aim")}
-                for pt in self.pets
-            ],
+            "turrets": [self.turret_public(t) for t in self.turrets],
+            "pets": [self.pet_public(pt) for pt in self.pets],
             "portal_on": self.portal_on,
             "portal_cycle_left": round(max(self.portal_cycle_left, 0), 1),
             "missiles": [
@@ -1640,6 +1852,8 @@ class Room:
             p.lightning_used = False
             p.has_pet = False
             p.pet_summoned = False
+            p.has_robot = False
+            p.robot_used = False
             p.kills = 0
 
     # ---------- main loop ----------
@@ -1681,7 +1895,7 @@ class Room:
                 self.move_lasers()    # avanza i proiettili laser in volo (con eventuale rimbalzo)
                 self.check_mines()    # bonus 200 punti: fa esplodere le mine calpestate
                 self.move_missiles()  # bonus 400 punti: avanza i missili guidati verso il bersaglio
-                self.check_armor_effects()  # bonus 700 punti: la corazza distrugge le torrette/pet toccati
+                self.check_armor_effects()  # bonus 700 punti: la corazza distrugge torrette/mine/pet avversari toccati
                 winners, reason = self.check_win()
                 if winners is None and self.timer_left <= 0:
                     alive = [p for p in self.players.values() if p.alive]
@@ -1912,6 +2126,15 @@ async def handle_client(ws):
                 if not room or not player:
                     continue
                 room.try_summon_pet(player)
+
+            elif mtype == "evolve_turret":
+                # Bonus 1000 punti: pressione del tasto "9" lato client.
+                # Utilizzabile una sola volta per giocatore, e solo se la
+                # torretta e' ancora viva (vedi try_evolve_turret): il
+                # server resta l'autorita'.
+                if not room or not player:
+                    continue
+                room.try_evolve_turret(player)
 
             elif mtype == "stop":
                 # Il tasto/direzione e' stato rilasciato: il personaggio si
