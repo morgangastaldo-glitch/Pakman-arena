@@ -32,25 +32,6 @@ MIN_PLAYERS = 2
 NORMAL_SPEED = 4.5          # celle al secondo
 ASSASSIN_SPEED_MULT = 1.1   # il super assassino (bonus 300 punti) e' 1.1x rispetto a 1.0 dei giocatori normali
 
-# ---- finestra di accettazione delle svolte ----
-# Una direzione richiesta (next_direction) resta "in coda" pronta a
-# scattare al primo centro-cella utile, ma solo per un tempo limitato:
-# TURN_BUFFER_SECONDS da quando il tasto e' stato premuto. Se entro quel
-# tempo la svolta non diventa applicabile (perche' non si e' ancora vicini
-# all'incrocio, o perche' l'incrocio raggiunto e' bloccato da un muro), la
-# richiesta viene scartata invece di restare in memoria all'infinito in
-# attesa del primo incrocio "utile" futuro - che poteva arrivare molte
-# celle piu' avanti e produrre una svolta del tutto inaspettata, oppure,
-# se anche quello era bloccato, veniva ritentata identica ad ogni tick
-# senza mai riuscire (il personaggio "incastrato" a girare verso un muro,
-# percepito come lag). Con questa finestra, un input dato troppo presto
-# rispetto alla svolta scade prima di poter scattare (va quindi dato un
-# po' piu' vicino all'incrocio) e un input dato troppo tardi (svolta gia'
-# superata) viene semplicemente ignorato. Identica su client (stepSim in
-# index.html) e server (update_movement in main.py), cosi' la previsione
-# locale non diverge mai da cio' che decide il server.
-TURN_BUFFER_SECONDS = 0.15
-
 # ---- sistema punti e bonus a traguardi ----
 # Ogni pallino normale vale 1 punto. In 10 punti (angoli/estremita') della
 # mappa si trovano pallini piu' grossi e arancioni che valgono 10 punti.
@@ -146,6 +127,24 @@ ARMOR_DURATION_SECONDS = 20.0
 # kill_player usata da laser/mine/missili/trappola). UTILIZZABILE UNA SOLA
 # VOLTA per round, come il ninja e la corazza.
 LIGHTNING_THRESHOLD = 800
+
+# ---- bonus 900 punti: pet fedele permanente (tasto "8") ----
+# Allo sblocco NON scatta nulla in automatico: premendo il tasto "8" il
+# giocatore evoca UNA SOLA VOLTA (per round) un piccolo Pac-Man "pet", dello
+# stesso colore del proprietario e grande la meta', che lo segue per tutto
+# il resto del round. Il pet individua da solo il nemico vivo piu' vicino
+# entro PET_RANGE_CELLS caselle e gli spara contro, con la stessa cadenza di
+# fuoco e la stessa meccanica di proiettile della torretta (bonus 600
+# punti). Resta sulla mappa finche' non viene distrutto da una mina, un
+# missile guidato, un colpo laser nemico, un fulmine o il contatto con la
+# corazza laser di un avversario: a quel punto sparisce per il resto del
+# round e NON si puo' rievocare.
+PET_THRESHOLD = 900
+PET_RANGE_CELLS = 6             # raggio (in caselle, distanza Manhattan) entro cui il pet individua e attacca i nemici
+PET_FIRE_INTERVAL_SECONDS = LASER_INTERVAL_SECONDS  # stessa cadenza di fuoco della torretta/laser
+PET_SPEED_MULT = 1.15           # leggermente piu' veloce del proprietario, per riuscire a stargli dietro
+PET_RETARGET_SECONDS = 0.15     # ogni quanto il pet ricalcola il percorso per raggiungere il proprietario
+PET_STAY_RANGE = 1              # entro questa distanza (a scacchi) dal proprietario il pet smette di muoversi: gli sta gia' "vicino"
 
 # Distanza (in caselle, stile scacchi/Chebyshev) entro la quale le mine
 # ALTRUI diventano visibili: da piu' lontano restano nascoste finche' non

@@ -56,7 +56,9 @@ from common import (
     TURRET_THRESHOLD, TURRET_FIRE_INTERVAL_SECONDS,
     TURRET_RANGE_CELLS, KILL_STEAL_FRACTION,
     ARMOR_THRESHOLD, ARMOR_DURATION_SECONDS,
-    TURN_BUFFER_SECONDS, LIGHTNING_THRESHOLD,
+    LIGHTNING_THRESHOLD,
+    PET_THRESHOLD, PET_RANGE_CELLS, PET_FIRE_INTERVAL_SECONDS,
+    PET_SPEED_MULT, PET_RETARGET_SECONDS, PET_STAY_RANGE,
 )
 
 # Direzione opposta di ciascuna direzione: serve per l'inversione di marcia
@@ -106,11 +108,6 @@ class Player:
         # direzione un istante troppo presto la faceva perdere del tutto,
         # dando la sensazione di comandi "poco precisi".
         self.next_direction = None
-        # Da quanto tempo (secondi) next_direction e' in attesa di poter
-        # scattare: scade dopo TURN_BUFFER_SECONDS (vedi update_movement),
-        # cosi' una svolta data troppo presto o troppo tardi viene
-        # dimenticata invece di restare in coda a tempo indeterminato.
-        self.next_direction_ttl = 0.0
         self.move_accum = 0.0
         self.alive = True
         self.connected = True
@@ -172,6 +169,13 @@ class Player:
         # round. Colpisce all'istante tutti gli avversari vivi sulla mappa.
         self.has_lightning = False     # bonus sbloccato (una volta per round)
         self.lightning_used = False    # True dopo l'unica attivazione consentita per round
+        # ---- bonus 900 punti: pet fedele permanente (tasto "8") ----
+        # Allo sblocco NON scatta nulla in automatico: si evoca a comando col
+        # tasto "8" (vedi try_summon_pet), UNA SOLA VOLTA per round, come la
+        # torretta. Il pet vero e proprio vive in self.pets (lista della
+        # Room), non qui: qui si tiene solo lo stato dello sblocco/utilizzo.
+        self.has_pet = False           # bonus sbloccato (una volta per round)
+        self.pet_summoned = False      # True dopo l'evocazione: il tasto "8" e' utilizzabile una sola volta
         # Uccisioni fatte in questo round: ogni 2 kill si guadagna una vita extra.
         self.kills = 0
 
@@ -218,6 +222,8 @@ class Player:
             "armor_used": self.armor_used,
             "lightning": self.has_lightning,
             "lightning_used": self.lightning_used,
+            "pet": self.has_pet,
+            "pet_summoned": self.pet_summoned,
         }
 
 
@@ -247,6 +253,10 @@ class Room:
         # vengono mai svuotate durante il round, solo ad ogni nuovo round
         # (vedi assign_spawns/reset_to_lobby).
         self.turrets = []
+        # Pet fedeli evocati (bonus 900 punti): permanenti come le torrette,
+        # non vengono mai svuotati durante il round, solo ad ogni nuovo
+        # round (vedi assign_spawns/reset_to_lobby).
+        self.pets = []
         # Mappa corrente della stanza: viene ripescata a caso tra le 10
         # disponibili a OGNI inizio round (vedi run_round), cosi' ogni
         # partita puo' capitare su una mappa diversa per forma/colore/misura.
@@ -369,7 +379,6 @@ class Room:
             p.x, p.y = x, y
             p.direction = None
             p.next_direction = None
-            p.next_direction_ttl = 0.0
             p.move_accum = 0.0
             p.alive = True
             # reset del sistema punti/bonus per il nuovo round
@@ -405,11 +414,14 @@ class Room:
             p.armor_used = False
             p.has_lightning = False
             p.lightning_used = False
+            p.has_pet = False
+            p.pet_summoned = False
             p.kills = 0
         self.lasers = []
         self.mines = []
         self.missiles = []
         self.turrets = []
+        self.pets = []
 
     def begin_playing(self):
         """Fine countdown iniziale: il round entra nel vivo. Non c'e' piu'
@@ -509,24 +521,6 @@ class Room:
             #     il piccolo "scatto all'indietro" ad ogni curva.
             #  3. Se la svolta e' bloccata da un muro, la coda RESTA in
             #     attesa e scatta da sola al primo incrocio utile.
-            # La svolta in coda ha vita limitata (TURN_BUFFER_SECONDS): se
-            # non riesce a scattare entro quel tempo dalla pressione del
-            # tasto, viene scartata invece di restare in memoria in attesa
-            # del primo incrocio "utile", che poteva capitare molte celle
-            # piu' avanti (svolta del tutto inaspettata) o essere a sua
-            # volta bloccato da un muro, nel qual caso veniva ritentata
-            # identica ad ogni tick senza mai riuscire (il personaggio
-            # restava "incastrato" a girare verso il muro, percepito come
-            # lag). Con la scadenza, un input dato troppo presto rispetto
-            # alla svolta reale scade prima di poter applicarsi (va quindi
-            # dato un po' piu' vicino all'incrocio) e un input dato troppo
-            # tardi (la svolta e' gia' passata) viene semplicemente
-            # ignorato.
-            if p.next_direction is not None:
-                p.next_direction_ttl -= TICK_DT
-                if p.next_direction_ttl <= 0:
-                    p.next_direction = None
-
             speed = NORMAL_SPEED
             if p.is_assassin:
                 # Il super assassino (300 punti) e' piu' veloce dei
@@ -709,8 +703,7 @@ class Room:
             })
         # Bonus 800 punti: sblocca il fulmine, ma NON lo scatena subito. Si
         # attiva a comando col tasto "7" (vedi try_activate_lightning), UNA
-        # SOLA VOLTA per round (come ninja, trappola-innesco a parte, e
-        # corazza).
+        # SOLA VOLTA per round (come ninja e corazza).
         if (
             p.alive
             and p.points >= LIGHTNING_THRESHOLD
@@ -721,6 +714,20 @@ class Room:
             self.push_event({
                 "kind": "bonus", "player": p.id,
                 "bonus": "lightning", "points": LIGHTNING_THRESHOLD,
+            })
+        # Bonus 900 punti: sblocca il pet fedele, ma NON lo evoca subito. Si
+        # evoca a comando col tasto "8" (vedi try_summon_pet), una sola volta
+        # per giocatore, per round.
+        if (
+            p.alive
+            and p.points >= PET_THRESHOLD
+            and PET_THRESHOLD not in p.claimed
+        ):
+            p.claimed.add(PET_THRESHOLD)
+            p.has_pet = True
+            self.push_event({
+                "kind": "bonus", "player": p.id,
+                "bonus": "pet", "points": PET_THRESHOLD,
             })
 
     def try_portal(self, p):
@@ -773,7 +780,6 @@ class Room:
         p.x, p.y = x, y
         p.direction = None
         p.next_direction = None
-        p.next_direction_ttl = 0.0
         p.move_accum = 0.0
         p.prot_left = SPAWN_PROTECT_SECONDS
         p.portal_cd = 0.5  # se lo spawn fosse vicino a un portale, niente teletrasporto istantaneo
@@ -829,7 +835,6 @@ class Room:
             victim.alive = False
             victim.direction = None
             victim.next_direction = None
-            victim.next_direction_ttl = 0.0
             victim.move_accum = 0.0
             respawned = False
         if victim.is_assassin:
@@ -990,6 +995,18 @@ class Room:
                         self.kill_player(v, "laser", lz["owner"])
                     destroyed = True
                     break
+                # Bonus 900 punti: un colpo laser NEMICO (di un altro
+                # giocatore o di un'altra torretta/pet) distrugge il pet che
+                # trova sulla sua strada, cosi' come un giocatore.
+                pet_victims = [
+                    pet for pet in self.pets
+                    if pet["owner"] != lz["owner"] and pet["x"] == nx and pet["y"] == ny
+                ]
+                if pet_victims:
+                    for pet in pet_victims:
+                        self.destroy_pet(pet, "laser", lz["owner"])
+                    destroyed = True
+                    break
                 if lz["bounce_left"] is not None and lz["bounce_left"] <= 0:
                     destroyed = True
                     break
@@ -1017,7 +1034,9 @@ class Room:
 
     def check_mines(self):
         """Fa esplodere le mine calpestate: elimina chiunque le tocchi
-        (proprietario escluso), ignorando protezioni, come il laser."""
+        (proprietario escluso), ignorando protezioni, come il laser. Se sulla
+        stessa cella c'e' il pet (bonus 900 punti) di un altro giocatore, la
+        mina distrugge anche lui."""
         if not self.mines:
             return
         remaining = []
@@ -1026,13 +1045,31 @@ class Room:
                 q for q in self.players.values()
                 if q.alive and q.id != m["owner"] and q.x == m["x"] and q.y == m["y"]
             ]
-            if victims:
+            pet_victims = [
+                pet for pet in self.pets
+                if pet["owner"] != m["owner"] and pet["x"] == m["x"] and pet["y"] == m["y"]
+            ]
+            if victims or pet_victims:
                 for v in victims:
                     self.kill_player(v, "mine", m["owner"])
+                for pet in pet_victims:
+                    self.destroy_pet(pet, "mine", m["owner"])
                 self.push_event({"kind": "mine_boom", "id": m["id"], "x": m["x"], "y": m["y"]})
             else:
                 remaining.append(m)
         self.mines = remaining
+
+    def destroy_pet(self, pet, cause, by=None):
+        """Unica via per rimuovere un pet (bonus 900 punti) dalla mappa: lo
+        toglie da self.pets e notifica i client, esattamente come
+        kill_player fa per i giocatori. Il proprietario NON puo' rievocarlo:
+        pet_summoned resta True per tutto il resto del round."""
+        if pet in self.pets:
+            self.pets.remove(pet)
+        self.push_event({
+            "kind": "pet_destroyed", "id": pet["id"], "owner": pet["owner"],
+            "x": pet["x"], "y": pet["y"], "cause": cause, "by": by,
+        })
 
     def nearest_alive(self, x, y, exclude_ids):
         """Giocatore vivo piu' vicino (distanza Manhattan) a (x, y), tra
@@ -1114,6 +1151,10 @@ class Room:
         # si usa comunque una lista "congelata" per chiarezza.
         for victim in targets:
             self.kill_player(victim, "lightning", player.id)
+        # Bonus 900 punti: il fulmine distrugge anche i pet di tutti gli
+        # avversari colpiti (il proprio pet, se ne hai uno, resta illeso).
+        for pet in [pt for pt in list(self.pets) if pt["owner"] != player.id]:
+            self.destroy_pet(pet, "lightning", player.id)
 
     # ---- bonus 400 punti: missile guidato (tasto "3") ----
 
@@ -1201,6 +1242,16 @@ class Room:
                             })
                         for v in other_victims:
                             self.kill_player(v, "missile", mz["owner"])
+                        destroyed = True
+                    # Bonus 900 punti: il missile guidato distrugge anche il
+                    # pet nemico che trova sulla sua strada.
+                    pet_victims = [
+                        pet for pet in self.pets
+                        if pet["owner"] != mz["owner"] and pet["x"] == nx and pet["y"] == ny
+                    ]
+                    if pet_victims:
+                        for pet in pet_victims:
+                            self.destroy_pet(pet, "missile", mz["owner"])
                         destroyed = True
 
             if destroyed:
@@ -1362,6 +1413,136 @@ class Room:
             else:
                 remaining.append(t)
         self.turrets = remaining
+        # Bonus 900 punti: chi ha la corazza distrugge anche ogni pet la cui
+        # cella tocca (proprietario incluso, stessa regola delle torrette).
+        if self.pets:
+            for pet in list(self.pets):
+                destroyer = next(
+                    (a for a in armored if a.x == pet["x"] and a.y == pet["y"]), None
+                )
+                if destroyer is not None:
+                    self.destroy_pet(pet, "armor", destroyer.id)
+
+    # ---- bonus 900 punti: pet fedele permanente (tasto "8") ----
+
+    def try_summon_pet(self, player):
+        """Tasto '8': evoca UNA SOLA VOLTA (per tutto il round) un piccolo
+        Pac-Man "pet" dello stesso colore del proprietario, nella sua cella
+        corrente. Da quel momento il pet e' permanente: segue il
+        proprietario per tutto il resto del round (anche se muore e
+        respawna altrove) e attacca da solo chiunque si avvicini, finche'
+        non viene distrutto (vedi update_pets/check_mines/move_missiles/
+        move_lasers/try_activate_lightning/check_armor_effects): a quel
+        punto sparisce per il resto del round e NON si puo' rievocare."""
+        if not player.alive or not player.has_pet or player.pet_summoned:
+            return
+        player.pet_summoned = True
+        pet = {
+            "id": uuid.uuid4().hex[:8],
+            "owner": player.id,
+            "x": player.x, "y": player.y,
+            "move_accum": 0.0,
+            "path": [],
+            "retarget_cd": 0.0,
+            "fire_cd": LASER_FIRST_DELAY_SECONDS,
+            "aim": None,
+        }
+        self.pets.append(pet)
+        self.push_event({
+            "kind": "pet_summon", "id": pet["id"], "player": player.id,
+            "x": player.x, "y": player.y,
+        })
+
+    def update_pets(self):
+        """Ogni pet insegue il proprietario finche' non gli e' vicino (entro
+        PET_STAY_RANGE caselle: a quel punto smette di muoversi, gli sta
+        gia' "vicino" come richiesto) usando lo stesso pathfinding a corridoi
+        del missile guidato (bfs_path, mai attraverso i muri). Ad ogni tick
+        individua anche da solo il nemico vivo piu' vicino entro
+        PET_RANGE_CELLS caselle e, se in raggio, gli spara contro con la
+        stessa cadenza/meccanica di proiettile della torretta (self.lasers):
+        appena un avversario si avvicina abbastanza, il pet lo attacca e gli
+        fa perdere una vita."""
+        if not self.pets:
+            return
+        for pet in list(self.pets):
+            owner = self.players.get(pet["owner"])
+            if owner is None:
+                continue
+
+            # ---- inseguimento del proprietario ----
+            dist_owner = abs(owner.x - pet["x"]) + abs(owner.y - pet["y"])
+            if not owner.alive:
+                # Nessuno da seguire in questo momento (il proprietario e'
+                # in attesa di respawn o eliminato): il pet resta fermo
+                # dov'e', pronto a difendersi, invece di vagare a vuoto.
+                pet["path"] = []
+            elif dist_owner > PET_STAY_RANGE:
+                pet["retarget_cd"] -= TICK_DT
+                if pet["retarget_cd"] <= 0 or not pet["path"]:
+                    pet["retarget_cd"] = PET_RETARGET_SECONDS
+                    path = bfs_path(
+                        self.maze, self.maze_w, self.maze_h,
+                        (pet["x"], pet["y"]), (owner.x, owner.y),
+                    )
+                    pet["path"] = path or []
+                speed = NORMAL_SPEED * PET_SPEED_MULT
+                pet["move_accum"] += speed * TICK_DT
+                while pet["move_accum"] >= 1.0 and pet["path"]:
+                    pet["move_accum"] -= 1.0
+                    nx, ny = pet["path"].pop(0)
+                    pet["x"], pet["y"] = nx, ny
+                    # Appena e' arrivato abbastanza vicino si ferma subito,
+                    # invece di continuare a scavalcare il proprietario ad
+                    # ogni tick: cosi' gli resta accanto in modo stabile.
+                    if abs(owner.x - pet["x"]) + abs(owner.y - pet["y"]) <= PET_STAY_RANGE:
+                        pet["path"] = []
+                        break
+            else:
+                pet["path"] = []
+                pet["move_accum"] = 0.0
+
+            # ---- attacco automatico ----
+            target = self.nearest_alive(pet["x"], pet["y"], {pet["owner"]})
+            in_range = (
+                target is not None
+                and abs(target.x - pet["x"]) + abs(target.y - pet["y"]) <= PET_RANGE_CELLS
+            )
+            pet["aim"] = [target.x, target.y] if in_range else None
+            pet["fire_cd"] -= TICK_DT
+            if pet["fire_cd"] > 0:
+                continue
+            if not in_range:
+                # Nessuno nel raggio: resta carico e spara ISTANTANEAMENTE
+                # appena qualcuno entra nelle PET_RANGE_CELLS caselle,
+                # invece di sprecare colpi a vuoto (stessa regola della
+                # torretta).
+                pet["fire_cd"] = 0.0
+                continue
+            pet["fire_cd"] = PET_FIRE_INTERVAL_SECONDS
+            ddx, ddy = target.x - pet["x"], target.y - pet["y"]
+            horiz = (1, 0) if ddx >= 0 else (-1, 0)
+            vert = (0, 1) if ddy >= 0 else (0, -1)
+            cand = [horiz, vert] if abs(ddx) >= abs(ddy) else [vert, horiz]
+            dx, dy = cand[0]
+            if is_wall(self.maze, self.maze_w, self.maze_h, pet["x"] + dx, pet["y"] + dy) \
+                    and not is_wall(self.maze, self.maze_w, self.maze_h,
+                                    pet["x"] + cand[1][0], pet["y"] + cand[1][1]):
+                dx, dy = cand[1]
+            dir_name = next((k for k, v in DIRECTIONS.items() if v == (dx, dy)), "right")
+            laser = {
+                "id": uuid.uuid4().hex[:8],
+                "owner": pet["owner"],
+                "x": pet["x"], "y": pet["y"],
+                "dx": dx, "dy": dy,
+                "move_accum": 0.0,
+                "bounce_left": None,
+            }
+            self.lasers.append(laser)
+            self.push_event({
+                "kind": "laser_fire", "id": laser["id"], "shooter": pet["owner"],
+                "x": pet["x"], "y": pet["y"], "dir": dir_name, "pet": True,
+            })
 
     def check_win(self):
         """Il round finisce quando resta UN SOLO giocatore vivo: quello e'
@@ -1394,6 +1575,11 @@ class Room:
                  "aim": t.get("aim")}
                 for t in self.turrets
             ],
+            "pets": [
+                {"id": pt["id"], "x": pt["x"], "y": pt["y"], "owner": pt["owner"],
+                 "aim": pt.get("aim")}
+                for pt in self.pets
+            ],
             "portal_on": self.portal_on,
             "portal_cycle_left": round(max(self.portal_cycle_left, 0), 1),
             "missiles": [
@@ -1422,6 +1608,7 @@ class Room:
         self.mines = []
         self.missiles = []
         self.turrets = []
+        self.pets = []
         for p in self.players.values():
             p.alive = True
             p.direction = None
@@ -1451,6 +1638,8 @@ class Room:
             p.armor_used = False
             p.has_lightning = False
             p.lightning_used = False
+            p.has_pet = False
+            p.pet_summoned = False
             p.kills = 0
 
     # ---------- main loop ----------
@@ -1488,10 +1677,11 @@ class Room:
                 self.timer_left -= TICK_DT
                 self.update_lasers()  # bonus 150 punti: un colpo al secondo, dura 60s
                 self.update_turrets() # bonus 600 punti: torretta automatica, stessa cadenza del laser
+                self.update_pets()    # bonus 900 punti: il pet insegue il proprietario e attacca chi si avvicina
                 self.move_lasers()    # avanza i proiettili laser in volo (con eventuale rimbalzo)
                 self.check_mines()    # bonus 200 punti: fa esplodere le mine calpestate
                 self.move_missiles()  # bonus 400 punti: avanza i missili guidati verso il bersaglio
-                self.check_armor_effects()  # bonus 700 punti: la corazza distrugge le torrette toccate
+                self.check_armor_effects()  # bonus 700 punti: la corazza distrugge le torrette/pet toccati
                 winners, reason = self.check_win()
                 if winners is None and self.timer_left <= 0:
                     alive = [p for p in self.players.values() if p.alive]
@@ -1667,10 +1857,6 @@ async def handle_client(ws):
                     # l'ultima ricevuta prima che ci sia spazio per
                     # svoltare (vedi update_movement).
                     player.next_direction = direction
-                    # Da questo istante la richiesta ha TURN_BUFFER_SECONDS
-                    # di tempo per diventare applicabile, altrimenti viene
-                    # scartata (vedi update_movement).
-                    player.next_direction_ttl = TURN_BUFFER_SECONDS
 
             elif mtype == "place_mine":
                 # Bonus 200 punti: pressione del tasto "1" lato client.
@@ -1719,6 +1905,14 @@ async def handle_client(ws):
                     continue
                 room.try_activate_lightning(player)
 
+            elif mtype == "activate_pet":
+                # Bonus 900 punti: pressione del tasto "8" lato client.
+                # Utilizzabile una sola volta per giocatore (vedi
+                # try_summon_pet): il server resta l'autorita'.
+                if not room or not player:
+                    continue
+                room.try_summon_pet(player)
+
             elif mtype == "stop":
                 # Il tasto/direzione e' stato rilasciato: il personaggio si
                 # ferma subito, non continua da solo nell'ultima direzione
@@ -1729,7 +1923,6 @@ async def handle_client(ws):
                     continue
                 player.direction = None
                 player.next_direction = None
-                player.next_direction_ttl = 0.0
                 player.move_accum = 0.0
 
             elif mtype == "ping":

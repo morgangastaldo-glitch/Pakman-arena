@@ -318,6 +318,26 @@
   .end-overlay .winners b{ color:var(--phosphor); }
   .end-overlay .note{ font-size:11px; color:var(--phosphor-dim); margin-top:6px; }
   .end-scores{ font-size:12px; color:var(--phosphor); margin-top:4px; line-height:1.6; }
+
+  /* Bonus 800 punti: flash a pieno schermo che simula il bagliore di un
+     fulmine appena caduto. Puramente decorativo (pointer-events:none),
+     sopra il canvas ma sotto gli overlay di fine round. */
+  .lightning-flash{
+    position:absolute; inset:0; z-index:8; pointer-events:none;
+    background:radial-gradient(circle at 50% 8%, rgba(255,246,190,0.95), rgba(255,225,77,0.35) 45%, rgba(255,225,77,0) 75%);
+    opacity:0;
+  }
+  .lightning-flash.flash{
+    animation: lightningFlashAnim 0.55s cubic-bezier(0.1,0.8,0.2,1);
+  }
+  @keyframes lightningFlashAnim{
+    0%   { opacity:0; }
+    6%   { opacity:1; }
+    14%  { opacity:0.12; }
+    22%  { opacity:0.85; }
+    32%  { opacity:0.05; }
+    100% { opacity:0; }
+  }
   .end-scores .me{ color:var(--marquee-yellow); font-weight:bold; }
   .end-scores .rank{ color:var(--phosphor-dim); }
 
@@ -458,6 +478,7 @@
         </div>
         <div class="bonus-banner" id="bonusBanner"></div>
         <div class="toast" id="toast"></div>
+        <div class="lightning-flash" id="lightningFlash"></div>
 
         <div class="end-overlay hidden" id="endOverlay">
           <h2 id="endTitle">FINE ROUND</h2>
@@ -494,12 +515,6 @@ const BASE_CELL = 24; // risoluzione interna del canvas, in px per cella
 // aggiornamenti di rete dal server.
 const NORMAL_SPEED = 4.5;
 const ASSASSIN_SPEED_MULT = 1.1;  // il super assassino e' 1.1x rispetto a 1.0 dei giocatori normali
-// Stessa costante di TURN_BUFFER_SECONDS in common.py: una svolta richiesta
-// (nextDir) che non riesce a scattare entro questo tempo viene dimenticata
-// invece di restare in coda all'infinito (vedi stepSim). Deve combaciare
-// col server, altrimenti la previsione locale diverge dalle correzioni che
-// arrivano dal server.
-const TURN_BUFFER_SECONDS = 0.15;
 const SUPER_ASSASSIN_THRESHOLD = 300; // deve restare identica a SUPER_ASSASSIN_THRESHOLD in common.py
 // Soglie dei bonus, per l'indicazione "prossimo bonus" nell'HUD: devono
 // restare identiche a BONUS_THRESHOLDS in common.py.
@@ -514,6 +529,7 @@ const BONUS_STEPS = [
   { at: 600, label: "TORRETTA AUTOMATICA (tasto 5)" },
   { at: 700, label: "CORAZZA LASER (tasto 6)" },
   { at: 800, label: "FULMINE (tasto 7)" },
+  { at: 900, label: "PET FEDELE (tasto 8)" },
 ];
 const MISSILE_SPEED_MULT = 1.1; // deve restare identica a MISSILE_SPEED_MULT in common.py
 const TRAP_DURATION_SECONDS = 3; // deve restare identica a TRAP_DURATION_SECONDS in common.py
@@ -667,7 +683,6 @@ let lastServerPos = {};
 // direttamente sulla posizione del server se lo scarto e' grande (es. dopo
 // uno spawn, o dopo essere stati bloccati da un muro in modo imprevisto).
 let predGridX = 0, predGridY = 0, predAccum = 0, predDir = null, predNextDir = null;
-let predNextDirTtl = 0;  // scadenza di predNextDir (vedi TURN_BUFFER_SECONDS)
 let predInited = false;
 
 // Simulazione locale anche per TUTTI GLI ALTRI giocatori (non solo il
@@ -690,6 +705,11 @@ let lastCountdownSecond = null;  // ultimo secondo intero del countdown gia' "ti
 let eatenPellets = new Set();
 let powerPellets = new Set(); // celle "x,y" dei pallini grossi/arancioni (10 punti) di questa mappa
 let explosions = []; // {x,y,color,start}
+// Bonus 800 punti: fulmini che "cadono dal cielo" verso ciascun bersaglio
+// colpito. {x,y,start,segs}: x/y in celle (colonna del bersaglio, la
+// discesa e' verticale come un vero fulmine), segs = percorso a zig-zag
+// precalcolato per non far "tremare" la geometria ad ogni frame.
+let skyBolts = [];
 let myColors = []; // fino a 2: [0]=primario (corpo), [1]=dettaglio (contorno/denti/occhio)
 let myCharacter = "classic";
 let lobbyPlayersCache = [];
@@ -1648,24 +1668,6 @@ function stepSim(state, dt, speed, hasNextDirQueue){
   // per evitare che il personaggio "teletrasporti" attraverso i muri.
   if (remaining > 0.25) remaining = 0.25;
 
-  // La svolta in coda "scade" se non diventa applicabile entro
-  // TURN_BUFFER_SECONDS da quando e' stata richiesta (stessa costante e
-  // stessa regola del server, vedi update_movement in main.py): un input
-  // dato troppo presto rispetto alla svolta reale scade prima di potersi
-  // applicare (va quindi dato un po' piu' vicino all'incrocio), e un
-  // input dato troppo tardi (svolta gia' passata) viene semplicemente
-  // dimenticato, invece di restare in coda all'infinito in attesa del
-  // primo incrocio "utile" - che poteva capitare molte celle piu' avanti
-  // (svolta inaspettata) o essere a sua volta bloccato da un muro, nel
-  // qual caso veniva ritentato identico ad ogni frame senza mai riuscire
-  // (il personaggio "incastrato" a girare verso il muro).
-  if (hasNextDirQueue && state.nextDir){
-    state.nextDirTtl = (state.nextDirTtl || 0) - remaining;
-    if (state.nextDirTtl <= 0){
-      state.nextDir = null;
-    }
-  }
-
   while (remaining > 0){
     // Stessa regola del server (vedi update_movement in main.py): la
     // svolta in coda si applica SUBITO, non solo su un incrocio.
@@ -1734,10 +1736,10 @@ function stepSim(state, dt, speed, hasNextDirQueue){
 function stepLocalPrediction(dt, isAssassin){
   if (!predInited) return;
   let speed = NORMAL_SPEED * (isAssassin ? ASSASSIN_SPEED_MULT : 1);
-  const state = { gridX: predGridX, gridY: predGridY, accum: predAccum, dir: predDir, nextDir: predNextDir, nextDirTtl: predNextDirTtl };
+  const state = { gridX: predGridX, gridY: predGridY, accum: predAccum, dir: predDir, nextDir: predNextDir };
   stepSim(state, dt, speed, true);
   predGridX = state.gridX; predGridY = state.gridY; predAccum = state.accum;
-  predDir = state.dir; predNextDir = state.nextDir; predNextDirTtl = state.nextDirTtl;
+  predDir = state.dir; predNextDir = state.nextDir;
 }
 
 // Avanza la simulazione "dead reckoning" di un giocatore remoto: continua
@@ -2149,6 +2151,55 @@ function drawMissiles(now){
   ctx.restore();
 }
 
+// Pet fedele (bonus 900 punti): un mini Pac-Man dello stesso colore del
+// proprietario (grande la meta'), che lo segue per tutto il round. Riusa
+// esattamente la forma "classic" gia' disegnata per i giocatori
+// (drawPacmanVariant), con la bocca che "mastica" allo stesso ritmo e un
+// piccolo alone nel colore del proprietario per distinguerlo a colpo
+// d'occhio da un giocatore vero. Se sta puntando un bersaglio (t.aim, stessa
+// meccanica della torretta) un puntino rosso indica la direzione di mira.
+function drawPets(now){
+  const list = (currSnapshot && currSnapshot.pets) || [];
+  if (!list.length) return;
+  ctx.save();
+  list.forEach(function(pet){
+    const cx = pet.x * BASE_CELL + BASE_CELL / 2;
+    const cy = pet.y * BASE_CELL + BASE_CELL / 2;
+    const owner = findPlayer(currSnapshot, pet.owner);
+    const colors = (owner && owner.colors) || [];
+    const baseColor = COLOR_HEX[colors[0]] || "#ffd400";
+    const detailColor = colors[1] ? COLOR_HEX[colors[1]] : null;
+    const radius = BASE_CELL * 0.42 * 0.5;   // meta' della dimensione di un giocatore normale
+
+    // Alone morbido nel colore del proprietario, cosi' si riconosce subito
+    // di chi e' il pet anche a distanza.
+    ctx.globalAlpha = 0.22;
+    ctx.fillStyle = baseColor;
+    ctx.beginPath(); ctx.arc(cx, cy, radius + 3, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+
+    const chompSpeed = 8;
+    const mouthDeg = 8 + 24 * Math.abs(Math.sin(now / 1000 * chompSpeed));
+    const facing = pet.aim
+      ? Math.atan2(pet.aim[1] - pet.y, pet.aim[0] - pet.x) * 180 / Math.PI
+      : (lastFacingMap[pet.owner] || 0);
+    drawPacmanVariant(cx, cy, radius, mouthDeg, facing, baseColor, detailColor, "classic", 0);
+
+    // Bersaglio agganciato entro le 6 caselle: puntino rosso davanti alla bocca.
+    if (pet.aim){
+      const rad = facing * Math.PI / 180;
+      ctx.save();
+      ctx.globalAlpha = 0.85;
+      ctx.fillStyle = "#ff3b5c";
+      ctx.beginPath();
+      ctx.arc(cx + Math.cos(rad) * (radius + 3), cy + Math.sin(rad) * (radius + 3), 1.8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+  });
+  ctx.restore();
+}
+
 // Effetto di teletrasporto (punto 4): anelli che si espandono dai due portali.
 function drawSwirls(now){
   swirls = swirls.filter(function(s){ return now - s.start < 420; });
@@ -2233,6 +2284,131 @@ function drawExplosions(now){
   });
 }
 
+// Bonus 800 punti: tempi (ms) dell'animazione di un singolo fulmine.
+// Fase 1 (BOLT_GROW_MS): il fulmine "cade", il tracciato si disegna dal
+// cielo verso il bersaglio in modo progressivo. Fase 2 (BOLT_FLASH_MS):
+// resta a piena luminosita', l'impatto. Fase 3 (BOLT_FADE_MS): si spegne.
+const BOLT_GROW_MS = 130;
+const BOLT_FLASH_MS = 90;
+const BOLT_FADE_MS = 260;
+const BOLT_TOTAL_MS = BOLT_GROW_MS + BOLT_FLASH_MS + BOLT_FADE_MS;
+
+// Genera il tracciato a zig-zag di un fulmine che cade in verticale sulla
+// colonna gx, fino alla riga gy: un percorso "principale" con qualche
+// piccola diramazione laterale (rami secondari), per un aspetto piu'
+// naturale di una semplice linea retta. Precalcolato una sola volta alla
+// creazione del fulmine, cosi' la forma resta stabile per tutta la durata
+// dell'effetto invece di "tremare" ricalcolandosi ogni frame.
+function makeBoltPath(gx, gy){
+  const topY = -2.2; // parte da fuori mappa, in alto, per dare l'idea del "cielo"
+  const n = 8;
+  const pts = [];
+  for (let i = 0; i <= n; i++){
+    const t = i / n;
+    const jitter = (i === 0 || i === n) ? 0 : (Math.random() - 0.5) * 0.7;
+    pts.push({ t: t, x: gx + jitter, y: topY + (gy - topY) * t });
+  }
+  // 1-2 piccoli rami secondari che si staccano dal tracciato principale,
+  // puramente decorativi (non vengono animati in crescita separatamente,
+  // compaiono insieme al segmento da cui partono).
+  const branches = [];
+  const branchCount = 1 + Math.floor(Math.random() * 2);
+  for (let b = 0; b < branchCount; b++){
+    const fromIdx = 2 + Math.floor(Math.random() * (n - 4));
+    const base = pts[fromIdx];
+    const len = 1 + Math.random() * 1.4;
+    const dir = Math.random() < 0.5 ? -1 : 1;
+    branches.push({
+      t: base.t,
+      from: { x: base.x, y: base.y },
+      to: { x: base.x + dir * len * 0.6, y: base.y + len },
+    });
+  }
+  return { topY: topY, pts: pts, branches: branches };
+}
+
+function spawnLightningBolt(gx, gy){
+  skyBolts.push({ x: gx, y: gy, start: performance.now(), path: makeBoltPath(gx, gy) });
+}
+
+function drawSkyBolts(now){
+  skyBolts = skyBolts.filter(function(b){ return now - b.start < BOLT_TOTAL_MS; });
+  skyBolts.forEach(function(b){
+    const age = now - b.start;
+    const growFrac = Math.max(0, Math.min(1, age / BOLT_GROW_MS));
+    let alpha = 1;
+    if (age > BOLT_GROW_MS + BOLT_FLASH_MS){
+      alpha = Math.max(0, 1 - (age - BOLT_GROW_MS - BOLT_FLASH_MS) / BOLT_FADE_MS);
+    }
+    const path = b.path;
+    const toPx = function(gx, gy){ return { x: gx * BASE_CELL + BASE_CELL / 2, y: gy * BASE_CELL + BASE_CELL / 2 }; };
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = LIGHTNING_COLOR;
+    ctx.shadowColor = LIGHTNING_COLOR;
+
+    // Tracciato principale: si "rivela" progressivamente durante la fase
+    // di caduta (growFrac), poi resta intero per il resto dell'effetto.
+    ctx.shadowBlur = 18;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    let drawn = 0;
+    path.pts.forEach(function(p, i){
+      if (p.t > growFrac + 1e-6) return;
+      const c = toPx(p.x, p.y);
+      if (drawn === 0) ctx.moveTo(c.x, c.y); else ctx.lineTo(c.x, c.y);
+      drawn++;
+    });
+    ctx.stroke();
+    // Nucleo bianco piu' sottile sopra, per il classico effetto "cuore
+    // luminoso" del fulmine.
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 1.2;
+    ctx.shadowBlur = 6;
+    ctx.stroke();
+
+    // Rami secondari: appaiono solo dopo che il tracciato principale li ha
+    // "superati" durante la discesa.
+    path.branches.forEach(function(br){
+      if (br.t > growFrac + 1e-6) return;
+      const c0 = toPx(br.from.x, br.from.y);
+      const c1 = toPx(br.to.x, br.to.y);
+      ctx.save();
+      ctx.globalAlpha = alpha * 0.7;
+      ctx.strokeStyle = LIGHTNING_COLOR;
+      ctx.shadowBlur = 10;
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.moveTo(c0.x, c0.y);
+      ctx.lineTo(c1.x, c1.y);
+      ctx.stroke();
+      ctx.restore();
+    });
+    ctx.restore();
+
+    // Bagliore d'impatto sul bersaglio, una volta che il fulmine e' arrivato.
+    if (growFrac >= 1){
+      const impact = toPx(b.x, b.y);
+      const impactAlpha = alpha * (age < BOLT_GROW_MS + BOLT_FLASH_MS ? 1 : alpha);
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, impactAlpha);
+      const r = 20;
+      const grad = ctx.createRadialGradient(impact.x, impact.y, 0, impact.x, impact.y, r);
+      grad.addColorStop(0, "#ffffff");
+      grad.addColorStop(0.35, LIGHTNING_COLOR);
+      grad.addColorStop(1, "rgba(255,225,77,0)");
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(impact.x, impact.y, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+  });
+}
+
 function renderLoop(now){
   requestAnimationFrame(renderLoop);
   if (currentScreen !== "game" || !ctx || !currSnapshot) return;
@@ -2258,10 +2434,12 @@ function renderLoop(now){
   drawPlayers(currSnapshot.players, now);
   drawMines(now);
   drawTurrets(now);
+  drawPets(now);
   drawMissiles(now);
   drawLaserProjectiles(now);
   drawSparks(now);
   drawExplosions(now);
+  drawSkyBolts(now);
   drawSwirls(now);
 }
 requestAnimationFrame(renderLoop);
@@ -2325,6 +2503,7 @@ function onState(msg){
     eatenPellets.clear();
     pelletsLayerDirty = true;
     explosions = [];
+    skyBolts = [];
     beams = [];
     sparks = [];
     swirls = [];
@@ -2335,7 +2514,6 @@ function onState(msg){
     predInited = false;
     predDir = null;
     predNextDir = null;
-    predNextDirTtl = 0;
     predAccum = 0;
     roundActive = true;
     lastCountdownSecond = null;
@@ -2547,6 +2725,7 @@ function onGameEvent(msg){
         turret:       ["TORRETTA SBLOCCATA!", "raggio 10 caselle \u00b7 premi 5 per piazzarla"],
         armor:        ["CORAZZA LASER SBLOCCATA!", "20 secondi \u00b7 premi 6 per attivarla"],
         lightning:    ["FULMINE SBLOCCATO!", "colpisce tutti \u00b7 premi 7 per scatenarlo"],
+        pet:          ["PET FEDELE SBLOCCATO!", "premi 8 per evocarlo \u00b7 attacca chi si avvicina"],
       };
       const lb = labels[msg.bonus] || ["BONUS!", ""];
       const txt = lb[0] + (lb[1] ? " \u00b7 " + lb[1] : "");
@@ -2615,6 +2794,22 @@ function onGameEvent(msg){
       tone(160, 0.14, "square", 0.12);
       break;
     }
+    case "pet_summon": {
+      if (msg.player === myId) showToast("Pet evocato! Ti seguira' finche' non viene distrutto.");
+      tone(340, 0.1, "sine", 0.12);
+      tone(520, 0.09, "sine", 0.1, 0.06);
+      break;
+    }
+    case "pet_destroyed": {
+      const causeTxt = { mine: "una mina", missile: "un missile guidato", laser: "un colpo laser",
+                          armor: "la corazza laser", lightning: "un fulmine" }[msg.cause] || "un nemico";
+      explosions.push({ x: msg.x, y: msg.y, color: (findPlayer(currSnapshot, msg.owner) &&
+        COLOR_HEX[(findPlayer(currSnapshot, msg.owner).colors || [])[0]]) || "#fff", start: now });
+      noiseBurst(0.18, 0.15);
+      tone(150, 0.16, "sawtooth", 0.12, 0.02);
+      if (msg.owner === myId) showToast("Il tuo pet e' stato distrutto da " + causeTxt + "!");
+      break;
+    }
     case "portal_toggle": {
       // I portali si sono accesi/spenti (ciclo 30s on / 30s off): niente
       // banner invasivo, solo un tono discreto piu' il rendering
@@ -2660,17 +2855,19 @@ function onGameEvent(msg){
       break;
     }
     case "lightning_on": {
-      // Bonus 800 punti: colpisce all'istante tutti gli avversari vivi.
-      // Un fulmine (effetto "esplosione" ricolorato) su ciascun bersaglio,
-      // preso dalla posizione nota nello snapshot corrente: le eliminazioni
-      // vere e proprie arrivano comunque una per una come eventi "kill"
-      // separati (stesso testo/suono di laser, mine, ecc.).
+      // Bonus 800 punti: fulmine caduto dal cielo su tutti gli avversari
+      // vivi. Un fulmine per bersaglio (posizione presa dallo snapshot
+      // corrente), piu' un flash a schermo intero per la drammaticita'
+      // dell'impatto. Le eliminazioni vere e proprie arrivano comunque
+      // come eventi "kill" separati (stesso testo/suono di laser, mine...).
       (msg.targets || []).forEach(function(tid){
         const t = findPlayer(currSnapshot, tid);
-        if (t) explosions.push({ x: t.x, y: t.y, color: LIGHTNING_COLOR, start: now });
+        if (t) spawnLightningBolt(t.x, t.y);
       });
-      noiseBurst(0.25, 0.2);
-      tone(1200, 0.08, "square", 0.14);
+      triggerLightningFlash();
+      noiseBurst(0.28, 0.22);
+      tone(180, 0.22, "sawtooth", 0.16);
+      tone(1400, 0.05, "square", 0.12, 0.03);
       if (msg.player === myId){
         showBonusBanner("FULMINE SCATENATO!", "tutti gli avversari colpiti");
         playBonus();
@@ -2780,6 +2977,20 @@ function showBonusBanner(text, subtitle){
   clearTimeout(showBonusBanner._t);
   showBonusBanner._t = setTimeout(function(){ el.classList.remove("show"); }, 1000);
 }
+
+// Bonus 800 punti: riavvia il flash CSS a schermo intero che simula il
+// bagliore del fulmine (vedi .lightning-flash / @keyframes lightningFlashAnim).
+// Si toglie e si rimette subito la classe forzando un reflow, cosi' se il
+// flash venisse innescato due volte a distanza ravvicinata l'animazione
+// riparte sempre da capo invece di restare "congelata" a meta'.
+function triggerLightningFlash(){
+  const el = document.getElementById("lightningFlash");
+  if (!el) return;
+  el.classList.remove("flash");
+  void el.offsetWidth;
+  el.classList.add("flash");
+}
+
 
 function updateHud(msg){
   const timerEl = document.getElementById("hudTimer");
@@ -2899,7 +3110,8 @@ function updateGameSidebar(msg){
            ((p.assassin && p.id === myId) ? "A" : "") +
            (p.armor && p.id === myId ? ("C" + (p.armor_used ? "1" : "0")) : "") +
            (p.armor_on ? "O" : "") +
-           (p.lightning && p.id === myId ? ("F" + (p.lightning_used ? "1" : "0")) : "");
+           (p.lightning && p.id === myId ? ("F" + (p.lightning_used ? "1" : "0")) : "") +
+           (p.pet && p.id === myId ? ("P" + (p.pet_summoned ? "1" : "0")) : "");
   }).join("|");
 
   if (sig !== lastSidebarSig){
@@ -2950,6 +3162,11 @@ function updateGameSidebar(msg){
       if (p.lightning && p.id === myId){
         const t = document.createElement("span"); t.className="tag alert";
         t.textContent = p.lightning_used ? "FULMINE USATO" : "FULMINE (7)";
+        li.appendChild(t);
+      }
+      if (p.pet && p.id === myId){
+        const t = document.createElement("span"); t.className="tag alert";
+        t.textContent = p.pet_summoned ? "PET ATTIVO" : "PET (tasto 8)";
         li.appendChild(t);
       }
       const spacer = document.createElement("span"); spacer.className = "spacer"; li.appendChild(spacer);
@@ -3030,15 +3247,13 @@ const KEY_TO_DIR = {
 let lastRequestedDir = null;
 
 function requestDir(dir){
-  // Ogni pressione viene accettata e messa in coda (next_direction), ma
-  // solo per TURN_BUFFER_SECONDS: le inversioni di marcia scattano subito,
-  // le svolte perpendicolari scattano da sole al primo centro-cella/
-  // incrocio utile ENTRO quella finestra (vedi stepSim qui e
-  // update_movement sul server), altrimenti la richiesta scade e viene
-  // dimenticata, invece di restare in coda all'infinito.
+  // NIENTE piu' finestra di tempismo (TURN_WINDOW): come nel Pac-Man
+  // originale OGNI pressione viene accettata e messa in coda. Le
+  // inversioni di marcia scattano subito, le svolte perpendicolari
+  // scattano da sole al primo centro-cella/incrocio utile (vedi stepSim
+  // qui e update_movement sul server): i comandi non si "perdono" mai.
   if (dir !== lastRequestedDir){ playTurn(); lastRequestedDir = dir; }
   predNextDir = dir;
-  predNextDirTtl = TURN_BUFFER_SECONDS;
   sendMsg({ type: "move", direction: dir });
 }
 
@@ -3099,6 +3314,15 @@ document.addEventListener("keydown", function(ev){
   // try_activate_lightning).
   if (ev.key === "7" && !ev.repeat){
     sendMsg({ type: "activate_lightning" });
+    ev.preventDefault();
+  }
+  // Bonus 900 punti: il tasto "8" evoca il pet fedele (mini Pac-Man dello
+  // stesso colore) nella cella corrente. Segue il giocatore per tutto il
+  // resto del round e attacca da solo chi si avvicina entro 6 caselle.
+  // Utilizzabile una sola volta per round: il server ignora richieste
+  // successive (vedi try_summon_pet).
+  if (ev.key === "8" && !ev.repeat){
+    sendMsg({ type: "activate_pet" });
     ev.preventDefault();
   }
 });
