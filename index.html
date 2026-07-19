@@ -2018,11 +2018,11 @@ function drawSparks(now){
   });
 }
 
-// Mine posate sulla mappa (bonus 200 punti): un piccolo disco lampeggiante.
-// Sempre visibili a chi le ha posate. Le mine ALTRUI restano nascoste
-// finche' non ci si avvicina entro MINE_VISIBILITY_RANGE caselle (distanza
-// a scacchi/Chebyshev) dal proprio personaggio, poi diventano visibili
-// anche loro (si nascondono di nuovo se ci si allontana).
+// Mine posate sulla mappa (bonus 200 punti): un rettangolo rosso pulsante,
+// ben visibile. Sempre visibili a chi le ha posate. Le mine ALTRUI restano
+// nascoste finche' non ci si avvicina entro MINE_VISIBILITY_RANGE caselle
+// (distanza a scacchi/Chebyshev) dal proprio personaggio, poi diventano
+// visibili anche loro (si nascondono di nuovo se ci si allontana).
 function drawMines(now){
   const all = (currSnapshot && currSnapshot.mines) || [];
   const me = findPlayer(currSnapshot, myId);
@@ -2038,12 +2038,25 @@ function drawMines(now){
     const cx = m.x * BASE_CELL + BASE_CELL / 2;
     const cy = m.y * BASE_CELL + BASE_CELL / 2;
     const pulse = 0.6 + 0.4 * Math.abs(Math.sin(now / 200));
-    ctx.globalAlpha = 0.9;
-    ctx.fillStyle = "#ff9d1f";
-    ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI * 2); ctx.fill();
+    const size = 10;   // lato del rettangolo esterno (ingrandito rispetto al vecchio disco da 4px di raggio)
+    // Alone morbido attorno al rettangolo, pulsa insieme al resto.
+    ctx.globalAlpha = 0.25 * pulse;
+    ctx.fillStyle = "#ff2b2b";
+    ctx.fillRect(cx - size / 2 - 3, cy - size / 2 - 3, size + 6, size + 6);
+    // Corpo rosso pulsante della mina.
+    ctx.globalAlpha = 0.95;
+    ctx.fillStyle = "#ff2b2b";
+    ctx.fillRect(cx - size / 2, cy - size / 2, size, size);
+    // Bordo scuro per contrasto contro sfondo/pallini.
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = "#5c0000";
+    ctx.lineWidth = 1.4;
+    ctx.strokeRect(cx - size / 2, cy - size / 2, size, size);
+    // Nucleo bianco pulsante al centro.
     ctx.globalAlpha = pulse;
     ctx.fillStyle = "#fff";
-    ctx.beginPath(); ctx.arc(cx, cy, 1.6, 0, Math.PI * 2); ctx.fill();
+    const coreSize = 3.2;
+    ctx.fillRect(cx - coreSize / 2, cy - coreSize / 2, coreSize, coreSize);
   });
   ctx.restore();
 }
