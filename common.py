@@ -239,6 +239,24 @@ BALLOON_BOMB_INTERVAL_SECONDS = 3.0       # cadenza di sgancio bombe
 BALLOON_BOMB_RADIUS_CELLS = 4             # raggio dell'esplosione istantanea (caselle, distanza Manhattan)
 BALLOON_RETARGET_EPSILON = 0.15           # sotto questa distanza dalla meta' ne sceglie subito una nuova a caso
 
+# ---- bonus 1800 punti: blob gelatinoso (tasto "1", DOPO la mongolfiera) ----
+# Il tasto "1" e' lo STESSO usato per mortaio (1200), bombolone (1400) e
+# mongolfiera (1600): una volta che TUTTI E TRE sono gia' stati piazzati, la
+# pressione SUCCESSIVA del tasto "1" piazza, UNA SOLA VOLTA per round,
+# questo blob (vedi try_place_blob in main.py). Viene piazzato nella cella
+# corrente del giocatore, in mezzo a una strada: un omino di gelatina
+# colante, immobile, che blocca fisicamente il passaggio e "mangia" (fa
+# perdere una vita, ignorando le protezioni, come una mina) chiunque non
+# sia il proprietario ci finisca sopra - senza pero' consumarsi come una
+# mina: resta li' pronto a mangiare anche il prossimo che ci passa sopra.
+# E' permanente: resta sulla mappa per tutto il resto del round, anche se il
+# proprietario muore o si disconnette (come mortaio/torretta/mongolfiera).
+# L'UNICO modo per rimuoverlo dalla strada e' sparargli: un colpo laser o un
+# missile guidato che lo colpiscono lo distruggono all'istante (vedi
+# move_lasers/move_missiles in main.py); niente altro lo scalfisce (non le
+# esplosioni di bombolone/mongolfiera, non la corazza laser).
+BLOB_THRESHOLD = 1800
+
 # All'impatto, oltre al colpo diretto, la bomba lascia a terra una nuvola di
 # gas velenoso (stile "pozione veleno" di Clash Royale) che resta attiva per
 # POISON_DURATION_SECONDS: chiunque (avversario) si trovi entro

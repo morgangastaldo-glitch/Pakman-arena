@@ -68,6 +68,7 @@ from common import (
     SUPERBOMB_THRESHOLD, SUPERBOMB_FUSE_SECONDS, SUPERBOMB_RADIUS_CELLS,
     BALLOON_THRESHOLD, BALLOON_SPEED, BALLOON_BOMB_INTERVAL_SECONDS,
     BALLOON_BOMB_RADIUS_CELLS, BALLOON_RETARGET_EPSILON,
+    BLOB_THRESHOLD,
     RTT_PING_INTERVAL_SECONDS, RTT_DEFAULT_SECONDS,
     REWIND_MAX_SECONDS, REWIND_HISTORY_SECONDS,
 )
@@ -212,27 +213,31 @@ class Player:
         # sblocco/utilizzo, come per gli altri bonus a comando.
         self.has_robot = False         # bonus sbloccato (una volta per round)
         self.robot_used = False        # True dopo l'evoluzione: il tasto "9" e' utilizzabile una sola volta
-        # ---- bonus 1200 punti: mortaio (tasto "0") ----
+        # ---- bonus 1200 punti: mortaio (tasto "1") ----
         # Allo sblocco NON scatta nulla in automatico: si schiera a comando
-        # col tasto "0" (vedi try_place_mortar), UNA SOLA VOLTA per round,
+        # col tasto "1" (vedi try_place_mortar), UNA SOLA VOLTA per round,
         # come la torretta. Il mortaio vero e proprio vive in self.mortars
         # (lista della Room), non qui: qui si tiene solo lo stato dello
         # sblocco/utilizzo, come per gli altri bonus a comando.
         self.has_mortar = False        # bonus sbloccato (una volta per round)
-        self.mortar_placed = False     # True dopo lo schieramento: il tasto "0" e' utilizzabile una sola volta
-        # ---- bonus 1400 punti: bombolone ad area (tasto "0", DOPO il mortaio) ----
+        self.mortar_placed = False     # True dopo lo schieramento: il tasto "1" e' utilizzabile una sola volta
+        # ---- bonus 1400 punti: bombolone ad area (tasto "1", DOPO il mortaio) ----
         # Allo sblocco NON scatta nulla in automatico: si piazza a comando
-        # riusando il tasto "0" (vedi try_place_superbomb), UNA SOLA VOLTA
+        # riusando il tasto "1" (vedi try_place_superbomb), UNA SOLA VOLTA
         # per round, ma solo DOPO che il mortaio (bonus 1200 punti) e' gia'
         # stato schierato. Il bombolone vero e proprio vive in
         # self.superbombs (lista della Room), non qui: qui si tiene solo lo
         # stato dello sblocco/utilizzo, come per gli altri bonus a comando.
         self.has_superbomb = False     # bonus sbloccato (una volta per round)
-        self.superbomb_placed = False  # True dopo il piazzamento: il tasto "0" (dopo il mortaio) e' utilizzabile una sola volta
+        self.superbomb_placed = False  # True dopo il piazzamento: il tasto "1" (dopo il mortaio) e' utilizzabile una sola volta
 
-        # ---- bonus 1600 punti: mongolfiera vagante (tasto "0", DOPO il bombolone) ----
+        # ---- bonus 1600 punti: mongolfiera vagante (tasto "1", DOPO il bombolone) ----
         self.has_balloon = False       # bonus sbloccato (una volta per round)
-        self.balloon_launched = False  # True dopo il lancio: il tasto "0" (dopo mortaio+bombolone) e' utilizzabile una sola volta
+        self.balloon_launched = False  # True dopo il lancio: il tasto "1" (dopo mortaio+bombolone) e' utilizzabile una sola volta
+
+        # ---- bonus 1800 punti: blob gelatinoso (tasto "1", DOPO la mongolfiera) ----
+        self.has_blob = False          # bonus sbloccato (una volta per round)
+        self.blob_placed = False       # True dopo il piazzamento: il tasto "1" (dopo mortaio+bombolone+mongolfiera) e' utilizzabile una sola volta
         # Uccisioni fatte in questo round: ogni 2 kill si guadagna una vita extra.
         self.kills = 0
 
@@ -289,6 +294,8 @@ class Player:
             "superbomb_placed": self.superbomb_placed,
             "balloon": self.has_balloon,
             "balloon_launched": self.balloon_launched,
+            "blob": self.has_blob,
+            "blob_placed": self.blob_placed,
         }
 
 
@@ -336,6 +343,13 @@ class Room:
         # torrette, vagano a caso su tutta la mappa sganciando bombe a
         # intervalli regolari, azzerate ad ogni nuovo round.
         self.balloons = []
+        # Blob gelatinosi piazzati (bonus 1800 punti): permanenti come
+        # mortai e torrette, immobili, bloccano la cella in cui sono
+        # piazzati e mangiano chiunque ci passi sopra. Non si consumano
+        # mangiando (a differenza delle mine): l'unico modo per rimuoverli
+        # e' colpirli con un laser o un missile guidato (vedi move_lasers/
+        # move_missiles). Azzerati ad ogni nuovo round.
+        self.blobs = []
         # Mappa corrente della stanza: viene ripescata a caso tra le 10
         # disponibili a OGNI inizio round (vedi run_round), cosi' ogni
         # partita puo' capitare su una mappa diversa per forma/colore/misura.
@@ -527,6 +541,8 @@ class Room:
             p.superbomb_placed = False
             p.has_balloon = False
             p.balloon_launched = False
+            p.has_blob = False
+            p.blob_placed = False
             p.kills = 0
         self.lasers = []
         self.mines = []
@@ -536,6 +552,7 @@ class Room:
         self.mortars = []
         self.superbombs = []
         self.balloons = []
+        self.blobs = []
         self.bombs = []
         self.poison_zones = []  # nuvole velenose lasciate a terra dagli impatti del mortaio
 
@@ -994,7 +1011,7 @@ class Room:
                 "bonus": "robot", "points": ROBOT_THRESHOLD,
             })
         # Bonus 1200 punti: sblocca il mortaio, ma NON lo schiera subito. Si
-        # schiera a comando col tasto "0" (vedi try_place_mortar), UNA SOLA
+        # schiera a comando col tasto "1" (vedi try_place_mortar), UNA SOLA
         # VOLTA per giocatore, per round.
         if (
             p.alive
@@ -1008,10 +1025,10 @@ class Room:
                 "bonus": "mortar", "points": MORTAR_THRESHOLD,
             })
         # Bonus 1400 punti: sblocca il bombolone ad area, ma NON lo piazza
-        # subito. Si piazza a comando RIUSANDO il tasto "0" (vedi
+        # subito. Si piazza a comando RIUSANDO il tasto "1" (vedi
         # try_place_superbomb), UNA SOLA VOLTA per giocatore per round, ma
         # solo DOPO aver gia' schierato il mortaio (bonus 1200 punti): finche'
-        # il mortaio non e' stato piazzato, il tasto "0" resta dedicato a
+        # il mortaio non e' stato piazzato, il tasto "1" resta dedicato a
         # quello (vedi il dispatch del messaggio "place_mortar").
         if (
             p.alive
@@ -1025,11 +1042,11 @@ class Room:
                 "bonus": "superbomb", "points": SUPERBOMB_THRESHOLD,
             })
         # Bonus 1600 punti: sblocca la mongolfiera vagante, ma NON la fa
-        # librare subito. Si libra a comando RIUSANDO ancora il tasto "0"
+        # librare subito. Si libra a comando RIUSANDO ancora il tasto "1"
         # (vedi try_launch_balloon), UNA SOLA VOLTA per giocatore per round,
         # ma solo DOPO aver gia' piazzato sia il mortaio (1200) sia il
         # bombolone (1400): finche' entrambi non sono stati piazzati, il
-        # tasto "0" resta dedicato a quelli (vedi il dispatch del messaggio
+        # tasto "1" resta dedicato a quelli (vedi il dispatch del messaggio
         # "place_mortar").
         if (
             p.alive
@@ -1041,6 +1058,24 @@ class Room:
             self.push_event({
                 "kind": "bonus", "player": p.id,
                 "bonus": "balloon", "points": BALLOON_THRESHOLD,
+            })
+        # Bonus 1800 punti: sblocca il blob gelatinoso, ma NON lo piazza
+        # subito. Si piazza a comando RIUSANDO ancora il tasto "1" (vedi
+        # try_place_blob), UNA SOLA VOLTA per giocatore per round, ma solo
+        # DOPO aver gia' piazzato mortaio (1200), bombolone (1400) e
+        # mongolfiera (1600): finche' non sono stati piazzati tutti e tre,
+        # il tasto "1" resta dedicato a quelli (vedi il dispatch del
+        # messaggio "place_mortar").
+        if (
+            p.alive
+            and p.points >= BLOB_THRESHOLD
+            and BLOB_THRESHOLD not in p.claimed
+        ):
+            p.claimed.add(BLOB_THRESHOLD)
+            p.has_blob = True
+            self.push_event({
+                "kind": "bonus", "player": p.id,
+                "bonus": "blob", "points": BLOB_THRESHOLD,
             })
 
     def try_portal(self, p):
@@ -1339,6 +1374,18 @@ class Room:
                 if pet_victims:
                     for pet in pet_victims:
                         self.destroy_pet(pet, "laser", lz["owner"])
+                    destroyed = True
+                    break
+                # Bonus 1800 punti: un colpo laser che colpisce un blob
+                # gelatinoso lo distrugge all'istante - l'UNICO modo (con il
+                # missile guidato) per rimuoverlo dalla strada.
+                blob_victims = [
+                    blob for blob in self.blobs
+                    if blob["x"] == nx and blob["y"] == ny
+                ]
+                if blob_victims:
+                    for blob in blob_victims:
+                        self.destroy_blob(blob, "laser", lz["owner"])
                     destroyed = True
                     break
                 if lz["bounce_left"] is not None and lz["bounce_left"] <= 0:
@@ -1680,6 +1727,17 @@ class Room:
                         for pet in pet_victims:
                             self.destroy_pet(pet, "missile", mz["owner"])
                         destroyed = True
+                    # Bonus 1800 punti: un missile guidato che colpisce un
+                    # blob gelatinoso lo distrugge all'istante - l'UNICO
+                    # modo (con il laser) per rimuoverlo dalla strada.
+                    blob_victims = [
+                        blob for blob in self.blobs
+                        if blob["x"] == nx and blob["y"] == ny
+                    ]
+                    if blob_victims:
+                        for blob in blob_victims:
+                            self.destroy_blob(blob, "missile", mz["owner"])
+                        destroyed = True
 
             if destroyed:
                 self.push_event({"kind": "missile_end", "id": mz["id"], "x": mz["x"], "y": mz["y"]})
@@ -1910,7 +1968,7 @@ class Room:
                 "x": t["x"], "y": t["y"], "dir": dir_name, "turret": True,
             })
 
-    # ---- bonus 1200 punti: mortaio (tasto "0") ----
+    # ---- bonus 1200 punti: mortaio (tasto "1") ----
 
     def try_place_mortar(self, player):
         """Tasto '0': schiera UNA SOLA VOLTA (per tutto il round) un
@@ -1937,7 +1995,7 @@ class Room:
             "x": player.x, "y": player.y,
         })
 
-    # ---- bonus 1400 punti: bombolone ad area (tasto "0", DOPO il mortaio) ----
+    # ---- bonus 1400 punti: bombolone ad area (tasto "1", DOPO il mortaio) ----
 
     def try_place_superbomb(self, player):
         """Tasto '0', RIUSATO: viene chiamato dal dispatch del messaggio
@@ -2058,7 +2116,7 @@ class Room:
             if pet["owner"] != owner and abs(pet["x"] - ox) + abs(pet["y"] - oy) <= SUPERBOMB_RADIUS_CELLS:
                 self.destroy_pet(pet, "superbomb", owner)
 
-    # ---- bonus 1600 punti: mongolfiera vagante (tasto "0", DOPO il bombolone) ----
+    # ---- bonus 1600 punti: mongolfiera vagante (tasto "1", DOPO il bombolone) ----
 
     def try_launch_balloon(self, player):
         """Tasto '0', RIUSATO una terza volta: viene chiamato dal dispatch
@@ -2204,6 +2262,92 @@ class Room:
         for pet in list(self.pets):
             if pet["owner"] != owner and abs(pet["x"] - ox) + abs(pet["y"] - oy) <= BALLOON_BOMB_RADIUS_CELLS:
                 self.destroy_pet(pet, "balloon", owner)
+
+    # ---- bonus 1800 punti: blob gelatinoso (tasto "1", DOPO la mongolfiera) ----
+
+    def try_place_blob(self, player):
+        """Tasto '1', RIUSATO una quarta volta: viene chiamato dal dispatch
+        del messaggio "place_mortar" solo quando player.mortar_placed,
+        player.superbomb_placed e player.balloon_launched sono gia' tutti e
+        tre True (finche' non lo sono tutti, quella stessa pressione
+        richiama invece try_place_mortar/try_place_superbomb/
+        try_launch_balloon). Piazza UNA SOLA VOLTA (per tutto il round) un
+        blob gelatinoso nella cella corrente del giocatore, in mezzo alla
+        strada: un omino di gelatina colante, immobile, dello stesso colore
+        del proprietario e visibile a TUTTI. Da quel momento blocca quella
+        cella e "mangia" (fa perdere una vita) chiunque non sia il
+        proprietario ci passi sopra (vedi check_blobs) - senza pero'
+        consumarsi: resta li' pronto a mangiare anche il prossimo che ci
+        passa, finche' qualcuno non gli spara (vedi move_lasers/
+        move_missiles).
+
+        Se il giocatore e' intrappolato dalla trappola di un avversario,
+        NON puo' usare alcun bonus finche' non torna libero di muoversi."""
+        if not player.alive or player.trapped_left > 0 or not player.has_blob or player.blob_placed:
+            return
+        player.blob_placed = True
+        blob = {
+            "id": uuid.uuid4().hex[:8],
+            "owner": player.id,
+            "x": player.x, "y": player.y,
+        }
+        self.blobs.append(blob)
+        self.push_event({
+            "kind": "blob_place", "id": blob["id"], "player": player.id,
+            "x": player.x, "y": player.y,
+        })
+
+    def blob_public(self, b):
+        return {
+            "id": b["id"], "x": b["x"], "y": b["y"],
+            "owner": b["owner"],
+        }
+
+    def check_blobs(self):
+        """Fa "mangiare" al blob chiunque si trovi sulla sua cella: elimina
+        chiunque la calpesti (proprietario escluso), ignorando protezioni,
+        come una mina. A differenza della mina pero' il blob NON si consuma
+        mangiando: resta sulla mappa a bloccare la strada per il prossimo
+        che ci passa. Se sulla stessa cella c'e' il pet (bonus 900 punti) di
+        un altro giocatore, il blob mangia anche lui (ma il pet, a
+        differenza del giocatore, sparisce per sempre).
+
+        Eccezione: la modalita' ninja (300 punti) rende immuni al blob,
+        esattamente come alle mine - camminarci sopra da ninja non attiva
+        nulla.
+
+        Eccezione 2: chi ha la corazza laser ATTIVA (bonus 700 punti) e'
+        immune al contatto con un blob AVVERSARIO, come con una mina: non
+        viene mangiato, ma (a differenza della mina) il contatto non
+        distrugge nemmeno il blob - l'unico modo per rimuoverlo resta
+        sparargli."""
+        if not self.blobs:
+            return
+        for b in self.blobs:
+            victims = [
+                q for q in self.players.values()
+                if q.alive and not q.is_assassin and not q.armor_active and q.id != b["owner"]
+                and q.x == b["x"] and q.y == b["y"]
+            ]
+            pet_victims = [
+                pet for pet in self.pets
+                if pet["owner"] != b["owner"] and pet["x"] == b["x"] and pet["y"] == b["y"]
+            ]
+            for v in victims:
+                self.kill_player(v, "blob", b["owner"])
+            for pet in pet_victims:
+                self.destroy_pet(pet, "blob", b["owner"])
+
+    def destroy_blob(self, blob, cause, by=None):
+        """Unica via per rimuovere un blob dalla mappa: colpito da un laser
+        o da un missile guidato (vedi move_lasers/move_missiles). Nessun'
+        altra arma o esplosione lo scalfisce."""
+        if blob in self.blobs:
+            self.blobs.remove(blob)
+        self.push_event({
+            "kind": "blob_destroyed", "id": blob["id"],
+            "x": blob["x"], "y": blob["y"], "by": by, "cause": cause,
+        })
 
     def mortar_public(self, mt):
         return {
@@ -2564,6 +2708,7 @@ class Room:
             "bombs": [self.bomb_public(bomb) for bomb in self.bombs],
             "superbombs": [self.superbomb_public(b) for b in self.superbombs],
             "balloons": [self.balloon_public(b) for b in self.balloons],
+            "blobs": [self.blob_public(b) for b in self.blobs],
             "portal_on": self.portal_on,
             "portal_cycle_left": round(max(self.portal_cycle_left, 0), 1),
             "missiles": [self.missile_public(mz) for mz in self.missiles],
@@ -2589,6 +2734,7 @@ class Room:
         self.mortars = []
         self.superbombs = []
         self.balloons = []
+        self.blobs = []
         self.bombs = []
         self.poison_zones = []  # nuvole velenose lasciate a terra dagli impatti del mortaio
         for p in self.players.values():
@@ -2629,6 +2775,8 @@ class Room:
             p.superbomb_placed = False
             p.has_balloon = False
             p.balloon_launched = False
+            p.has_blob = False
+            p.blob_placed = False
             p.kills = 0
 
     # ---------- main loop ----------
@@ -2671,6 +2819,7 @@ class Room:
                 self.update_mortars() # bonus 1200 punti: il mortaio spara bombe ad arco contro il nemico piu' vicino entro 15 caselle
                 self.move_lasers()    # avanza i proiettili laser in volo (con eventuale rimbalzo)
                 self.check_mines()    # bonus 200 punti: fa esplodere le mine calpestate
+                self.check_blobs()    # bonus 1800 punti: fa mangiare al blob chiunque gli passi sopra (non si consuma)
                 self.move_missiles()  # bonus 400 punti: avanza i missili guidati verso il bersaglio
                 self.update_bombs()   # bonus 1200 punti: avanza le bombe di mortaio in volo e le fa esplodere all'impatto
                 self.update_poison_zones()  # bonus 1200 punti: le nuvole velenose lasciate dagli impatti continuano a fare danno nel tempo
@@ -2934,19 +3083,24 @@ async def handle_client(ws):
                 room.try_evolve_turret(player)
 
             elif mtype == "place_mortar":
-                # Tasto "0" lato client: la PRIMA pressione schiera il
+                # Tasto "1" lato client: la PRIMA pressione schiera il
                 # mortaio (bonus 1200 punti). Una volta che il mortaio e'
                 # gia' stato piazzato, la stessa pressione innesca invece il
                 # bombolone (bonus 1400 punti, vedi try_place_superbomb).
                 # Una volta che ANCHE il bombolone e' gia' stato piazzato,
                 # la stessa pressione fa librare in aria la mongolfiera
-                # (bonus 1600 punti, vedi try_launch_balloon). Utilizzabile
-                # una sola volta ciascuno per giocatore (vedi
-                # try_place_mortar/try_place_superbomb/try_launch_balloon):
-                # il server resta l'autorita'.
+                # (bonus 1600 punti, vedi try_launch_balloon). Una volta che
+                # ANCHE la mongolfiera e' gia' stata lanciata, la stessa
+                # pressione piazza infine il blob gelatinoso (bonus 1800
+                # punti, vedi try_place_blob). Utilizzabile una sola volta
+                # ciascuno per giocatore (vedi try_place_mortar/
+                # try_place_superbomb/try_launch_balloon/try_place_blob): il
+                # server resta l'autorita'.
                 if not room or not player:
                     continue
-                if player.mortar_placed and player.superbomb_placed:
+                if player.mortar_placed and player.superbomb_placed and player.balloon_launched:
+                    room.try_place_blob(player)
+                elif player.mortar_placed and player.superbomb_placed:
                     room.try_launch_balloon(player)
                 elif player.mortar_placed:
                     room.try_place_superbomb(player)

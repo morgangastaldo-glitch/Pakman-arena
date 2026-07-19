@@ -490,7 +490,7 @@
     </div>
 
     <div class="controls-row">
-      <span class="hint">WASD / frecce tastiera · Pallini = punti · Bonus a 50/100/150/200/300/400/500/600/1000/1100/1200 · Tasto 5 = torretta · Tasto 9 = evolvi la torretta in navicella · Tasto 0 = mortaio</span>
+      <span class="hint">WASD / frecce tastiera · Pallini = punti · Bonus a 50/100/150/200/300/400/500/600/1000/1100/1200 · Tasto 5 = torretta · Tasto 9 = evolvi la torretta in navicella · Tasto 1 = mine/mortaio/bombolone/mongolfiera</span>
       <button class="ghost danger" id="btnLeaveGame">Esci</button>
     </div>
   </section>
@@ -924,6 +924,20 @@ function playBalloonBomb(){
   noiseBurst(0.24, 0.2);
   tone(95, 0.22, "sawtooth", 0.16, 0);
   tone(65, 0.28, "sine", 0.13, 0.03);
+}
+// Piazzamento del blob gelatinoso (bonus 1800 punti, tasto 1 dopo la
+// mongolfiera): un "plop" viscido e basso, come una massa gelatinosa che si
+// posa a terra colando.
+function playBlobPlace(){
+  tone(180, 0.1, "sine", 0.14, 0);
+  sweep(220, 90, 0.3, "sine", 0.1);
+}
+// Distruzione del blob colpito da un laser o da un missile: uno "squish"
+// umido e secco, piu' corto e stridulo di un'eliminazione normale.
+function playBlobDestroyed(){
+  noiseBurst(0.16, 0.14);
+  sweep(500, 140, 0.18, "sawtooth", 0.1);
+  tone(90, 0.12, "sine", 0.08, 0.02);
 }
 // Colpo di laser: sweep acuto e secco verso il basso.
 function playLaser(){
@@ -2234,11 +2248,14 @@ function drawTurrets(now){
     const owner = findPlayer(currSnapshot, t.owner);
     const col = (owner && COLOR_HEX[(owner.colors || [])[0]]) || "#ff3b5c";
     const tracking = !!t.aim;
-    // Bonus 1000 punti: torretta evoluta in navicella spaziale mobile, un
-    // po' piu' grande di una torretta normale per farsi notare a colpo
-    // d'occhio come "potenziata".
+    // Bonus 1000 punti: torretta evoluta (in seguito all'evoluzione della
+    // torretta normale). E' VOLUTAMENTE identica in tutto e per tutto alla
+    // torretta normale (stessa piastra ottagonale, stessa scala, stessa
+    // canna): l'unica differenza visiva e' un cerchio colorato intorno,
+    // nel colore del giocatore che l'ha attivata (col), per riconoscerla
+    // a colpo d'occhio senza cambiarne la forma.
     const evolved = !!t.evolved;
-    const scale = evolved ? 1.4 : 1;
+    const scale = 1;
     const pulse = 0.6 + 0.4 * Math.abs(Math.sin(now / (tracking ? 140 : 320)));
 
     // Anello del raggio d'azione (10 caselle): visibile solo al
@@ -2271,61 +2288,41 @@ function drawTurrets(now){
     }
     const ang = turretAim[t.id];
 
-    // Bonus 1000 punti: la navicella spaziale "fluttua" con un leggero
-    // sussulto verticale sul posto (niente piu' gambe rotanti). La canna
-    // della torretta resta fisicamente attaccata allo scafo e fluttua
-    // insieme ad esso, continuando a cercare/tracciare il nemico piu'
-    // vicino esattamente come prima (vedi ang sopra). Il seed dipende
-    // dall'id cosi' piu' navicelle non fluttuano tutte in sincrono.
-    let bodyY = cy;
-    if (evolved){
-      let seed = 0;
-      for (let i = 0; i < t.id.length; i++) seed += t.id.charCodeAt(i);
-      bodyY = cy + Math.sin(now / 420 + seed) * 2.4 * scale;
-    }
+    // Corpo fisso, esattamente come la torretta normale: la versione
+    // evoluta NON fluttua e NON cambia forma, resta sul posto identica.
+    const bodyY = cy;
 
-    // Alone morbido sotto il corpo/scafo.
+    // Alone morbido sotto il corpo.
     ctx.globalAlpha = tracking ? 0.34 : 0.22;
     ctx.fillStyle = col;
     ctx.beginPath(); ctx.arc(cx, bodyY, 9 * scale, 0, Math.PI * 2); ctx.fill();
 
+    // Piastra ottagonale: identica sia da evoluta che da non evoluta.
+    ctx.globalAlpha = 0.95;
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let i = 0; i < 8; i++){
+      const a = ang / 3 + i * Math.PI / 4;
+      const px2 = cx + Math.cos(a) * 6 * scale, py2 = bodyY + Math.sin(a) * 6 * scale;
+      if (i === 0) ctx.moveTo(px2, py2); else ctx.lineTo(px2, py2);
+    }
+    ctx.closePath(); ctx.stroke();
+
+    // Unica differenza della torretta evoluta: un cerchio colorato (nel
+    // colore del giocatore che l'ha attivata) attorno alla torretta,
+    // leggermente pulsante per farsi notare senza stravolgerne la forma.
     if (evolved){
-      // Scafo della navicella: un profilo a lente/UFO allungato, con una
-      // piccola cupola bianca al centro al posto del vecchio nucleo fisso.
-      ctx.globalAlpha = 0.95;
-      ctx.fillStyle = col;
-      ctx.beginPath();
-      ctx.ellipse(cx, bodyY, 11 * scale, 5 * scale, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.globalAlpha = 0.85;
-      ctx.strokeStyle = "#fff";
-      ctx.lineWidth = 1.2;
-      ctx.stroke();
-      ctx.globalAlpha = 0.9;
-      ctx.fillStyle = "#fff";
-      ctx.beginPath(); ctx.arc(cx, bodyY - 1.5 * scale, 2.6 * scale, 0, Math.PI * 2); ctx.fill();
-      // Piccoli motori/luci ai due lati dello scafo, per rinforzare la
-      // lettura "navicella" a colpo d'occhio.
-      ctx.globalAlpha = 0.8 + 0.2 * Math.abs(Math.sin(now / 180));
-      ctx.fillStyle = col;
-      ctx.beginPath(); ctx.arc(cx - 9 * scale, bodyY, 1.6 * scale, 0, Math.PI * 2); ctx.fill();
-      ctx.beginPath(); ctx.arc(cx + 9 * scale, bodyY, 1.6 * scale, 0, Math.PI * 2); ctx.fill();
-    } else {
-      // Piastra ottagonale della torretta fissa non ancora evoluta.
-      ctx.globalAlpha = 0.95;
+      const ringPulse = 0.55 + 0.25 * Math.abs(Math.sin(now / 260));
+      ctx.globalAlpha = ringPulse;
       ctx.strokeStyle = col;
       ctx.lineWidth = 2;
-      ctx.beginPath();
-      for (let i = 0; i < 8; i++){
-        const a = ang / 3 + i * Math.PI / 4;
-        const px2 = cx + Math.cos(a) * 6 * scale, py2 = bodyY + Math.sin(a) * 6 * scale;
-        if (i === 0) ctx.moveTo(px2, py2); else ctx.lineTo(px2, py2);
-      }
-      ctx.closePath(); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.beginPath(); ctx.arc(cx, bodyY, 13, 0, Math.PI * 2); ctx.stroke();
     }
 
-    // Canna orientata verso il bersaglio, attaccata al corpo (fluttua
-    // insieme allo scafo quando la torretta e' evoluta).
+    // Canna orientata verso il bersaglio, attaccata al corpo (identica
+    // sia da evoluta che da non evoluta).
     ctx.lineWidth = 3;
     ctx.lineCap = "round";
     ctx.strokeStyle = tracking ? "#fff" : col;
@@ -2667,6 +2664,124 @@ function drawBalloons(now){
       ctx.moveTo(shadowX + i * 1.6 - 0.5, cy - 1.9);
       ctx.lineTo(shadowX + i * 1.6 + 0.5, cy - 0.6);
       ctx.stroke();
+    }
+  });
+  ctx.restore();
+}
+
+// Blob di melma (bonus 1800 punti, tasto 1 dopo la mongolfiera): una massa
+// grumosa e colante, immobile, piazzata in mezzo alla strada
+// (server-authoritative, vedi try_place_blob/blob_public in main.py).
+// Blocca la casella e mangia chiunque non sia il proprietario ci passi
+// sopra. Disegnata come un cumulo di melma irregolare (corpo largo alla
+// base, come una pozza, con bozzi asimmetrici sopra e gocce che colano ai
+// bordi), interamente contenuta in una singola casella. NIENTE occhi: il
+// volto e' solo una bocca spalancata e arrabbiata (zanne + sopracciglia
+// aggrottate), per rendere subito chiaro che e' un ostacolo aggressivo che
+// morde chi si avvicina, non un personaggio "carino". Colore base viola
+// melma scuro, con un anello sottile nel colore del proprietario cosi'
+// resta chiaro chi l'ha piazzato.
+function drawBlobs(now){
+  const list = (currSnapshot && currSnapshot.blobs) || [];
+  if (!list.length) return;
+  ctx.save();
+  list.forEach(function(b){
+    const cx = b.x * BASE_CELL + BASE_CELL / 2;
+    const cy = b.y * BASE_CELL + BASE_CELL / 2;
+    const owner = findPlayer(currSnapshot, b.owner);
+    const col = (owner && COLOR_HEX[(owner.colors || [])[0]]) || "#8a4fc9";
+    const wob = Math.sin(now / 260) * 1.4;   // leggero "respiro" gelatinoso
+    const R = BASE_CELL * 0.47;              // resta SEMPRE dentro la casella
+
+    // Alone morbido, nel colore del proprietario.
+    ctx.globalAlpha = 0.18;
+    ctx.fillStyle = col;
+    ctx.beginPath(); ctx.arc(cx, cy, R + 4, 0, Math.PI * 2); ctx.fill();
+
+    // Pozza d'ombra/melma a terra, piu' larga del corpo: da' l'idea che
+    // stia colando oltre il proprio contorno.
+    ctx.globalAlpha = 0.5;
+    ctx.fillStyle = "#241030";
+    ctx.beginPath();
+    ctx.ellipse(cx, cy + R * 0.62, R * 0.98, R * 0.32, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Corpo principale: sagoma grumosa asimmetrica, larga in basso (come
+    // una pozza) e con bozzi irregolari in alto, ottenuta unendo cerchi di
+    // raggio diverso invece di un profilo liscio - niente forma "a
+    // goccia" pulita, deve sembrare una massa informe.
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = "#5b2f86";
+    const lumps = [
+      { dx: 0,     dy: 0.30, r: 0.95 },   // base larga
+      { dx: -0.55, dy: 0.02, r: 0.62 },
+      { dx: 0.58,  dy: 0.05, r: 0.58 },
+      { dx: -0.22, dy: -0.55, r: 0.55 },
+      { dx: 0.30,  dy: -0.50, r: 0.50 },
+      { dx: 0.02,  dy: -0.20, r: 0.68 },
+    ];
+    lumps.forEach(function(l){
+      ctx.beginPath();
+      ctx.arc(cx + l.dx * R, cy + l.dy * R + wob, l.r * R * 0.62, 0, Math.PI * 2);
+      ctx.fill();
+    });
+    // Contorno del corpo: ridisegna solo il bordo esterno passando sugli
+    // stessi cerchi, per un profilo grumoso ma leggibile.
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 2;
+    lumps.forEach(function(l){
+      ctx.beginPath();
+      ctx.arc(cx + l.dx * R, cy + l.dy * R + wob, l.r * R * 0.62, 0, Math.PI * 2);
+      ctx.stroke();
+    });
+
+    // Gocce di melma colante lungo il bordo inferiore.
+    ctx.fillStyle = "#5b2f86";
+    [[-0.5, 0.78], [0.15, 0.86], [0.62, 0.74]].forEach(function(d, i){
+      const dropR = R * (0.09 + 0.02 * (i % 2));
+      const dx = cx + d[0] * R;
+      const dy = cy + d[1] * R + Math.max(0, wob);
+      ctx.beginPath(); ctx.arc(dx, dy, dropR, 0, Math.PI * 2); ctx.fill();
+    });
+
+    // Riflesso lucido in alto a sinistra: superficie viscida.
+    ctx.globalAlpha = 0.25;
+    ctx.fillStyle = "#e8d6ff";
+    ctx.beginPath(); ctx.ellipse(cx - R * 0.28, cy - R * 0.42 + wob, R * 0.22, R * 0.12, -0.5, 0, Math.PI * 2); ctx.fill();
+
+    // NIENTE occhi: solo sopracciglia aggrottate (due tratti spessi e
+    // inclinati verso il centro) e una bocca spalancata piena di zanne,
+    // per un'espressione aggressiva senza sguardo.
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = "#1a1020";
+    ctx.lineWidth = R * 0.13;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(cx - R * 0.42, cy - R * 0.06 + wob);
+    ctx.lineTo(cx - R * 0.14, cy - R * 0.22 + wob);
+    ctx.moveTo(cx + R * 0.42, cy - R * 0.04 + wob);
+    ctx.lineTo(cx + R * 0.14, cy - R * 0.22 + wob);
+    ctx.stroke();
+
+    // Bocca: apertura scura a zigzag (zanne superiori e inferiori).
+    ctx.fillStyle = "#1a1020";
+    ctx.beginPath();
+    ctx.ellipse(cx, cy + R * 0.22 + wob, R * 0.4, R * 0.24, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#f2eaff";
+    for (let i = -1; i <= 1; i++){
+      // zanne superiori
+      ctx.beginPath();
+      ctx.moveTo(cx + i * R * 0.22 - R * 0.09, cy + R * 0.05 + wob);
+      ctx.lineTo(cx + i * R * 0.22 + R * 0.09, cy + R * 0.05 + wob);
+      ctx.lineTo(cx + i * R * 0.22, cy + R * 0.2 + wob);
+      ctx.closePath(); ctx.fill();
+      // zanne inferiori
+      ctx.beginPath();
+      ctx.moveTo(cx + i * R * 0.22 - R * 0.09, cy + R * 0.42 + wob);
+      ctx.lineTo(cx + i * R * 0.22 + R * 0.09, cy + R * 0.42 + wob);
+      ctx.lineTo(cx + i * R * 0.22, cy + R * 0.27 + wob);
+      ctx.closePath(); ctx.fill();
     }
   });
   ctx.restore();
@@ -3046,6 +3161,7 @@ function renderLoop(now){
   drawMortars(now);
   drawSuperbombs(now);
   drawBalloons(now);
+  drawBlobs(now);
   drawMissiles(now);
   drawBombs(now);
   drawLaserProjectiles(now);
@@ -3467,7 +3583,7 @@ function onGameEvent(msg){
         extra_life:   ["VITA EXTRA! \u2665", ""],
         extra_life_3: ["3 VITE EXTRA! \u2665\u2665\u2665", ""],
         laser:        ["LASER SBLOCCATO!", "spara da solo quando un nemico e' entro 12 caselle"],
-        mines:        ["MINE SBLOCCATE!", "2 mine \u00b7 premi 1 per posarle"],
+        mines:        ["MINE SBLOCCATE!", "2 mine \u00b7 premi 1 per posarle (poi mortaio/bombolone/mongolfiera/blob)"],
         ninja:        ["NINJA SBLOCCATO!", "invisibilit\u00e0 \u00b7 premi 2 per attivarla"],
         missile:      ["MISSILE GUIDATO!", "premi 3 per lanciarlo"],
         trap:         ["TRAPPOLA SBLOCCATA!", "3 secondi \u00b7 3 usi \u00b7 premi 4"],
@@ -3476,7 +3592,10 @@ function onGameEvent(msg){
         lightning:    ["FULMINE SBLOCCATO!", "colpisce un avversario a caso \u00b7 premi 7 per scatenarlo"],
         pet:          ["PET FEDELE SBLOCCATO!", "premi 8 per evocarlo \u00b7 aggancia e insegue chi si avvicina entro 6 caselle"],
         robot:        ["EVOLUZIONE NAVICELLA SBLOCCATA!", "premi 9 per evolvere la torretta, se e' ancora viva"],
-        mortar:       ["MORTAIO SBLOCCATO!", "raggio 15 caselle \u00b7 premi 0 per schierarlo \u00b7 scavalca i muri"],
+        mortar:       ["MORTAIO SBLOCCATO!", "raggio 15 caselle \u00b7 premi 1 per schierarlo \u00b7 scavalca i muri"],
+        superbomb:    ["BOMBOLONE SBLOCCATO!", "esplosione raggio 8 caselle \u00b7 premi 1 (dopo il mortaio) per piazzarlo"],
+        balloon:      ["MONGOLFIERA SBLOCCATA!", "vaga sulla mappa e sgancia bombe \u00b7 premi 1 (dopo il bombolone) per farla librare"],
+        blob:         ["BLOB SBLOCCATO!", "blocca la strada e mangia chi passa \u00b7 premi 1 (dopo la mongolfiera) per piazzarlo \u00b7 si rimuove solo sparandogli"],
       };
       const lb = labels[msg.bonus] || ["BONUS!", ""];
       const txt = lb[0] + (lb[1] ? " \u00b7 " + lb[1] : "");
@@ -3511,10 +3630,11 @@ function onGameEvent(msg){
       const byPoison = msg.cause === "poison";
       const bySuperbomb = msg.cause === "superbomb";
       const byBalloon = msg.cause === "balloon";
+      const byBlob = msg.cause === "blob";
       const causeTxt = byLaser ? " dal laser" : (byMine ? " da una mina" : (byAssassin ? " da un ninja invisibile"
         : (byMissile ? " da un missile guidato" : (byTrap ? " da una trappola" : (byArmor ? " dalla corazza laser"
         : (byLightning ? " da un fulmine" : (byPet ? " dal pet avversario" : (byMortar ? " da una bomba di mortaio"
-        : (byPoison ? " dalla nuvola velenosa" : (bySuperbomb ? " da un bombolone" : (byBalloon ? " da una bomba di mongolfiera" : "")))))))))));
+        : (byPoison ? " dalla nuvola velenosa" : (bySuperbomb ? " da un bombolone" : (byBalloon ? " da una bomba di mongolfiera" : (byBlob ? " mangiato da un blob gelatinoso" : ""))))))))))));
       const stolenTxt = msg.stolen ? (" (-" + msg.stolen + " punti)") : "";
       if (msg.victim === myId){
         showBonusBanner(msg.respawn ? ("HAI PERSO UNA VITA \u2665" + msg.lives) : "SEI STATO ELIMINATO");
@@ -3619,6 +3739,20 @@ function onGameEvent(msg){
       playBalloonBomb();
       break;
     }
+    case "blob_place": {
+      if (msg.player === myId) showToast("Blob piazzato! Blocca la strada finche' non gli spari.");
+      playBlobPlace();
+      break;
+    }
+    case "blob_destroyed": {
+      // Il blob (bonus 1800 punti) e' stato distrutto da un laser o da un
+      // missile guidato: l'unico modo per rimuoverlo dalla strada (vedi
+      // destroy_blob in main.py).
+      explosions.push({ x: msg.x, y: msg.y, color: "#7cff5a", start: now });
+      playBlobDestroyed();
+      if (msg.by === myId) showToast("Blob avversario distrutto!");
+      break;
+    }
     case "poison_spawn": {
       // Suono acido/gorgogliante distinto dal boato dell'impatto diretto,
       // per far capire che resta un pericolo a terra.
@@ -3643,7 +3777,7 @@ function onGameEvent(msg){
     case "pet_destroyed": {
       const causeTxt = { mine: "una mina", missile: "un missile guidato", laser: "un colpo laser",
                           armor: "la corazza laser", lightning: "un fulmine",
-                          superbomb: "un bombolone", balloon: "una bomba di mongolfiera" }[msg.cause] || "un nemico";
+                          superbomb: "un bombolone", balloon: "una bomba di mongolfiera", blob: "un blob gelatinoso" }[msg.cause] || "un nemico";
       explosions.push({ x: msg.x, y: msg.y, color: (findPlayer(currSnapshot, msg.owner) &&
         COLOR_HEX[(findPlayer(currSnapshot, msg.owner).colors || [])[0]]) || "#fff", start: now });
       noiseBurst(0.18, 0.15);
@@ -3830,8 +3964,10 @@ function onGameEvent(msg){
 }
 
 function showBonusBanner(text, subtitle){
-  // Durata fissata a 1 secondo (richiesta esplicita): il messaggio che
-  // annuncia il bonus appena sbloccato resta a schermo esattamente 1000ms.
+  // Durata fissata a 2 secondi (richiesta esplicita): il messaggio che
+  // annuncia l'arma appena sbloccata (con il tasto giusto da premere,
+  // vedi 'labels' nel case "bonus") resta a schermo esattamente 2000ms,
+  // stesso stile grafico di prima.
   const el = document.getElementById("bonusBanner");
   if (!el) return;
   el.textContent = text;
@@ -3842,9 +3978,9 @@ function showBonusBanner(text, subtitle){
     el.appendChild(sub);
   }
   el.classList.add("show");
-  bonusBannerUntil = performance.now() + 1000;
+  bonusBannerUntil = performance.now() + 2000;
   clearTimeout(showBonusBanner._t);
-  showBonusBanner._t = setTimeout(function(){ el.classList.remove("show"); }, 1000);
+  showBonusBanner._t = setTimeout(function(){ el.classList.remove("show"); }, 2000);
 }
 
 // Bonus 800 punti: riavvia il flash CSS a schermo intero che simula il
@@ -3984,7 +4120,8 @@ function updateGameSidebar(msg){
            (p.robot && p.id === myId ? ("R" + (p.robot_used ? "1" : "0")) : "") +
            (p.mortar && p.id === myId ? ("M" + (p.mortar_placed ? "1" : "0")) : "") +
            (p.superbomb && p.id === myId ? ("B" + (p.superbomb_placed ? "1" : "0")) : "") +
-           (p.balloon && p.id === myId ? ("L" + (p.balloon_launched ? "1" : "0")) : "");
+           (p.balloon && p.id === myId ? ("L" + (p.balloon_launched ? "1" : "0")) : "") +
+           (p.blob && p.id === myId ? ("G" + (p.blob_placed ? "1" : "0")) : "");
   }).join("|");
 
   if (sig !== lastSidebarSig){
@@ -4049,21 +4186,28 @@ function updateGameSidebar(msg){
       }
       if (p.mortar && p.id === myId){
         const t = document.createElement("span"); t.className="tag alert";
-        t.textContent = p.mortar_placed ? "MORTAIO ATTIVO" : "MORTAIO (tasto 0)";
+        t.textContent = p.mortar_placed ? "MORTAIO ATTIVO" : "MORTAIO (tasto 1)";
         li.appendChild(t);
       }
       if (p.superbomb && p.id === myId){
         const t = document.createElement("span"); t.className="tag alert";
         t.textContent = !p.mortar_placed
           ? "BOMBOLONE (dopo il mortaio)"
-          : (p.superbomb_placed ? "BOMBOLONE ATTIVO" : "BOMBOLONE (tasto 0)");
+          : (p.superbomb_placed ? "BOMBOLONE ATTIVO" : "BOMBOLONE (tasto 1)");
         li.appendChild(t);
       }
       if (p.balloon && p.id === myId){
         const t = document.createElement("span"); t.className="tag alert";
         t.textContent = !p.superbomb_placed
           ? "MONGOLFIERA (dopo il bombolone)"
-          : (p.balloon_launched ? "MONGOLFIERA IN VOLO" : "MONGOLFIERA (tasto 0)");
+          : (p.balloon_launched ? "MONGOLFIERA IN VOLO" : "MONGOLFIERA (tasto 1)");
+        li.appendChild(t);
+      }
+      if (p.blob && p.id === myId){
+        const t = document.createElement("span"); t.className="tag alert";
+        t.textContent = !p.balloon_launched
+          ? "BLOB (dopo la mongolfiera)"
+          : (p.blob_placed ? "BLOB PIAZZATO" : "BLOB (tasto 1)");
         li.appendChild(t);
       }
       const spacer = document.createElement("span"); spacer.className = "spacer"; li.appendChild(spacer);
@@ -4154,7 +4298,8 @@ function requestDir(dir){
   sendMsg({ type: "move", direction: dir });
 }
 
-// Bonus 200 punti: il tasto "1" sgancia una mina nella cella corrente.
+// Bonus 200 punti: il tasto "1" sgancia una mina nella cella corrente (e
+// poi, esaurite le mine, mortaio/bombolone/mongolfiera: vedi piu' sotto).
 // Il server e' l'autorita' su quante mine restano e ignora la richiesta
 // se il bonus non e' ancora sbloccato o non ci sono piu' mine disponibili.
 document.addEventListener("keydown", function(ev){
@@ -4165,8 +4310,24 @@ document.addEventListener("keydown", function(ev){
     ev.preventDefault();
     return;
   }
+  // Tasto "1": mette in coda TUTTI i gadget "da piazzare" - prima le mine
+  // (bonus 200 punti), poi, solo quando le mine sono finite (o non sono mai
+  // state sbloccate), il mortaio (1200) / bombolone (1400) / mongolfiera
+  // (1600) / blob gelatinoso (1800), nell'ordine in cui si sbloccano.
+  // Finche' restano mine disponibili il tasto "1" continua a sganciare
+  // quelle; il resto resta "in coda" e diventa raggiungibile solo dopo. Il
+  // client sceglie solo QUALE messaggio inviare in base al proprio stato
+  // noto (mines_left): il server resta comunque l'autorita' su cosa e'
+  // davvero disponibile, esattamente come gia' faceva per il vecchio tasto
+  // "0" fra mortaio/bombolone/mongolfiera (vedi dispatch di "place_mortar"
+  // in main.py).
   if (ev.key === "1" && !ev.repeat){
-    sendMsg({ type: "place_mine" });
+    const me = findPlayer(currSnapshot, myId);
+    if (me && me.mines && me.mines_left > 0){
+      sendMsg({ type: "place_mine" });
+    } else {
+      sendMsg({ type: "place_mortar" });
+    }
     ev.preventDefault();
   }
   // Bonus 300 punti: il tasto "2" attiva la modalita' ninja (invisibilita'
@@ -4231,17 +4392,6 @@ document.addEventListener("keydown", function(ev){
   // richieste successive (vedi try_evolve_turret).
   if (ev.key === "9" && !ev.repeat){
     sendMsg({ type: "evolve_turret" });
-    ev.preventDefault();
-  }
-  // Bonus 1200 punti: il tasto "0" schiera il mortaio permanente nella
-  // cella corrente. Una volta che il mortaio e' gia' stato piazzato, la
-  // stessa pressione del tasto "0" innesca invece il bombolone (bonus 1400
-  // punti): il server decide da solo quale dei due in base allo stato del
-  // giocatore (vedi il dispatch di "place_mortar" in main.py). Ciascuno dei
-  // due e' utilizzabile una sola volta per round: il server ignora
-  // richieste successive (vedi try_place_mortar/try_place_superbomb).
-  if (ev.key === "0" && !ev.repeat){
-    sendMsg({ type: "place_mortar" });
     ev.preventDefault();
   }
 });
