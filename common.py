@@ -41,7 +41,7 @@ ASSASSIN_SPEED_MULT = 1.1   # il super assassino (bonus 300 punti) e' 1.1x rispe
 BONUS_THRESHOLDS = [
     (50,  "extra_life"),    # +1 vita: se vieni eliminato, respawni invece di uscire
     (100, "extra_life"),    # +1 seconda vita extra (stesso effetto, soglia diversa)
-    (150, "laser"),         # sblocca il laser (un colpo/secondo), ma dura solo LASER_DURATION_SECONDS
+    (150, "laser"),         # sblocca il laser (un colpo/secondo): resta attivo per tutta la partita, ma spara solo quando un nemico e' entro LASER_RANGE_CELLS caselle
     (200, "mines"),         # sblocca 3 mine sganciabili sulla mappa (si attivano col tasto "1")
     (400, "missile"),       # sblocca 1 missile guidato (si spara col tasto "3")
 ]
@@ -55,7 +55,7 @@ SUPER_ASSASSIN_THRESHOLD = 300     # punti oltre i quali si sblocca la modalita'
 # un'eliminazione) non si puo' piu' riattivare (vedi Player.ninja_used e
 # try_activate_ninja in main.py).
 SUPER_ASSASSIN_DURATION_SECONDS = 45.0
-LASER_DURATION_SECONDS = 60.0      # bonus 150 punti: il laser resta attivo solo 1 minuto
+LASER_RANGE_CELLS = 12          # bonus 150 punti: il laser (arma principale, sbloccata per tutta la partita) spara SOLO quando un avversario vivo e' entro questa distanza (caselle, stile Manhattan, come TURRET_RANGE_CELLS)
 GHOST_SECONDS = 10.0            # (bonus rimosso dal gioco, costante tenuta per compatibilita')
 SPAWN_PROTECT_SECONDS = 3.0    # invulnerabilita' temporanea dopo un respawn
 LASER_INTERVAL_SECONDS = 1.0   # ogni quanto il laser spara un colpo, una volta sbloccato (1 al secondo)
@@ -149,18 +149,19 @@ PET_STAY_RANGE = 1              # entro questa distanza (a scacchi) dal propriet
 # ---- bonus 1000 punti: evoluzione della torretta in robot (tasto "9") ----
 # Allo sblocco NON scatta nulla in automatico: premendo il tasto "9" il
 # giocatore fa evolvere, UNA SOLA VOLTA per round, la propria torretta
-# automatica (bonus 600 punti) in un robot mobile su 3 gambe, MA SOLO SE
+# automatica (bonus 600 punti) in una navicella spaziale mobile, MA SOLO SE
 # la torretta e' ancora viva sulla mappa (non distrutta dalla corazza di un
-# avversario). Da quel momento il robot smette di restare fermo: pattuglia
-# la mappa muovendosi a caso in cerca di nemici, con la cadenza di fuoco
-# raddoppiata rispetto a una torretta normale e una velocita' di
-# camminata pari a NORMAL_SPEED * ROBOT_SPEED_MULT (piu' lenta di un
-# giocatore normale, per restare bilanciata nonostante il fuoco doppio).
+# avversario). Da quel momento la navicella smette di restare ferma: insegue
+# ATTIVAMENTE il nemico vivo piu' vicino (stesso bfs_path/ricalcolo periodico
+# del missile guidato, mai attraverso i muri) invece di pattugliare a caso,
+# con la cadenza di fuoco raddoppiata rispetto a una torretta normale e una
+# velocita' di movimento dimezzata pari a NORMAL_SPEED * ROBOT_SPEED_MULT
+# (per restare bilanciata nonostante il fuoco doppio e l'inseguimento attivo).
 ROBOT_THRESHOLD = 1000
 ROBOT_FIRE_INTERVAL_SECONDS = TURRET_FIRE_INTERVAL_SECONDS / 2  # cadenza di fuoco raddoppiata
-ROBOT_SPEED_MULT = 0.8          # velocita' di camminata del robot = NORMAL_SPEED * 0.8
-ROBOT_WANDER_RETARGET_SECONDS = 3.0  # ogni quanto sceglie una nuova cella a caso da raggiungere
-ROBOT_LEVELUP_DISPLAY_SECONDS = 1.0  # durata della scritta "LEVEL UP" mostrata sopra al robot appena evoluto
+ROBOT_SPEED_MULT = 0.4          # velocita' di movimento della navicella = NORMAL_SPEED * 0.4 (dimezzata rispetto a prima: 0.8 -> 0.4)
+ROBOT_WANDER_RETARGET_SECONDS = 0.15  # ogni quanto ricalcola il percorso verso il nemico piu' vicino (che si muove, stessa cadenza del missile)
+ROBOT_LEVELUP_DISPLAY_SECONDS = 1.0  # durata della scritta "LEVEL UP" mostrata sopra alla navicella appena evoluta
 
 # Distanza (in caselle, stile scacchi/Chebyshev) entro la quale le mine
 # ALTRUI diventano visibili: da piu' lontano restano nascoste finche' non

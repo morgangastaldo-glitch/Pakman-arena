@@ -47,7 +47,7 @@ from common import (
     BONUS_THRESHOLDS, GHOST_SECONDS,
     PELLET_POINTS, POWER_PELLET_POINTS, POWER_PELLET_COUNT,
     PELLET_RESPAWN_SECONDS, SUPER_ASSASSIN_THRESHOLD,
-    SUPER_ASSASSIN_DURATION_SECONDS, LASER_DURATION_SECONDS,
+    SUPER_ASSASSIN_DURATION_SECONDS, LASER_RANGE_CELLS,
     SPAWN_PROTECT_SECONDS, LASER_INTERVAL_SECONDS, LASER_FIRST_DELAY_SECONDS,
     LASER_PROJECTILE_SPEED, LASER_BOUNCE_DISTANCE, MINES_COUNT,
     PORTAL_COOLDOWN_SECONDS, PORTAL_ON_SECONDS, PORTAL_OFF_SECONDS,
@@ -133,9 +133,8 @@ class Player:
         self.assassin_left = 0.0       # secondi rimanenti da modalita' ninja attiva
         self.ninja_used = False        # True dopo l'unica attivazione consentita per round
         self.prot_left = 0.0           # invulnerabilita' temporanea dopo un respawn
-        self.has_laser = False         # bonus 150 punti: laser frontale a intermittenza (1 colpo/secondo)
+        self.has_laser = False         # bonus 150 punti: laser frontale (arma principale). Resta sbloccato per TUTTA la partita una volta ottenuto (non scade piu'); spara solo quando un nemico e' entro LASER_RANGE_CELLS caselle (vedi update_lasers)
         self.laser_cd = 0.0            # countdown al prossimo colpo di laser
-        self.laser_left = 0.0          # secondi rimanenti col laser attivo (dura 60s)
         self.has_bounce = False        # (non piu' assegnato da alcun bonus, resta sempre False)
         self.has_mines = False         # bonus 200 punti: puo' sganciare mine
         self.mines_left = 0            # mine ancora disponibili in questo round
@@ -417,7 +416,6 @@ class Room:
             p.prot_left = 0.0
             p.has_laser = False
             p.laser_cd = 0.0
-            p.laser_left = 0.0
             p.has_bounce = False
             p.has_mines = False
             p.mines_left = 0
@@ -477,13 +475,11 @@ class Room:
                 p.prot_left = max(0.0, p.prot_left - TICK_DT)
             if p.portal_cd > 0:
                 p.portal_cd = max(0.0, p.portal_cd - TICK_DT)
-            # Bonus 150 punti (laser) e 300 punti (super assassino): durano
-            # solo un tempo limitato (60s / 30s), poi si disattivano da soli.
-            if p.laser_left > 0:
-                p.laser_left = max(0.0, p.laser_left - TICK_DT)
-                if p.laser_left <= 0 and p.has_laser:
-                    p.has_laser = False
-                    self.push_event({"kind": "laser_expired", "player": p.id})
+            # Bonus 300 punti (super assassino): dura solo un tempo limitato
+            # (30s), poi si disattiva da solo. Il laser (bonus 150) non ha
+            # piu' un timer di scadenza: resta sbloccato per tutta la
+            # partita una volta ottenuto, e la sua attivazione dipende solo
+            # dalla vicinanza di un nemico (vedi update_lasers).
             if p.assassin_left > 0:
                 p.assassin_left = max(0.0, p.assassin_left - TICK_DT)
                 if p.assassin_left <= 0 and p.is_assassin:
@@ -660,7 +656,6 @@ class Room:
             elif kind == "laser":
                 p.has_laser = True
                 p.laser_cd = LASER_FIRST_DELAY_SECONDS
-                p.laser_left = LASER_DURATION_SECONDS
             elif kind == "mines":
                 p.has_mines = True
                 p.mines_left = MINES_COUNT
@@ -925,16 +920,32 @@ class Room:
                     killed_ids.add(p.id)
 
     def update_lasers(self):
-        """Bonus 150 punti: ogni LASER_INTERVAL_SECONDS (1 secondo) parte un
-        singolo colpo (proiettile) dal lato frontale del personaggio. Il
-        super assassino (300 punti, invisibile agli altri) NON spara: il
-        proiettile e' visibile a tutti e rivelerebbe subito la sua
-        posizione, vanificando l'invisibilita'."""
+        """Bonus 150 punti: arma principale, sbloccata UNA VOLTA e attiva
+        per TUTTA la partita da quel momento (non scade piu'). Ogni
+        LASER_INTERVAL_SECONDS (1 secondo) parte un singolo colpo
+        (proiettile) dal lato frontale del personaggio, con la stessa
+        identica meccanica di sempre (spawn_laser) - ma SOLO quando almeno
+        un avversario vivo si trova entro LASER_RANGE_CELLS caselle
+        (distanza Manhattan), esattamente come il raggio d'azione della
+        torretta (vedi update_turrets). Se nessuno e' abbastanza vicino resta
+        carico (cd fermo a zero) e spara ISTANTANEAMENTE appena qualcuno
+        entra nel raggio, invece di sprecare colpi a vuoto o di accumulare
+        colpi arretrati. Il super assassino (300 punti, invisibile agli
+        altri) NON spara: il proiettile e' visibile a tutti e rivelerebbe
+        subito la sua posizione, vanificando l'invisibilita'."""
         for p in list(self.players.values()):
             if not p.alive or not p.has_laser or p.is_assassin:
                 continue
+            nearest = self.nearest_alive(p.x, p.y, {p.id})
+            in_range = (
+                nearest is not None
+                and abs(nearest.x - p.x) + abs(nearest.y - p.y) <= LASER_RANGE_CELLS
+            )
             p.laser_cd -= TICK_DT
             if p.laser_cd > 0:
+                continue
+            if not in_range:
+                p.laser_cd = 0.0
                 continue
             p.laser_cd = LASER_INTERVAL_SECONDS
             self.spawn_laser(p)
@@ -1141,6 +1152,27 @@ class Room:
         return {
             "id": pt["id"], "x": round(fx, 4), "y": round(fy, 4),
             "owner": pt["owner"], "aim": pt.get("aim"), "dir": dir_name,
+        }
+
+    def missile_public(self, mz):
+        """Come pet_public: la griglia interna (mz['x']/mz['y'], interi)
+        resta l'autorita' per collisioni, ma al client mandiamo anche
+        l'avanzamento reale dentro la cella corrente (move_accum, verso la
+        prossima cella del percorso) piu' la direzione corrente, cosi' il
+        missile si disegna in modo fluido come un giocatore/pet invece di
+        scattare da una cella intera alla successiva ad ogni tick."""
+        dx = dy = 0
+        path = mz.get("path")
+        if path:
+            nx, ny = path[0]
+            dx, dy = nx - mz["x"], ny - mz["y"]
+        accum = mz.get("move_accum", 0.0)
+        fx = mz["x"] + dx * accum
+        fy = mz["y"] + dy * accum
+        dir_name = next((k for k, v in DIRECTIONS.items() if v == (dx, dy)), None)
+        return {
+            "id": mz["id"], "x": round(fx, 4), "y": round(fy, 4),
+            "owner": mz["owner"], "target": mz["target"], "dir": dir_name,
         }
 
     def nearest_alive(self, x, y, exclude_ids):
@@ -1479,19 +1511,21 @@ class Room:
         })
 
     def update_robot_wander(self, t):
-        """Bonus 1000 punti: il robot (torretta evoluta) si muove da solo
-        sulla mappa in cerca di nemici. Ogni ROBOT_WANDER_RETARGET_SECONDS
-        (o quando raggiunge la meta' precedente) sceglie a caso una cella
-        libera tra self.free_cells e ci si dirige seguendo il percorso via
-        bfs_path (mai attraverso i muri, stessa meccanica del missile
-        guidato/pet), alla velocita' NORMAL_SPEED * ROBOT_SPEED_MULT."""
+        """Bonus 1000 punti: la navicella (torretta evoluta) non pattuglia
+        piu' a caso, insegue ATTIVAMENTE il nemico vivo piu' vicino, esatta-
+        mente come il missile guidato (vedi move_missiles): ogni
+        ROBOT_WANDER_RETARGET_SECONDS ricalcola il percorso verso la
+        posizione corrente del bersaglio (che si muove) via bfs_path, quindi
+        non attraversa mai i muri, alla velocita' dimezzata
+        NORMAL_SPEED * ROBOT_SPEED_MULT. Se al momento non c'e' nessun
+        nemico vivo, resta ferma sull'ultimo percorso residuo invece di
+        vagare senza meta."""
+        target = self.nearest_alive(t["x"], t["y"], {t["owner"]})
         t["wander_cd"] = t.get("wander_cd", 0.0) - TICK_DT
-        if t["wander_cd"] <= 0 or not t.get("wander_path"):
+        if target is not None and (t["wander_cd"] <= 0 or not t.get("wander_path")):
             t["wander_cd"] = ROBOT_WANDER_RETARGET_SECONDS
-            if self.free_cells:
-                goal = random.choice(self.free_cells)
-                path = bfs_path(self.maze, self.maze_w, self.maze_h, (t["x"], t["y"]), goal)
-                t["wander_path"] = path or []
+            path = bfs_path(self.maze, self.maze_w, self.maze_h, (t["x"], t["y"]), (target.x, target.y))
+            t["wander_path"] = path or []
         speed = NORMAL_SPEED * ROBOT_SPEED_MULT
         t["move_accum"] = t.get("move_accum", 0.0) + speed * TICK_DT
         while t["move_accum"] >= 1.0 and t["wander_path"]:
@@ -1794,14 +1828,7 @@ class Room:
             "pets": [self.pet_public(pt) for pt in self.pets],
             "portal_on": self.portal_on,
             "portal_cycle_left": round(max(self.portal_cycle_left, 0), 1),
-            "missiles": [
-                {
-                    "id": mz["id"], "x": mz["x"], "y": mz["y"],
-                    "owner": mz["owner"], "target": mz["target"],
-                    "next": list(mz["path"][0]) if mz["path"] else None,
-                }
-                for mz in self.missiles
-            ],
+            "missiles": [self.missile_public(mz) for mz in self.missiles],
         }
 
     async def drain_events(self):
@@ -1831,7 +1858,6 @@ class Room:
             p.ghost_left = 0.0
             p.prot_left = 0.0
             p.has_laser = False
-            p.laser_left = 0.0
             p.has_bounce = False
             p.has_mines = False
             p.mines_left = 0
@@ -1889,7 +1915,7 @@ class Room:
 
             elif self.state == "PLAYING":
                 self.timer_left -= TICK_DT
-                self.update_lasers()  # bonus 150 punti: un colpo al secondo, dura 60s
+                self.update_lasers()  # bonus 150 punti: arma principale permanente, un colpo al secondo se un nemico e' entro 12 caselle
                 self.update_turrets() # bonus 600 punti: torretta automatica, stessa cadenza del laser
                 self.update_pets()    # bonus 900 punti: il pet insegue il proprietario e attacca chi si avvicina
                 self.move_lasers()    # avanza i proiettili laser in volo (con eventuale rimbalzo)

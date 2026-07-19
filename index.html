@@ -490,7 +490,7 @@
     </div>
 
     <div class="controls-row">
-      <span class="hint">WASD / frecce tastiera · Pallini = punti · Bonus a 50/100/150/200/300/400/500/600/1000 · Tasto 5 = torretta · Tasto 9 = evolvi la torretta in robot</span>
+      <span class="hint">WASD / frecce tastiera · Pallini = punti · Bonus a 50/100/150/200/300/400/500/600/1000 · Tasto 5 = torretta · Tasto 9 = evolvi la torretta in navicella</span>
       <button class="ghost danger" id="btnLeaveGame">Esci</button>
     </div>
   </section>
@@ -531,7 +531,7 @@ const BONUS_STEPS = [
   { at: 700, label: "CORAZZA LASER (tasto 6)" },
   { at: 800, label: "FULMINE (tasto 7)" },
   { at: 900, label: "PET FEDELE (tasto 8)" },
-  { at: 1000, label: "ROBOT: evolvi la torretta (tasto 9)" },
+  { at: 1000, label: "NAVICELLA: evolvi la torretta (tasto 9)" },
 ];
 const MISSILE_SPEED_MULT = 1.1; // deve restare identica a MISSILE_SPEED_MULT in common.py
 const TRAP_DURATION_SECONDS = 3; // deve restare identica a TRAP_DURATION_SECONDS in common.py
@@ -699,6 +699,7 @@ let predInited = false;
 // non arriva una correzione dal server (che resta comunque l'autorita').
 let remoteSim = {}; // { [playerId]: { gridX, gridY, accum, dir } }
 let remotePetSim = {}; // { [petId]: { gridX, gridY, accum, dir } } - stesso trucco, applicato ai pet (bonus 900 punti)
+let remoteMissileSim = {}; // { [missileId]: { gridX, gridY, accum, dir } } - stesso trucco, applicato al missile guidato (bonus 400 punti), cosi' non va piu' a scatti
 let snapshotInterpMs = 1000 / 30;
 let lastStateArrival = null;
 let lastFrameTs = null;
@@ -1702,6 +1703,21 @@ function getRenderedPetPos(pet, now){
   return { x: pet.x, y: pet.y };
 }
 
+// Stessa logica di getRenderedPos/getRenderedPetPos, per il missile guidato
+// (bonus 400 punti): il server ora manda anche per lui la posizione continua
+// + direzione (vedi missile_public in main.py), quindi si puo' riusare la
+// stessa simulazione "dead reckoning" invece del vecchio disegno diretto da
+// currSnapshot che scattava da una cella intera alla successiva (il
+// movimento "a scatti" segnalato).
+function getRenderedMissilePos(mz, now){
+  const s = remoteMissileSim[mz.id];
+  if (s){
+    return { x: s.gridX + (s.dir ? DIR_VEC[s.dir][0] * s.accum : 0),
+             y: s.gridY + (s.dir ? DIR_VEC[s.dir][1] * s.accum : 0) };
+  }
+  return { x: mz.x, y: mz.y };
+}
+
 // Funzione generica di avanzamento simulazione, usata sia per il proprio
 // personaggio (con coda di direzione "next", alimentata dall'input locale)
 // sia per tutti gli altri (con direzione presa dall'ultimo stato ricevuto
@@ -1806,6 +1822,15 @@ function stepRemotePetSim(pet, dt){
   const s = remotePetSim[pet.id];
   if (!s) return;
   stepSim(s, dt, NORMAL_SPEED * PET_SPEED_MULT, false);
+}
+
+// Il missile guidato (bonus 400 punti) avanza alla stessa velocita' usata
+// dal server (vedi MISSILE_SPEED_MULT sopra), con la stessa simulazione
+// "dead reckoning" gia' collaudata su giocatori e pet.
+function stepRemoteMissileSim(mz, dt){
+  const s = remoteMissileSim[mz.id];
+  if (!s) return;
+  stepSim(s, dt, NORMAL_SPEED * MISSILE_SPEED_MULT, false);
 }
 
 let lastFacingMap = {};
@@ -2134,7 +2159,7 @@ function drawTurrets(now){
     const owner = findPlayer(currSnapshot, t.owner);
     const col = (owner && COLOR_HEX[(owner.colors || [])[0]]) || "#ff3b5c";
     const tracking = !!t.aim;
-    // Bonus 1000 punti: torretta evoluta in robot mobile su 3 gambe, un
+    // Bonus 1000 punti: torretta evoluta in navicella spaziale mobile, un
     // po' piu' grande di una torretta normale per farsi notare a colpo
     // d'occhio come "potenziata".
     const evolved = !!t.evolved;
@@ -2171,54 +2196,76 @@ function drawTurrets(now){
     }
     const ang = turretAim[t.id];
 
-    // Gambe del robot (bonus 1000 punti): 3 zampe meccaniche disegnate
-    // sotto la piastra, che ruotano lentamente attorno al corpo per dare
-    // l'idea di una "camminata" mentre il robot pattuglia la mappa a caso.
+    // Bonus 1000 punti: la navicella spaziale "fluttua" con un leggero
+    // sussulto verticale sul posto (niente piu' gambe rotanti). La canna
+    // della torretta resta fisicamente attaccata allo scafo e fluttua
+    // insieme ad esso, continuando a cercare/tracciare il nemico piu'
+    // vicino esattamente come prima (vedi ang sopra). Il seed dipende
+    // dall'id cosi' piu' navicelle non fluttuano tutte in sincrono.
+    let bodyY = cy;
     if (evolved){
-      ctx.globalAlpha = 0.85;
-      ctx.strokeStyle = col;
-      ctx.lineWidth = 2;
-      for (let i = 0; i < 3; i++){
-        const legAng = (Math.PI * 2 / 3) * i + now / 260;
-        const kx = cx + Math.cos(legAng) * 10 * scale;
-        const ky = cy + Math.sin(legAng) * 10 * scale;
-        const fx2 = cx + Math.cos(legAng) * 13 * scale;
-        const fy2 = cy + Math.sin(legAng) * 13 * scale;
-        ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(kx, ky); ctx.lineTo(fx2, fy2); ctx.stroke();
-        ctx.beginPath(); ctx.arc(fx2, fy2, 1.4, 0, Math.PI * 2); ctx.fillStyle = col; ctx.fill();
-      }
+      let seed = 0;
+      for (let i = 0; i < t.id.length; i++) seed += t.id.charCodeAt(i);
+      bodyY = cy + Math.sin(now / 420 + seed) * 2.4 * scale;
     }
 
-    // Base: alone + piastra ottagonale
+    // Alone morbido sotto il corpo/scafo.
     ctx.globalAlpha = tracking ? 0.34 : 0.22;
     ctx.fillStyle = col;
-    ctx.beginPath(); ctx.arc(cx, cy, 9 * scale, 0, Math.PI * 2); ctx.fill();
-    ctx.globalAlpha = 0.95;
-    ctx.strokeStyle = col;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    for (let i = 0; i < 8; i++){
-      const a = ang / 3 + i * Math.PI / 4;
-      const px2 = cx + Math.cos(a) * 6 * scale, py2 = cy + Math.sin(a) * 6 * scale;
-      if (i === 0) ctx.moveTo(px2, py2); else ctx.lineTo(px2, py2);
+    ctx.beginPath(); ctx.arc(cx, bodyY, 9 * scale, 0, Math.PI * 2); ctx.fill();
+
+    if (evolved){
+      // Scafo della navicella: un profilo a lente/UFO allungato, con una
+      // piccola cupola bianca al centro al posto del vecchio nucleo fisso.
+      ctx.globalAlpha = 0.95;
+      ctx.fillStyle = col;
+      ctx.beginPath();
+      ctx.ellipse(cx, bodyY, 11 * scale, 5 * scale, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 0.85;
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+      ctx.globalAlpha = 0.9;
+      ctx.fillStyle = "#fff";
+      ctx.beginPath(); ctx.arc(cx, bodyY - 1.5 * scale, 2.6 * scale, 0, Math.PI * 2); ctx.fill();
+      // Piccoli motori/luci ai due lati dello scafo, per rinforzare la
+      // lettura "navicella" a colpo d'occhio.
+      ctx.globalAlpha = 0.8 + 0.2 * Math.abs(Math.sin(now / 180));
+      ctx.fillStyle = col;
+      ctx.beginPath(); ctx.arc(cx - 9 * scale, bodyY, 1.6 * scale, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(cx + 9 * scale, bodyY, 1.6 * scale, 0, Math.PI * 2); ctx.fill();
+    } else {
+      // Piastra ottagonale della torretta fissa non ancora evoluta.
+      ctx.globalAlpha = 0.95;
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let i = 0; i < 8; i++){
+        const a = ang / 3 + i * Math.PI / 4;
+        const px2 = cx + Math.cos(a) * 6 * scale, py2 = bodyY + Math.sin(a) * 6 * scale;
+        if (i === 0) ctx.moveTo(px2, py2); else ctx.lineTo(px2, py2);
+      }
+      ctx.closePath(); ctx.stroke();
     }
-    ctx.closePath(); ctx.stroke();
-    // Canna orientata verso il bersaglio
+
+    // Canna orientata verso il bersaglio, attaccata al corpo (fluttua
+    // insieme allo scafo quando la torretta e' evoluta).
     ctx.lineWidth = 3;
     ctx.lineCap = "round";
     ctx.strokeStyle = tracking ? "#fff" : col;
     ctx.beginPath();
-    ctx.moveTo(cx + Math.cos(ang) * 2, cy + Math.sin(ang) * 2);
-    ctx.lineTo(cx + Math.cos(ang) * 10 * scale, cy + Math.sin(ang) * 10 * scale);
+    ctx.moveTo(cx + Math.cos(ang) * 2, bodyY + Math.sin(ang) * 2);
+    ctx.lineTo(cx + Math.cos(ang) * 10 * scale, bodyY + Math.sin(ang) * 10 * scale);
     ctx.stroke();
     ctx.lineCap = "butt";
     // Nucleo: rosso pulsante quando ha agganciato un bersaglio
     ctx.globalAlpha = pulse;
     ctx.fillStyle = tracking ? "#ff5b5b" : "#fff";
-    ctx.beginPath(); ctx.arc(cx, cy, 2.2 * scale, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx, bodyY, 2.2 * scale, 0, Math.PI * 2); ctx.fill();
 
     // Scritta "LEVEL UP" che compare per ~1 secondo appena la torretta
-    // evolve in robot: t.level_up e' server-authoritative (vedi
+    // evolve in navicella: t.level_up e' server-authoritative (vedi
     // ROBOT_LEVELUP_DISPLAY_SECONDS/level_up_left in main.py), quindi
     // sparisce da sola senza bisogno di un timer lato client.
     if (t.level_up){
@@ -2226,7 +2273,7 @@ function drawTurrets(now){
       ctx.fillStyle = "#fff";
       ctx.font = "bold 8px monospace";
       ctx.textAlign = "center";
-      ctx.fillText("LEVEL UP", cx, cy - 15 * scale);
+      ctx.fillText("LEVEL UP", cx, bodyY - 15 * scale);
     }
   });
   ctx.restore();
@@ -2240,8 +2287,9 @@ function drawMissiles(now){
   if (!list.length) return;
   ctx.save();
   list.forEach(function(mz){
-    const cx = mz.x * BASE_CELL + BASE_CELL / 2;
-    const cy = mz.y * BASE_CELL + BASE_CELL / 2;
+    const pos = getRenderedMissilePos(mz, now);
+    const cx = pos.x * BASE_CELL + BASE_CELL / 2;
+    const cy = pos.y * BASE_CELL + BASE_CELL / 2;
     ctx.globalAlpha = 0.3;
     ctx.fillStyle = "#8fd3ff";
     ctx.beginPath(); ctx.arc(cx, cy, 7, 0, Math.PI * 2); ctx.fill();
@@ -2529,6 +2577,7 @@ function renderLoop(now){
       if (p.id !== myId) stepRemoteSim(p, dt);
     });
     (currSnapshot.pets || []).forEach(function(pet){ stepRemotePetSim(pet, dt); });
+    (currSnapshot.missiles || []).forEach(function(mz){ stepRemoteMissileSim(mz, dt); });
   }
   updateThemeFx(dt);
 
@@ -2615,6 +2664,7 @@ function onState(msg){
     swirls = [];
     remoteSim = {};
     remotePetSim = {};
+    remoteMissileSim = {};
     lastServerPos = {};
     lastFacingMap = {};
     lastRequestedDir = null;
@@ -2778,6 +2828,73 @@ function onState(msg){
   Object.keys(remotePetSim).forEach(function(id){
     if (!seenPetIds.has(id)) delete remotePetSim[id];
   });
+
+  // Stessa identica logica di riconciliazione "dead reckoning" di sopra,
+  // ma per il missile guidato (bonus 400 punti): il server ora manda anche
+  // per lui x/y continui + direzione (vedi missile_public in main.py),
+  // quindi il client puo' farlo avanzare da solo tra un pacchetto e l'altro
+  // invece di scattare da una cella intera alla successiva ad ogni tick
+  // (il movimento "a scatti" segnalato).
+  const seenMissileIds = new Set();
+  (msg.missiles || []).forEach(function(mz){
+    seenMissileIds.add(mz.id);
+    const dir = mz.dir;
+    let gx, gy, ac;
+    if (dir){
+      const v = DIR_VEC[dir];
+      if (v[0] !== 0){
+        gx = v[0] > 0 ? Math.floor(mz.x) : Math.ceil(mz.x);
+        gy = Math.round(mz.y);
+        ac = Math.max(0, Math.min(1, (mz.x - gx) * v[0]));
+      } else {
+        gx = Math.round(mz.x);
+        gy = v[1] > 0 ? Math.floor(mz.y) : Math.ceil(mz.y);
+        ac = Math.max(0, Math.min(1, (mz.y - gy) * v[1]));
+      }
+    } else {
+      gx = Math.round(mz.x); gy = Math.round(mz.y); ac = 0;
+    }
+
+    const prev = remoteMissileSim[mz.id];
+    if (!prev){
+      remoteMissileSim[mz.id] = { gridX: gx, gridY: gy, accum: ac, dir: dir };
+    } else {
+      const cur = getRenderedMissilePos(mz, now);
+      const dx = cur.x - mz.x, dy = cur.y - mz.y;
+      const errDist = Math.hypot(dx, dy);
+      if (errDist > 0.6){
+        // Scarto grande (lancio appena avvenuto, riaggancio a un nuovo
+        // bersaglio lontano o correzione forte): snap diretto.
+        remoteMissileSim[mz.id] = { gridX: gx, gridY: gy, accum: ac, dir: dir };
+      } else {
+        prev.dir = dir;
+        if (errDist > 0.02){
+          const corrX = cur.x - dx * 0.8, corrY = cur.y - dy * 0.8;
+          if (dir){
+            const v = DIR_VEC[dir];
+            if (v[0] !== 0){
+              prev.gridX = v[0] > 0 ? Math.floor(corrX) : Math.ceil(corrX);
+              prev.gridY = Math.round(corrY);
+              prev.accum = Math.max(0, Math.min(1, (corrX - prev.gridX) * v[0]));
+            } else {
+              prev.gridX = Math.round(corrX);
+              prev.gridY = v[1] > 0 ? Math.floor(corrY) : Math.ceil(corrY);
+              prev.accum = Math.max(0, Math.min(1, (corrY - prev.gridY) * v[1]));
+            }
+          } else {
+            prev.gridX = Math.round(corrX); prev.gridY = Math.round(corrY); prev.accum = 0;
+          }
+        } else {
+          prev.gridX = gx; prev.gridY = gy; prev.accum = ac;
+        }
+      }
+    }
+  });
+  // Pulizia: un missile esploso/estinto non deve lasciare in giro una
+  // simulazione "fantasma" che occupa memoria per tutto il round.
+  Object.keys(remoteMissileSim).forEach(function(id){
+    if (!seenMissileIds.has(id)) delete remoteMissileSim[id];
+  });
   lastPhase = msg.phase;
 
   {
@@ -2890,7 +3007,7 @@ function onGameEvent(msg){
       // resta leggibile a colpo d'occhio anche in piena azione.
       const labels = {
         extra_life:   ["VITA EXTRA! \u2665", ""],
-        laser:        ["LASER SBLOCCATO!", "spara da solo per 1 minuto"],
+        laser:        ["LASER SBLOCCATO!", "spara da solo quando un nemico e' entro 12 caselle"],
         mines:        ["MINE SBLOCCATE!", "2 mine \u00b7 premi 1 per posarle"],
         ninja:        ["NINJA SBLOCCATO!", "invisibilit\u00e0 \u00b7 premi 2 per attivarla"],
         missile:      ["MISSILE GUIDATO!", "premi 3 per lanciarlo"],
@@ -2899,7 +3016,7 @@ function onGameEvent(msg){
         armor:        ["CORAZZA LASER SBLOCCATA!", "20 secondi \u00b7 premi 6 per attivarla"],
         lightning:    ["FULMINE SBLOCCATO!", "colpisce tutti \u00b7 premi 7 per scatenarlo"],
         pet:          ["PET FEDELE SBLOCCATO!", "premi 8 per evocarlo \u00b7 attacca chi si avvicina"],
-        robot:        ["EVOLUZIONE ROBOT SBLOCCATA!", "premi 9 per evolvere la torretta, se e' ancora viva"],
+        robot:        ["EVOLUZIONE NAVICELLA SBLOCCATA!", "premi 9 per evolvere la torretta, se e' ancora viva"],
       };
       const lb = labels[msg.bonus] || ["BONUS!", ""];
       const txt = lb[0] + (lb[1] ? " \u00b7 " + lb[1] : "");
@@ -2974,7 +3091,7 @@ function onGameEvent(msg){
       // currSnapshot.turrets[].level_up (server-authoritative, sparisce da
       // sola dopo 1 secondo), qui serve solo il feedback sonoro/toast.
       playRobotEvolve();
-      if (msg.player === myId) showToast("La torretta si e' evoluta in un robot!");
+      if (msg.player === myId) showToast("La torretta si e' evoluta in una navicella spaziale!");
       break;
     }
     case "pet_summon": {
@@ -3080,7 +3197,7 @@ function onGameEvent(msg){
       } else {
         tone(130, 0.18, "sawtooth", 0.13, 0.02);
       }
-      if (msg.by === myId) showToast((msg.evolved ? "Robot avversario" : "Torretta avversaria") + " distrutto dalla corazza!");
+      if (msg.by === myId) showToast((msg.evolved ? "Navicella avversaria" : "Torretta avversaria") + " distrutta dalla corazza!");
       break;
     }
     case "mine_destroyed": {
@@ -3092,10 +3209,10 @@ function onGameEvent(msg){
       if (msg.by === myId) showToast("Mina avversaria disinnescata dalla corazza!");
       break;
     }
-    case "laser_expired": {
-      if (msg.player === myId) showToast("Il laser si e' esaurito");
-      break;
-    }
+    // Nota: il laser (bonus 150 punti, arma principale) non scade piu' -
+    // resta sbloccato per tutta la partita e si attiva solo quando un
+    // nemico e' entro 12 caselle (vedi update_lasers in main.py), quindi
+    // il server non manda piu' l'evento "laser_expired".
     case "mine_boom": {
       explosions.push({ x: msg.x, y: msg.y, color: "#ff9d1f", start: now });
       noiseBurst(0.22, 0.18);
@@ -3371,7 +3488,7 @@ function updateGameSidebar(msg){
       }
       if (p.robot && p.id === myId){
         const t = document.createElement("span"); t.className="tag alert";
-        t.textContent = p.robot_used ? "ROBOT ATTIVO" : "ROBOT (tasto 9)";
+        t.textContent = p.robot_used ? "NAVICELLA ATTIVA" : "NAVICELLA (tasto 9)";
         li.appendChild(t);
       }
       const spacer = document.createElement("span"); spacer.className = "spacer"; li.appendChild(spacer);
@@ -3531,12 +3648,12 @@ document.addEventListener("keydown", function(ev){
     ev.preventDefault();
   }
   // Bonus 1000 punti: il tasto "9" evolve la torretta automatica (bonus 600
-  // punti) in un robot mobile su 3 gambe, MA SOLO SE la torretta e' ancora
-  // viva sulla mappa in quel momento (il server ignora la richiesta se e'
-  // gia' stata distrutta). Da quel momento il robot cammina da solo per la
-  // mappa a caccia di nemici, con cadenza di fuoco raddoppiata. Utilizzabile
-  // una sola volta per round: il server ignora richieste successive (vedi
-  // try_evolve_turret).
+  // punti) in una navicella spaziale mobile, MA SOLO SE la torretta e'
+  // ancora viva sulla mappa in quel momento (il server ignora la richiesta
+  // se e' gia' stata distrutta). Da quel momento la navicella insegue da
+  // sola il nemico piu' vicino (velocita' dimezzata), con cadenza di fuoco
+  // raddoppiata. Utilizzabile una sola volta per round: il server ignora
+  // richieste successive (vedi try_evolve_turret).
   if (ev.key === "9" && !ev.repeat){
     sendMsg({ type: "evolve_turret" });
     ev.preventDefault();
