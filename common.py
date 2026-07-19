@@ -201,6 +201,25 @@ SUPERBOMB_THRESHOLD = 1400
 SUPERBOMB_FUSE_SECONDS = 2.0        # tempo (secondi) prima che il bombolone esploda dopo il piazzamento
 SUPERBOMB_RADIUS_CELLS = 8          # raggio dell'esplosione concentrica (caselle, distanza Manhattan)
 
+# ---- bonus 1600 punti: mongolfiera vagante (tasto "0", DOPO il bombolone) ----
+# Il tasto "0" e' lo STESSO usato per mortaio (1200) e bombolone (1400): una
+# volta che ENTRAMBI sono gia' stati piazzati, la pressione SUCCESSIVA del
+# tasto "0" fa librare in aria, UNA SOLA VOLTA per round, questa mongolfiera
+# (vedi try_launch_balloon in main.py). Non ha alcun bersaglio: vaga a caso
+# su TUTTA la mappa volando sopra ogni muro (esattamente come le bombe di
+# mortaio, mai bloccata dal labirinto) e sgancia una bomba ogni
+# BALLOON_BOMB_INTERVAL_SECONDS nella propria posizione corrente. A
+# differenza del bombolone la bomba sganciata NON ha alcuna miccia: esplode
+# ISTANTANEAMENTE con un raggio di BALLOON_BOMB_RADIUS_CELLS caselle
+# (distanza Manhattan). La mongolfiera resta in volo per tutto il resto del
+# round, anche se il proprietario muore o si disconnette (come mortaio e
+# torretta).
+BALLOON_THRESHOLD = 1600
+BALLOON_SPEED = 2.2                       # celle al secondo: vaga lentamente su tutta la mappa
+BALLOON_BOMB_INTERVAL_SECONDS = 3.0       # cadenza di sgancio bombe
+BALLOON_BOMB_RADIUS_CELLS = 4             # raggio dell'esplosione istantanea (caselle, distanza Manhattan)
+BALLOON_RETARGET_EPSILON = 0.15           # sotto questa distanza dalla meta' ne sceglie subito una nuova a caso
+
 # All'impatto, oltre al colpo diretto, la bomba lascia a terra una nuvola di
 # gas velenoso (stile "pozione veleno" di Clash Royale) che resta attiva per
 # POISON_DURATION_SECONDS: chiunque (avversario) si trovi entro

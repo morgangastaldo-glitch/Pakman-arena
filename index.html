@@ -535,12 +535,14 @@ const BONUS_STEPS = [
   { at: 1100, label: "3 VITE EXTRA" },
   { at: 1200, label: "MORTAIO (tasto 0)" },
   { at: 1400, label: "BOMBOLONE: dopo il mortaio (tasto 0)" },
+  { at: 1600, label: "MONGOLFIERA: dopo il bombolone (tasto 0)" },
 ];
 const MISSILE_SPEED_MULT = 1.1; // deve restare identica a MISSILE_SPEED_MULT in common.py
 const TRAP_DURATION_SECONDS = 3; // deve restare identica a TRAP_DURATION_SECONDS in common.py
 const MINE_VISIBILITY_RANGE = 5; // deve restare identica a MINE_VISIBILITY_RANGE in common.py
 const SUPERBOMB_FUSE_SECONDS = 2.0;   // deve restare identica a SUPERBOMB_FUSE_SECONDS in common.py
 const SUPERBOMB_RADIUS_CELLS = 8;     // deve restare identica a SUPERBOMB_RADIUS_CELLS in common.py
+const BALLOON_BOMB_RADIUS_CELLS = 4;  // deve restare identica a BALLOON_BOMB_RADIUS_CELLS in common.py
 function cellDurationMs(isAssassin){
   const speed = NORMAL_SPEED * (isAssassin ? ASSASSIN_SPEED_MULT : 1);
   return 1000 / speed;
@@ -907,6 +909,21 @@ function playSuperbombExplode(){
   tone(60, 0.5, "sawtooth", 0.22, 0);
   tone(40, 0.6, "sine", 0.18, 0.05);
   tone(90, 0.35, "square", 0.12, 0.02);
+}
+// Lancio della mongolfiera (bonus 1600 punti, tasto 0 dopo il bombolone):
+// un "fiato" caldo e crescente, come il bruciatore che gonfia il pallone e
+// lo fa staccare da terra.
+function playBalloonLaunch(){
+  sweep(140, 320, 0.4, "sine", 0.12);
+  tone(220, 0.12, "square", 0.08, 0.1);
+}
+// Sgancio/esplosione della bomba della mongolfiera: piu' rapida e secca
+// dell'impatto di mortaio (nessun arco, cade e scoppia subito), ma piu'
+// piccola del boato del bombolone (raggio 4 contro 8 caselle).
+function playBalloonBomb(){
+  noiseBurst(0.24, 0.2);
+  tone(95, 0.22, "sawtooth", 0.16, 0);
+  tone(65, 0.28, "sine", 0.13, 0.03);
 }
 // Colpo di laser: sweep acuto e secco verso il basso.
 function playLaser(){
@@ -2555,6 +2572,72 @@ function drawSuperbombs(now){
   ctx.restore();
 }
 
+// Mongolfiera vagante (bonus 1600 punti, tasto 0 dopo il bombolone): vola
+// libera su tutta la mappa senza alcun bersaglio (server-authoritative,
+// vedi update_balloons/balloon_public in main.py), sganciando una bomba
+// istantanea ogni 3 secondi nel punto esatto in cui si trova. Disegnata
+// sollevata rispetto alla mappa, con la sua ombra proiettata a terra
+// esattamente nel punto in cui cadrebbe una bomba, per rendere leggibile
+// che vola sopra tutto, muri compresi (come le bombe di mortaio in volo).
+function drawBalloons(now){
+  const list = (currSnapshot && currSnapshot.balloons) || [];
+  if (!list.length) return;
+  ctx.save();
+  list.forEach(function(b){
+    const shadowX = b.x * BASE_CELL + BASE_CELL / 2;
+    const shadowY = b.y * BASE_CELL + BASE_CELL / 2;
+    const owner = findPlayer(currSnapshot, b.owner);
+    const col = (owner && COLOR_HEX[(owner.colors || [])[0]]) || "#ff9d3b";
+    const bob = Math.sin(now / 900 + (shadowX + shadowY) * 0.01) * 2;
+    const liftHeight = 15 + bob;
+    const cy = shadowY - liftHeight;
+
+    // Ombra a terra: coincide esattamente col punto in cui sganciera' la
+    // prossima bomba (nessun arco, a differenza del mortaio).
+    ctx.globalAlpha = 0.32;
+    ctx.fillStyle = "#000";
+    ctx.beginPath();
+    ctx.ellipse(shadowX, shadowY, 6, 3, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Cesto di vimini appeso sotto il pallone, con le corde di collegamento.
+    ctx.globalAlpha = 0.95;
+    ctx.strokeStyle = "#5e3b21";
+    ctx.lineWidth = 0.6;
+    ctx.beginPath();
+    ctx.moveTo(shadowX - 3, cy + 6); ctx.lineTo(shadowX - 5, cy + 1);
+    ctx.moveTo(shadowX + 3, cy + 6); ctx.lineTo(shadowX + 5, cy + 1);
+    ctx.stroke();
+    ctx.fillStyle = "#8a5a34";
+    ctx.fillRect(shadowX - 3, cy + 6, 6, 4);
+    ctx.lineWidth = 0.8;
+    ctx.strokeRect(shadowX - 3, cy + 6, 6, 4);
+
+    // Alone morbido dietro il pallone, nel colore del proprietario.
+    ctx.globalAlpha = 0.22;
+    ctx.fillStyle = col;
+    ctx.beginPath(); ctx.arc(shadowX, cy - 2, 10, 0, Math.PI * 2); ctx.fill();
+
+    // Involucro del pallone: corpo scuro con strisce verticali nel colore
+    // del proprietario, cosi' resta subito riconoscibile a chi l'ha
+    // lanciata (stessa idea delle fasce colorate di mortaio/bombolone).
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = "#2a2a2e";
+    ctx.beginPath(); ctx.ellipse(shadowX, cy - 2, 7, 8.5, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.save();
+    ctx.beginPath(); ctx.ellipse(shadowX, cy - 2, 7, 8.5, 0, 0, Math.PI * 2); ctx.clip();
+    ctx.fillStyle = col;
+    for (let i = -2; i <= 2; i++){
+      ctx.fillRect(shadowX + i * 3 - 1, cy - 11, 2, 17);
+    }
+    ctx.restore();
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.ellipse(shadowX, cy - 2, 7, 8.5, 0, 0, Math.PI * 2); ctx.stroke();
+  });
+  ctx.restore();
+}
+
 // Nuvola velenosa lasciata a terra dall'impatto del mortaio (bonus 1200
 // punti): un'area verde tossica che pulsa e "ribolle" finche' non svanisce
 // (server-authoritative, vedi poison_zones/pz.left in main.py). Il raggio
@@ -2928,6 +3011,7 @@ function renderLoop(now){
   drawPets(now);
   drawMortars(now);
   drawSuperbombs(now);
+  drawBalloons(now);
   drawMissiles(now);
   drawBombs(now);
   drawLaserProjectiles(now);
@@ -3391,10 +3475,12 @@ function onGameEvent(msg){
       const byPet = msg.cause === "pet";
       const byMortar = msg.cause === "mortar";
       const byPoison = msg.cause === "poison";
+      const bySuperbomb = msg.cause === "superbomb";
+      const byBalloon = msg.cause === "balloon";
       const causeTxt = byLaser ? " dal laser" : (byMine ? " da una mina" : (byAssassin ? " da un ninja invisibile"
         : (byMissile ? " da un missile guidato" : (byTrap ? " da una trappola" : (byArmor ? " dalla corazza laser"
         : (byLightning ? " da un fulmine" : (byPet ? " dal pet avversario" : (byMortar ? " da una bomba di mortaio"
-        : (byPoison ? " dalla nuvola velenosa" : "")))))))));
+        : (byPoison ? " dalla nuvola velenosa" : (bySuperbomb ? " da un bombolone" : (byBalloon ? " da una bomba di mongolfiera" : "")))))))))));
       const stolenTxt = msg.stolen ? (" (-" + msg.stolen + " punti)") : "";
       if (msg.victim === myId){
         showBonusBanner(msg.respawn ? ("HAI PERSO UNA VITA \u2665" + msg.lives) : "SEI STATO ELIMINATO");
@@ -3481,6 +3567,24 @@ function onGameEvent(msg){
       if (msg.by === myId) showToast("Bombolone esploso!");
       break;
     }
+    case "balloon_launch": {
+      if (msg.player === myId) showToast("Mongolfiera in volo! Sgancia bombe ogni 3 secondi vagando su tutta la mappa.");
+      playBalloonLaunch();
+      break;
+    }
+    case "balloon_bomb_drop": {
+      // Bomba sganciata dalla mongolfiera (bonus 1600 punti): nessuna
+      // miccia, esplode ISTANTANEAMENTE con un raggio di
+      // BALLOON_BOMB_RADIUS_CELLS (4) caselle (vedi drawShockwaves). Ogni
+      // struttura avversaria nel raggio viene neutralizzata separatamente
+      // dai suoi stessi eventi (mine_destroyed/turret_destroyed/
+      // mortar_destroyed/pet_destroyed con cause "balloon").
+      const balCol = (findPlayer(currSnapshot, msg.by) &&
+        COLOR_HEX[(findPlayer(currSnapshot, msg.by).colors || [])[0]]) || "#ffb347";
+      shockwaves.push({ x: msg.x, y: msg.y, color: balCol, start: now, radiusCells: msg.radius || BALLOON_BOMB_RADIUS_CELLS });
+      playBalloonBomb();
+      break;
+    }
     case "poison_spawn": {
       // Suono acido/gorgogliante distinto dal boato dell'impatto diretto,
       // per far capire che resta un pericolo a terra.
@@ -3497,14 +3601,15 @@ function onGameEvent(msg){
       noiseBurst(0.2, 0.16);
       tone(120, 0.18, "sawtooth", 0.13, 0.02);
       if (msg.by === myId){
-        showToast(msg.cause === "superbomb" ? "Mortaio avversario distrutto dal bombolone!" : "Mortaio avversario distrutto dalla corazza!");
+        const mortarCauseTxt = { superbomb: "dal bombolone", balloon: "da una bomba di mongolfiera" }[msg.cause] || "dalla corazza";
+        showToast("Mortaio avversario distrutto " + mortarCauseTxt + "!");
       }
       break;
     }
     case "pet_destroyed": {
       const causeTxt = { mine: "una mina", missile: "un missile guidato", laser: "un colpo laser",
                           armor: "la corazza laser", lightning: "un fulmine",
-                          superbomb: "un bombolone" }[msg.cause] || "un nemico";
+                          superbomb: "un bombolone", balloon: "una bomba di mongolfiera" }[msg.cause] || "un nemico";
       explosions.push({ x: msg.x, y: msg.y, color: (findPlayer(currSnapshot, msg.owner) &&
         COLOR_HEX[(findPlayer(currSnapshot, msg.owner).colors || [])[0]]) || "#fff", start: now });
       noiseBurst(0.18, 0.15);
@@ -3602,19 +3707,21 @@ function onGameEvent(msg){
       }
       if (msg.by === myId){
         const what = msg.evolved ? "Navicella avversaria" : "Torretta avversaria";
-        showToast(what + (msg.cause === "superbomb" ? " distrutta dal bombolone!" : " distrutta dalla corazza!"));
+        const turretCauseTxt = { superbomb: "dal bombolone", balloon: "da una bomba di mongolfiera" }[msg.cause] || "dalla corazza";
+        showToast(what + " distrutta " + turretCauseTxt + "!");
       }
       break;
     }
     case "mine_destroyed": {
-      // La corazza laser (bonus 700 punti) o il bombolone (bonus 1400
-      // punti) ha disinnescato una mina AVVERSARIA (le proprie mine restano
-      // sempre intatte).
+      // La corazza laser (bonus 700 punti), il bombolone (bonus 1400
+      // punti) o la mongolfiera (bonus 1600 punti) ha disinnescato una
+      // mina AVVERSARIA (le proprie mine restano sempre intatte).
       explosions.push({ x: msg.x, y: msg.y, color: ARMOR_COLOR, start: now });
       noiseBurst(0.16, 0.14);
       tone(180, 0.14, "square", 0.11);
       if (msg.by === myId){
-        showToast(msg.cause === "superbomb" ? "Mina avversaria distrutta dal bombolone!" : "Mina avversaria disinnescata dalla corazza!");
+        const mineCauseTxt = { superbomb: "dal bombolone", balloon: "da una bomba di mongolfiera" }[msg.cause] || "disinnescata dalla corazza";
+        showToast("Mina avversaria " + (msg.cause ? "distrutta " + mineCauseTxt : mineCauseTxt) + "!");
       }
       break;
     }
@@ -3839,7 +3946,8 @@ function updateGameSidebar(msg){
            (p.pet && p.id === myId ? ("P" + (p.pet_summoned ? "1" : "0")) : "") +
            (p.robot && p.id === myId ? ("R" + (p.robot_used ? "1" : "0")) : "") +
            (p.mortar && p.id === myId ? ("M" + (p.mortar_placed ? "1" : "0")) : "") +
-           (p.superbomb && p.id === myId ? ("B" + (p.superbomb_placed ? "1" : "0")) : "");
+           (p.superbomb && p.id === myId ? ("B" + (p.superbomb_placed ? "1" : "0")) : "") +
+           (p.balloon && p.id === myId ? ("L" + (p.balloon_launched ? "1" : "0")) : "");
   }).join("|");
 
   if (sig !== lastSidebarSig){
@@ -3912,6 +4020,13 @@ function updateGameSidebar(msg){
         t.textContent = !p.mortar_placed
           ? "BOMBOLONE (dopo il mortaio)"
           : (p.superbomb_placed ? "BOMBOLONE ATTIVO" : "BOMBOLONE (tasto 0)");
+        li.appendChild(t);
+      }
+      if (p.balloon && p.id === myId){
+        const t = document.createElement("span"); t.className="tag alert";
+        t.textContent = !p.superbomb_placed
+          ? "MONGOLFIERA (dopo il bombolone)"
+          : (p.balloon_launched ? "MONGOLFIERA IN VOLO" : "MONGOLFIERA (tasto 0)");
         li.appendChild(t);
       }
       const spacer = document.createElement("span"); spacer.className = "spacer"; li.appendChild(spacer);

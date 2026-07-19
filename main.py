@@ -66,7 +66,10 @@ from common import (
     MORTAR_FLIGHT_SECONDS_PER_CELL, MORTAR_BLAST_RADIUS_CELLS,
     POISON_DURATION_SECONDS, POISON_TICK_SECONDS, POISON_RADIUS_CELLS,
     SUPERBOMB_THRESHOLD, SUPERBOMB_FUSE_SECONDS, SUPERBOMB_RADIUS_CELLS,
+    BALLOON_THRESHOLD, BALLOON_SPEED, BALLOON_BOMB_INTERVAL_SECONDS,
+    BALLOON_BOMB_RADIUS_CELLS, BALLOON_RETARGET_EPSILON,
 )
+import math
 
 # Direzione opposta di ciascuna direzione: serve per l'inversione di marcia
 # istantanea a meta' cella (stile Pac-Man originale, vedi update_movement).
@@ -209,6 +212,10 @@ class Player:
         # stato dello sblocco/utilizzo, come per gli altri bonus a comando.
         self.has_superbomb = False     # bonus sbloccato (una volta per round)
         self.superbomb_placed = False  # True dopo il piazzamento: il tasto "0" (dopo il mortaio) e' utilizzabile una sola volta
+
+        # ---- bonus 1600 punti: mongolfiera vagante (tasto "0", DOPO il bombolone) ----
+        self.has_balloon = False       # bonus sbloccato (una volta per round)
+        self.balloon_launched = False  # True dopo il lancio: il tasto "0" (dopo mortaio+bombolone) e' utilizzabile una sola volta
         # Uccisioni fatte in questo round: ogni 2 kill si guadagna una vita extra.
         self.kills = 0
 
@@ -263,6 +270,8 @@ class Player:
             "mortar_placed": self.mortar_placed,
             "superbomb": self.has_superbomb,
             "superbomb_placed": self.superbomb_placed,
+            "balloon": self.has_balloon,
+            "balloon_launched": self.balloon_launched,
         }
 
 
@@ -306,6 +315,10 @@ class Room:
         self.mortars = []
         self.bombs = []
         self.poison_zones = []  # nuvole velenose lasciate a terra dagli impatti del mortaio
+        # Mongolfiere in volo (bonus 1600 punti): permanenti come mortai e
+        # torrette, vagano a caso su tutta la mappa sganciando bombe a
+        # intervalli regolari, azzerate ad ogni nuovo round.
+        self.balloons = []
         # Mappa corrente della stanza: viene ripescata a caso tra le 10
         # disponibili a OGNI inizio round (vedi run_round), cosi' ogni
         # partita puo' capitare su una mappa diversa per forma/colore/misura.
@@ -490,6 +503,8 @@ class Room:
             p.mortar_placed = False
             p.has_superbomb = False
             p.superbomb_placed = False
+            p.has_balloon = False
+            p.balloon_launched = False
             p.kills = 0
         self.lasers = []
         self.mines = []
@@ -498,6 +513,7 @@ class Room:
         self.pets = []
         self.mortars = []
         self.superbombs = []
+        self.balloons = []
         self.bombs = []
         self.poison_zones = []  # nuvole velenose lasciate a terra dagli impatti del mortaio
 
@@ -851,6 +867,24 @@ class Room:
             self.push_event({
                 "kind": "bonus", "player": p.id,
                 "bonus": "superbomb", "points": SUPERBOMB_THRESHOLD,
+            })
+        # Bonus 1600 punti: sblocca la mongolfiera vagante, ma NON la fa
+        # librare subito. Si libra a comando RIUSANDO ancora il tasto "0"
+        # (vedi try_launch_balloon), UNA SOLA VOLTA per giocatore per round,
+        # ma solo DOPO aver gia' piazzato sia il mortaio (1200) sia il
+        # bombolone (1400): finche' entrambi non sono stati piazzati, il
+        # tasto "0" resta dedicato a quelli (vedi il dispatch del messaggio
+        # "place_mortar").
+        if (
+            p.alive
+            and p.points >= BALLOON_THRESHOLD
+            and BALLOON_THRESHOLD not in p.claimed
+        ):
+            p.claimed.add(BALLOON_THRESHOLD)
+            p.has_balloon = True
+            self.push_event({
+                "kind": "bonus", "player": p.id,
+                "bonus": "balloon", "points": BALLOON_THRESHOLD,
             })
 
     def try_portal(self, p):
@@ -1863,6 +1897,144 @@ class Room:
             if pet["owner"] != owner and abs(pet["x"] - ox) + abs(pet["y"] - oy) <= SUPERBOMB_RADIUS_CELLS:
                 self.destroy_pet(pet, "superbomb", owner)
 
+    # ---- bonus 1600 punti: mongolfiera vagante (tasto "0", DOPO il bombolone) ----
+
+    def try_launch_balloon(self, player):
+        """Tasto '0', RIUSATO una terza volta: viene chiamato dal dispatch
+        del messaggio "place_mortar" solo quando sia player.mortar_placed
+        sia player.superbomb_placed sono gia' True (finche' non lo sono
+        entrambi, quella stessa pressione richiama invece
+        try_place_mortar/try_place_superbomb). Fa librare in aria, UNA SOLA
+        VOLTA per round, una mongolfiera che nasce sulla cella corrente del
+        giocatore: da quel momento vaga a caso su TUTTA la mappa (vedi
+        update_balloons), volando sopra ogni muro senza alcun bersaglio, e
+        sgancia una bomba ogni BALLOON_BOMB_INTERVAL_SECONDS nella propria
+        posizione corrente, che esplode ISTANTANEAMENTE (vedi
+        explode_balloon_bomb) con un raggio di BALLOON_BOMB_RADIUS_CELLS
+        caselle. E' permanente: resta in volo per tutto il resto del round,
+        anche se il proprietario muore o si disconnette (come il mortaio).
+
+        Se il giocatore e' intrappolato dalla trappola di un avversario,
+        NON puo' usare alcun bonus finche' non torna libero di muoversi."""
+        if not player.alive or player.trapped_left > 0 or not player.has_balloon or player.balloon_launched:
+            return
+        player.balloon_launched = True
+        balloon = {
+            "id": uuid.uuid4().hex[:8],
+            "owner": player.id,
+            "x": float(player.x), "y": float(player.y),
+            "tx": float(player.x), "ty": float(player.y),
+            "bomb_cd": BALLOON_BOMB_INTERVAL_SECONDS,
+        }
+        self.balloons.append(balloon)
+        self.push_event({
+            "kind": "balloon_launch", "id": balloon["id"], "player": player.id,
+            "x": player.x, "y": player.y,
+        })
+
+    def balloon_public(self, b):
+        return {
+            "id": b["id"], "x": round(b["x"], 3), "y": round(b["y"], 3),
+            "owner": b["owner"],
+        }
+
+    def update_balloons(self):
+        """Ogni mongolfiera in volo non ha alcun bersaglio: vaga a caso su
+        tutta la mappa, scegliendo una nuova meta' casuale (in linea d'aria,
+        MAI attraverso bfs_path/corridoi) ogni volta che raggiunge quella
+        corrente, esattamente come vola sopra i muri una bomba di mortaio in
+        volo. Ogni BALLOON_BOMB_INTERVAL_SECONDS sgancia una bomba nella
+        propria posizione attuale (vedi explode_balloon_bomb)."""
+        if not self.balloons:
+            return
+        for b in self.balloons:
+            dx, dy = b["tx"] - b["x"], b["ty"] - b["y"]
+            dist = math.hypot(dx, dy)
+            if dist <= BALLOON_RETARGET_EPSILON:
+                b["tx"] = random.uniform(0, self.maze_w - 1)
+                b["ty"] = random.uniform(0, self.maze_h - 1)
+            else:
+                step = BALLOON_SPEED * TICK_DT
+                if step >= dist:
+                    b["x"], b["y"] = b["tx"], b["ty"]
+                else:
+                    b["x"] += dx / dist * step
+                    b["y"] += dy / dist * step
+            b["bomb_cd"] -= TICK_DT
+            if b["bomb_cd"] <= 0:
+                b["bomb_cd"] = BALLOON_BOMB_INTERVAL_SECONDS
+                self.explode_balloon_bomb(b)
+
+    def explode_balloon_bomb(self, b):
+        """Bomba sganciata dalla mongolfiera (bonus 1600 punti): a
+        differenza del bombolone NON ha alcuna miccia, esplode
+        ISTANTANEAMENTE nel punto di sgancio con un raggio di
+        BALLOON_BOMB_RADIUS_CELLS caselle (distanza Manhattan), colpendo
+        dall'alto (come l'impatto del mortaio) e neutralizzando tutto cio'
+        che trova nel raggio tranne le cose del proprietario stesso:
+          - fa perdere una vita a ogni avversario vivo nel raggio (stessa
+            immunita' ghost/protezione post-respawn degli altri ordigni);
+          - disinnesca ogni mina avversaria nel raggio;
+          - distrugge ogni torretta/robot avversario nel raggio;
+          - distrugge ogni mortaio avversario nel raggio;
+          - distrugge ogni pet avversario nel raggio (vedi destroy_pet)."""
+        ox, oy = b["x"], b["y"]
+        owner = b["owner"]
+        self.push_event({
+            "kind": "balloon_bomb_drop", "id": b["id"],
+            "x": ox, "y": oy, "by": owner, "radius": BALLOON_BOMB_RADIUS_CELLS,
+        })
+
+        victims = [
+            p for p in self.players.values()
+            if p.alive and p.id != owner
+            and p.ghost_left <= 0 and p.prot_left <= 0
+            and abs(p.x - ox) + abs(p.y - oy) <= BALLOON_BOMB_RADIUS_CELLS
+        ]
+        for victim in victims:
+            self.kill_player(victim, "balloon", shooter_id=owner)
+
+        if self.mines:
+            remaining_mines = []
+            for m in self.mines:
+                if m["owner"] != owner and abs(m["x"] - ox) + abs(m["y"] - oy) <= BALLOON_BOMB_RADIUS_CELLS:
+                    self.push_event({
+                        "kind": "mine_destroyed", "id": m["id"],
+                        "x": m["x"], "y": m["y"], "by": owner, "cause": "balloon",
+                    })
+                else:
+                    remaining_mines.append(m)
+            self.mines = remaining_mines
+
+        if self.turrets:
+            remaining_turrets = []
+            for t in self.turrets:
+                if t["owner"] != owner and abs(t["x"] - ox) + abs(t["y"] - oy) <= BALLOON_BOMB_RADIUS_CELLS:
+                    self.push_event({
+                        "kind": "turret_destroyed", "id": t["id"],
+                        "x": t["x"], "y": t["y"], "by": owner, "cause": "balloon",
+                        "evolved": t.get("evolved", False),
+                    })
+                else:
+                    remaining_turrets.append(t)
+            self.turrets = remaining_turrets
+
+        if self.mortars:
+            remaining_mortars = []
+            for mt in self.mortars:
+                if mt["owner"] != owner and abs(mt["x"] - ox) + abs(mt["y"] - oy) <= BALLOON_BOMB_RADIUS_CELLS:
+                    self.push_event({
+                        "kind": "mortar_destroyed", "id": mt["id"],
+                        "x": mt["x"], "y": mt["y"], "by": owner, "cause": "balloon",
+                    })
+                else:
+                    remaining_mortars.append(mt)
+            self.mortars = remaining_mortars
+
+        for pet in list(self.pets):
+            if pet["owner"] != owner and abs(pet["x"] - ox) + abs(pet["y"] - oy) <= BALLOON_BOMB_RADIUS_CELLS:
+                self.destroy_pet(pet, "balloon", owner)
+
     def mortar_public(self, mt):
         return {
             "id": mt["id"], "x": mt["x"], "y": mt["y"],
@@ -2221,6 +2393,7 @@ class Room:
             ],
             "bombs": [self.bomb_public(bomb) for bomb in self.bombs],
             "superbombs": [self.superbomb_public(b) for b in self.superbombs],
+            "balloons": [self.balloon_public(b) for b in self.balloons],
             "portal_on": self.portal_on,
             "portal_cycle_left": round(max(self.portal_cycle_left, 0), 1),
             "missiles": [self.missile_public(mz) for mz in self.missiles],
@@ -2245,6 +2418,7 @@ class Room:
         self.pets = []
         self.mortars = []
         self.superbombs = []
+        self.balloons = []
         self.bombs = []
         self.poison_zones = []  # nuvole velenose lasciate a terra dagli impatti del mortaio
         for p in self.players.values():
@@ -2283,6 +2457,8 @@ class Room:
             p.mortar_placed = False
             p.has_superbomb = False
             p.superbomb_placed = False
+            p.has_balloon = False
+            p.balloon_launched = False
             p.kills = 0
 
     # ---------- main loop ----------
@@ -2328,6 +2504,7 @@ class Room:
                 self.update_bombs()   # bonus 1200 punti: avanza le bombe di mortaio in volo e le fa esplodere all'impatto
                 self.update_poison_zones()  # bonus 1200 punti: le nuvole velenose lasciate dagli impatti continuano a fare danno nel tempo
                 self.update_superbombs()  # bonus 1400 punti: avanza il conto alla rovescia dei bomboloni piazzati e li fa esplodere dopo 2 secondi
+                self.update_balloons()    # bonus 1600 punti: fa vagare a caso le mongolfiere in volo e sganciano bombe istantanee ogni 3 secondi
                 self.check_armor_effects()  # bonus 700 punti: la corazza distrugge torrette/mine/pet/mortai avversari toccati
                 winners, reason = self.check_win()
                 if winners is None and self.timer_left <= 0:
@@ -2574,12 +2751,17 @@ async def handle_client(ws):
                 # mortaio (bonus 1200 punti). Una volta che il mortaio e'
                 # gia' stato piazzato, la stessa pressione innesca invece il
                 # bombolone (bonus 1400 punti, vedi try_place_superbomb).
-                # Utilizzabile una sola volta ciascuno per giocatore (vedi
-                # try_place_mortar/try_place_superbomb): il server resta
-                # l'autorita'.
+                # Una volta che ANCHE il bombolone e' gia' stato piazzato,
+                # la stessa pressione fa librare in aria la mongolfiera
+                # (bonus 1600 punti, vedi try_launch_balloon). Utilizzabile
+                # una sola volta ciascuno per giocatore (vedi
+                # try_place_mortar/try_place_superbomb/try_launch_balloon):
+                # il server resta l'autorita'.
                 if not room or not player:
                     continue
-                if player.mortar_placed:
+                if player.mortar_placed and player.superbomb_placed:
+                    room.try_launch_balloon(player)
+                elif player.mortar_placed:
                     room.try_place_superbomb(player)
                 else:
                     room.try_place_mortar(player)
