@@ -68,8 +68,11 @@ from common import (
     SUPERBOMB_THRESHOLD, SUPERBOMB_FUSE_SECONDS, SUPERBOMB_RADIUS_CELLS,
     BALLOON_THRESHOLD, BALLOON_SPEED, BALLOON_BOMB_INTERVAL_SECONDS,
     BALLOON_BOMB_RADIUS_CELLS, BALLOON_RETARGET_EPSILON,
+    RTT_PING_INTERVAL_SECONDS, RTT_DEFAULT_SECONDS,
+    REWIND_MAX_SECONDS, REWIND_HISTORY_SECONDS,
 )
 import math
+import time
 
 # Direzione opposta di ciascuna direzione: serve per l'inversione di marcia
 # istantanea a meta' cella (stile Pac-Man originale, vedi update_movement).
@@ -150,6 +153,20 @@ class Player:
         # Ultima direzione di marcia nota: e' il "lato frontale" da cui parte
         # il laser anche se in questo istante si e' fermi contro un muro.
         self.facing = "right"
+        # ---- compensazione latenza per le svolte (vedi Room._rewind_move) ----
+        # Storico (timestamp, x, y, move_accum, direction) registrato ad ogni
+        # tick: serve a "tornare indietro" fino al momento reale in cui un
+        # tasto direzione e' stato premuto, cosi' la svolta puo' essere
+        # applicata li' invece che al momento (in ritardo) in cui il
+        # messaggio arriva sul server. Lunghezza limitata (REWIND_HISTORY_SECONDS)
+        # per non accumulare memoria round dopo round.
+        self.pos_history = deque()
+        # Stima del round-trip-time di questo giocatore (aggiornata dai
+        # pacchetti rtt_pong, vedi Room.update_rtt_pings): usata per sapere
+        # di quanto "tornare indietro" quando arriva un comando di svolta.
+        self.rtt = RTT_DEFAULT_SECONDS
+        self.rtt_ping_cd = 0.0        # countdown al prossimo ping di misura RTT
+        self.rtt_ping_sent_at = None  # timestamp dell'ultimo ping in attesa di risposta
         # ---- bonus 400 punti: missile guidato (tasto "2") ----
         self.has_missile = False
         self.missiles_left = 0
@@ -463,6 +480,11 @@ class Room:
             p.next_direction = None
             p.move_accum = 0.0
             p.alive = True
+            # Storico posizioni azzerato: dopo un teletrasporto di spawn
+            # non deve restare traccia della posizione precedente, altrimenti
+            # un riavvolgimento (vedi _rewind_move) potrebbe usarla per
+            # errore e "resuscitare" una posizione ormai non valida.
+            p.pos_history.clear()
             # reset del sistema punti/bonus per il nuovo round
             p.points = 0
             p.lives = 3             # si parte con 3 vite ad ogni nuovo round
@@ -600,75 +622,182 @@ class Room:
             # server), non il grosso teletrasporto dovuto al disallineamento
             # di rete.
             # ---- MOVIMENTO "VERO PAC-MAN" (automa a sotto-passi) ----
-            # Il tick viene consumato a sotto-passi, fermandosi ESATTAMENTE
-            # sul confine di ogni cella. Regole (identiche a stepSim nel
-            # client, cosi' predizione e server non divergono mai):
-            #  1. Inversione di marcia (direzione opposta): applicata
-            #     SUBITO, anche a meta' cella, senza scatti - la posizione
-            #     continua viene conservata ribaltando l'avanzamento
-            #     (accum -> 1-accum sulla cella successiva).
-            #  2. Svolta perpendicolare in coda: applicata solo AL CENTRO
-            #     della cella (accum == 0), come nel Pac-Man originale.
-            #     Niente piu' azzeramento dell'accum a meta' cella: sparisce
-            #     il piccolo "scatto all'indietro" ad ogni curva.
-            #  3. Se la svolta e' bloccata da un muro, la coda RESTA in
-            #     attesa e scatta da sola al primo incrocio utile.
+            # La logica vera e propria vive in _advance_state, condivisa con
+            # Room._rewind_move: cosi' un tick normale e un "riavvolgimento"
+            # per compensare la latenza (vedi sopra il messaggio "move")
+            # usano ESATTAMENTE la stessa fisica, e non possono divergere.
             speed = NORMAL_SPEED
             if p.is_assassin:
                 # Il super assassino (300 punti) e' piu' veloce dei
                 # giocatori normali (stesso moltiplicatore 1.0 -> 1.1).
                 speed *= ASSASSIN_SPEED_MULT
-            remaining = TICK_DT
-            while remaining > 1e-9:
-                if p.next_direction is not None:
-                    if (p.direction is not None
-                            and p.next_direction == OPPOSITE_DIR[p.direction]
-                            and p.move_accum > 1e-9):
-                        # Inversione istantanea a meta' cella: la posizione
-                        # continua resta identica (x+dx*a == nx-dx*(1-a)).
-                        dx, dy = DIRECTIONS[p.direction]
-                        p.x += dx
-                        p.y += dy
-                        p.move_accum = 1.0 - p.move_accum
-                        p.direction = p.next_direction
-                        p.next_direction = None
-                    elif p.move_accum <= 1e-9:
-                        ndx, ndy = DIRECTIONS[p.next_direction]
-                        if not is_wall(self.maze, self.maze_w, self.maze_h,
-                                       p.x + ndx, p.y + ndy):
-                            p.direction = p.next_direction
-                            p.next_direction = None
-                        # se e' muro: la coda resta in memoria (regola 3)
-                if p.direction is None:
-                    break
-                # Il "lato frontale" del personaggio (da cui parte il laser)
-                # e' l'ultima direzione di marcia, anche da fermi.
-                p.facing = p.direction
-                dx, dy = DIRECTIONS[p.direction]
-                nx, ny = p.x + dx, p.y + dy
-                if is_wall(self.maze, self.maze_w, self.maze_h, nx, ny):
-                    # Contro un muro: azzera l'accumulo invece di lasciarlo
-                    # crescere all'infinito (evita "teletrasporti" quando la
-                    # strada si libera).
-                    p.move_accum = 0.0
-                    break
-                step = min(remaining, (1.0 - p.move_accum) / speed)
-                p.move_accum += speed * step
-                remaining -= step
-                if p.move_accum >= 1.0 - 1e-6:
-                    # Confine di cella attraversato: ci si ferma esattamente
-                    # al centro (accum = 0) e si ricontrolla subito la coda
-                    # delle svolte al giro successivo del while.
-                    p.move_accum = 0.0
-                    p.x, p.y = nx, ny
-                else:
-                    break
+            (p.x, p.y, p.move_accum, p.direction, p.next_direction,
+             facing) = self._advance_state(
+                p.x, p.y, p.move_accum, p.direction, p.next_direction,
+                TICK_DT, speed,
+            )
+            if facing is not None:
+                p.facing = facing
+
+            # Registra lo stato di fine tick nello storico: e' quello che
+            # _rewind_move usera' per "tornare indietro" fino al momento
+            # reale in cui un tasto direzione e' stato premuto (vedi sopra).
+            now = time.monotonic()
+            p.pos_history.append((now, p.x, p.y, p.move_accum, p.direction))
+            cutoff = now - REWIND_HISTORY_SECONDS
+            while p.pos_history and p.pos_history[0][0] < cutoff:
+                p.pos_history.popleft()
 
             # Pallini e portali si valutano sulla cella in cui ci si trova
             # ORA (anche da fermi: copre lo spawn su un pallino).
             self.eat_pellet(p)
             self.try_portal(p)
         return prev_positions
+
+    def _advance_state(self, x, y, accum, direction, next_direction, dt, speed):
+        """Avanza UNA sola entita' (posizione+direzione) di dt secondi,
+        applicando le stesse regole "vero Pac-Man" di sempre:
+         1. Inversione di marcia (direzione opposta): applicata SUBITO,
+            anche a meta' cella, senza scatti - la posizione continua
+            viene conservata ribaltando l'avanzamento (accum -> 1-accum
+            sulla cella successiva).
+         2. Svolta perpendicolare in coda: applicata solo AL CENTRO della
+            cella (accum == 0), come nel Pac-Man originale.
+         3. Se la svolta e' bloccata da un muro, la coda RESTA in attesa e
+            scatta da sola al primo incrocio utile.
+
+        Pura funzione di stato (non tocca self.players ne' side-effect come
+        pallini/eventi): usata sia dal tick normale (update_movement) sia
+        dal riavvolgimento per compensare la latenza (_rewind_move), cosi'
+        le due strade producono sempre lo stesso identico risultato per lo
+        stesso input, e non possono disallinearsi tra loro.
+
+        Ritorna (x, y, accum, direction, next_direction, facing) dove facing
+        e' l'ultima direzione di marcia attraversata (None se l'entita' era
+        gia' ferma e non si e' mai mossa in questo intervallo).
+        """
+        facing = None
+        remaining = dt
+        while remaining > 1e-9:
+            if next_direction is not None:
+                if (direction is not None
+                        and next_direction == OPPOSITE_DIR[direction]
+                        and accum > 1e-9):
+                    dx, dy = DIRECTIONS[direction]
+                    x += dx
+                    y += dy
+                    accum = 1.0 - accum
+                    direction = next_direction
+                    next_direction = None
+                elif accum <= 1e-9:
+                    ndx, ndy = DIRECTIONS[next_direction]
+                    if not is_wall(self.maze, self.maze_w, self.maze_h,
+                                   x + ndx, y + ndy):
+                        direction = next_direction
+                        next_direction = None
+                    # se e' muro: la coda resta in memoria (regola 3)
+            if direction is None:
+                break
+            facing = direction
+            dx, dy = DIRECTIONS[direction]
+            nx, ny = x + dx, y + dy
+            if is_wall(self.maze, self.maze_w, self.maze_h, nx, ny):
+                accum = 0.0
+                break
+            step = min(remaining, (1.0 - accum) / speed)
+            accum += speed * step
+            remaining -= step
+            if accum >= 1.0 - 1e-6:
+                accum = 0.0
+                x, y = nx, ny
+            else:
+                break
+        return x, y, accum, direction, next_direction, facing
+
+    def _rewind_move(self, p, requested_dir):
+        """Applica una richiesta di svolta compensando la latenza di rete.
+
+        Invece di limitarsi ad accodare `requested_dir` nella posizione
+        ATTUALE del giocatore (che sul server e' gia' "nel futuro" rispetto
+        al momento reale in cui il tasto e' stato premuto, per via del
+        tempo di viaggio del pacchetto), si cerca nello storico lo stato
+        registrato a meta' del round-trip-time stimato fa, si applica li'
+        la richiesta con le stesse regole di sempre (_advance_state), e si
+        "riavvolge in avanti" fino ad ora. Il risultato e' la posizione
+        fisicamente corretta: se al centro-cella di allora la svolta era
+        valida, il giocatore la ottiene, senza dover prima sbattere contro
+        un muro e senza alcuno scatto visibile (la correzione e' al massimo
+        di REWIND_MAX_SECONDS di percorso, meno di mezza cella a velocita'
+        normale).
+        """
+        now = time.monotonic()
+        delay = min(p.rtt / 2.0, REWIND_MAX_SECONDS)
+        if delay <= 1e-9 or not p.pos_history:
+            # Nessuna stima di ritardo utile o storico vuoto (es. appena
+            # spawnato): nessun rischio, ma nessun beneficio nemmeno.
+            # Si torna al comportamento semplice, sempre corretto.
+            p.next_direction = requested_dir
+            return
+
+        target_t = now - delay
+        # Cerca l'ultimo campione dello storico CON timestamp <= target_t
+        # (dal piu' recente al piu' vecchio: di solito e' tra gli ultimi).
+        snapshot = None
+        for entry in reversed(p.pos_history):
+            if entry[0] <= target_t:
+                snapshot = entry
+                break
+        if snapshot is None:
+            # Storico troppo corto per coprire il ritardo stimato (partita
+            # appena iniziata): fallback sicuro, nessun riavvolgimento.
+            p.next_direction = requested_dir
+            return
+
+        snap_t, sx, sy, saccum, sdir = snapshot
+        replay_dt = now - snap_t
+        speed = NORMAL_SPEED * (ASSASSIN_SPEED_MULT if p.is_assassin else 1.0)
+        nx, ny, naccum, ndir, nnext, facing = self._advance_state(
+            sx, sy, saccum, sdir, requested_dir, replay_dt, speed,
+        )
+
+        # Rete di sicurezza: se nel frattempo e' successo qualcosa che
+        # _advance_state non conosce (respawn, teletrasporto via portale,
+        # trappola, eliminazione...) la posizione ricalcolata puo' finire
+        # molto lontana da quella attuale. In quel caso si scarta il
+        # riavvolgimento e si torna al comportamento semplice, invece di
+        # rischiare di teletrasportare il giocatore per errore.
+        if math.hypot(nx - p.x, ny - p.y) > 1.5:
+            p.next_direction = requested_dir
+            return
+
+        p.x, p.y, p.move_accum, p.direction, p.next_direction = nx, ny, naccum, ndir, nnext
+        if facing is not None:
+            p.facing = facing
+
+    def update_rtt_pings(self):
+        """Manda un ping di misura RTT a ciascun giocatore ogni
+        RTT_PING_INTERVAL_SECONDS, e aggiorna p.rtt quando arriva il pong
+        (vedi il branch 'rtt_pong' nel loop messaggi). Chiamato una volta
+        per tick da run_round, con costo trascurabile (un controllo
+        temporale per giocatore, invio solo ogni ~2s)."""
+        for p in self.players.values():
+            if not p.connected:
+                continue
+            p.rtt_ping_cd -= TICK_DT
+            if p.rtt_ping_cd > 0:
+                continue
+            p.rtt_ping_cd = RTT_PING_INTERVAL_SECONDS
+            p.rtt_ping_sent_at = time.monotonic()
+            asyncio.ensure_future(self._safe_send(p.ws, encode_text(
+                {"type": "rtt_ping", "t": p.rtt_ping_sent_at}
+            )))
+
+    @staticmethod
+    async def _safe_send(ws, payload):
+        try:
+            await ws.send(payload)
+        except websockets.exceptions.ConnectionClosed:
+            pass
 
     def eat_pellet(self, p):
         cell = (p.x, p.y)
@@ -905,6 +1034,10 @@ class Room:
         p.x, p.y = dest
         p.move_accum = 0.0
         p.portal_cd = PORTAL_COOLDOWN_SECONDS
+        # Vedi assign_spawns: dopo un salto di posizione non dovuto al
+        # normale movimento, lo storico va azzerato per non offrire a
+        # _rewind_move dati di "prima del teletrasporto".
+        p.pos_history.clear()
         self.push_event({
             "kind": "teleport", "player": p.id,
             "from": [src[0], src[1]], "to": [dest[0], dest[1]],
@@ -940,6 +1073,7 @@ class Room:
         p.move_accum = 0.0
         p.prot_left = SPAWN_PROTECT_SECONDS
         p.portal_cd = 0.5  # se lo spawn fosse vicino a un portale, niente teletrasporto istantaneo
+        p.pos_history.clear()  # vedi assign_spawns
 
     def kill_player(self, victim, cause, shooter_id=None):
         """Unica via per togliere una vita: usata dal tocco del super
@@ -2483,6 +2617,7 @@ class Room:
             # Il movimento e' attivo sia in countdown che in gioco: ci si puo'
             # muovere subito, ancora prima che il round entri nel vivo.
             prev = self.update_movement()
+            self.update_rtt_pings()
             self.update_pellet_respawns()
             self.update_portal_cycle()   # accende/spegne i portali ogni 30s
             self.check_collisions(prev)  # no-op finche' nessuno e' super assassino
@@ -2673,14 +2808,30 @@ async def handle_client(ws):
                     continue
                 direction = msg.get("direction")
                 if direction in DIRECTIONS:
-                    # Un solo input "in attesa" per volta: next_direction e'
-                    # un singolo slot, non una coda vera e propria, quindi
-                    # una nuova pressione sostituisce sempre quella
-                    # precedente (mai piu' di un comando alla volta in
-                    # attesa di essere applicato). Se ne applica solo
-                    # l'ultima ricevuta prima che ci sia spazio per
-                    # svoltare (vedi update_movement).
-                    player.next_direction = direction
+                    # Invece di limitarsi ad accodare la direzione nella
+                    # posizione ATTUALE (gia' "nel futuro" per via del
+                    # ritardo di rete del pacchetto), si compensa la
+                    # latenza: vedi Room._rewind_move per i dettagli. Un
+                    # solo input "in attesa" resta comunque possibile alla
+                    # volta: una nuova pressione sostituisce sempre quella
+                    # precedente.
+                    room._rewind_move(player, direction)
+
+            elif mtype == "rtt_pong":
+                # Risposta al ping periodico di misura latenza (vedi
+                # Room.update_rtt_pings): usata per stimare quanto
+                # "tornare indietro" quando arriva una svolta (vedi
+                # Room._rewind_move). Media mobile esponenziale per non
+                # farsi destabilizzare da un singolo pacchetto in ritardo.
+                if not player:
+                    continue
+                sent_at = msg.get("t")
+                if isinstance(sent_at, (int, float)) and sent_at == player.rtt_ping_sent_at:
+                    measured = time.monotonic() - sent_at
+                    # Clamp difensivo: oltre 1s e' quasi certamente un
+                    # outlier di rete, non un vero ritardo costante.
+                    measured = max(0.0, min(measured, 1.0))
+                    player.rtt = 0.7 * player.rtt + 0.3 * measured
 
             elif mtype == "place_mine":
                 # Bonus 200 punti: pressione del tasto "1" lato client.

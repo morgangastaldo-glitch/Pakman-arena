@@ -32,6 +32,25 @@ MIN_PLAYERS = 2
 NORMAL_SPEED = 4.5          # celle al secondo
 ASSASSIN_SPEED_MULT = 1.1   # il super assassino (bonus 300 punti) e' 1.1x rispetto a 1.0 dei giocatori normali
 
+# ---- compensazione della latenza per le svolte (vedi Room._rewind_move
+# e Room._advance_state in main.py) ----
+# La svolta perpendicolare puo' scattare solo esattamente al centro-cella,
+# una finestra larga un solo tick server (TICK_DT, ~16ms su 60Hz). Un
+# messaggio "move" arriva pero' sempre con un ritardo di rete rispetto al
+# momento reale in cui il tasto e' stato premuto: se quel ritardo supera la
+# finestra, la svolta viene "persa" per quell'incrocio e il personaggio
+# deve percorrere un'altra cella intera prima di riprovare, sbattendo
+# contro il muro se quella cella e' un vicolo cieco. Per questo, invece di
+# limitarsi ad accodare la direzione richiesta, il server la applica
+# retroattivamente nel punto in cui sarebbe scattata davvero, poi
+# "riavvolge in avanti" la traiettoria fino ad ora: niente scatti visibili,
+# perche' la posizione finale e' quella fisicamente corretta, non una
+# posizione arbitraria.
+RTT_PING_INTERVAL_SECONDS = 2.0   # ogni quanto il server misura il ping di ciascun giocatore
+RTT_DEFAULT_SECONDS = 0.06        # stima prudente usata finche' non arriva la prima misura reale
+REWIND_MAX_SECONDS = 0.20         # tetto massimo di riavvolgimento (oltre, si rinuncia: troppo rischioso/sfruttabile)
+REWIND_HISTORY_SECONDS = 1.0      # quanta storia posizione/direzione si tiene in memoria per giocatore
+
 # ---- sistema punti e bonus a traguardi ----
 # Ogni pallino normale vale 1 punto. In 10 punti (angoli/estremita') della
 # mappa si trovano pallini piu' grossi e arancioni che valgono 10 punti.

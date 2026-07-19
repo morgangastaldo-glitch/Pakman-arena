@@ -1180,6 +1180,14 @@ function handleMessage(msg){
     case "round_end":
       onRoundEnd(msg);
       break;
+    case "rtt_ping":
+      // Il server misura periodicamente il ping di ciascun giocatore per
+      // sapere di quanto "tornare indietro" quando applica una svolta in
+      // ritardo (vedi Room._rewind_move lato server): si rispedisce
+      // indietro lo stesso identico timestamp, il prima possibile, senza
+      // alcuna elaborazione.
+      sendMsg({ type: "rtt_pong", t: msg.t });
+      break;
   }
 }
 
