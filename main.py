@@ -912,7 +912,7 @@ class Room:
         assassino, dal laser e dalle mine. Con vite extra si respawna,
         altrimenti si e' fuori.
 
-        Chi uccide ruba il 50% dei punti della vittima (KILL_STEAL_FRACTION,
+        Chi uccide ruba il 20% dei punti della vittima (KILL_STEAL_FRACTION,
         arrotondato per difetto): la vittima CONSERVA l'altra meta' delle
         sue risorse - un'eliminazione fa male ma non azzera piu' tutto."""
         self.last_kill = {"cause": cause, "by": shooter_id}

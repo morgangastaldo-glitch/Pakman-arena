@@ -105,9 +105,9 @@ TURRET_FIRE_INTERVAL_SECONDS = LASER_INTERVAL_SECONDS  # stessa cadenza di fuoco
 # questa distanza (in caselle, distanza Manhattan). Fuori raggio la
 # torretta resta in attesa e riprende a sparare appena qualcuno rientra.
 TURRET_RANGE_CELLS = 10
-# Percentuale di punti che chi uccide ruba alla vittima (50%): la vittima
-# NON perde piu' tutto, conserva l'altra meta' delle sue risorse.
-KILL_STEAL_FRACTION = 0.5
+# Percentuale di punti che chi uccide ruba alla vittima (20%): la vittima
+# conserva l'80% delle sue risorse.
+KILL_STEAL_FRACTION = 0.2
 
 # ---- bonus 700 punti: corazza laser (tasto "6") ----
 # Allo sblocco NON scatta nulla in automatico: premendo il tasto "6" il
