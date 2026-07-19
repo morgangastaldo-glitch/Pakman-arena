@@ -1823,9 +1823,8 @@ function stepSim(state, dt, speed, hasNextDirQueue){
     //  2. svolta perpendicolare: solo AL CENTRO della cella (accum == 0),
     //     come nell'arcade originale - niente piu' azzeramento dell'accum
     //     a meta' cella, quindi niente scattino all'indietro in curva;
-    //  3. svolta bloccata da un muro nel momento del controllo: si SCARTA
-    //     subito, niente attesa per un incrocio futuro (un input troppo
-    //     tardivo per il varco a cui era destinato viene dimenticato).
+    //  3. svolta bloccata da un muro: resta in coda e scatta da sola al
+    //     primo incrocio utile.
     if (hasNextDirQueue && state.nextDir){
       if (state.dir && OPPOSITE_DIR[state.dir] === state.nextDir && state.accum > 1e-9){
         const v0 = DIR_VEC[state.dir];
@@ -1838,12 +1837,6 @@ function stepSim(state, dt, speed, hasNextDirQueue){
         const v = DIR_VEC[state.nextDir];
         if (!isWallCell(state.gridX + v[0], state.gridY + v[1])){
           state.dir = state.nextDir;
-          state.nextDir = null;
-        } else {
-          // Input arrivato troppo tardi per questo varco: si scarta subito
-          // invece di lasciarlo in coda per un incrocio futuro (evita che
-          // il personaggio "si ricordi" una svolta vecchia e giri a una
-          // curva molto piu' avanti, comportamento percepito come bug).
           state.nextDir = null;
         }
       }
@@ -2649,6 +2642,32 @@ function drawBalloons(now){
     ctx.strokeStyle = col;
     ctx.lineWidth = 2.4;
     ctx.beginPath(); ctx.ellipse(shadowX, cy - 4, 14, 17, 0, 0, Math.PI * 2); ctx.stroke();
+
+    // Teschio bianco disegnato sul pallone: segnale immediato "attenzione,
+    // bomba vagante letale", ben visibile sopra le strisce colorate.
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = "#f2f2f0";
+    ctx.beginPath(); ctx.arc(shadowX, cy - 8, 6.2, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(shadowX - 4.6, cy - 6.5);
+    ctx.lineTo(shadowX - 4.2, cy - 1.5);
+    ctx.lineTo(shadowX + 4.2, cy - 1.5);
+    ctx.lineTo(shadowX + 4.6, cy - 6.5);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#1a1a1a";
+    ctx.beginPath(); ctx.arc(shadowX - 2.3, cy - 8.5, 1.5, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(shadowX + 2.3, cy - 8.5, 1.5, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(shadowX - 0.9, cy - 6.5); ctx.lineTo(shadowX, cy - 4.3); ctx.lineTo(shadowX + 0.9, cy - 6.5);
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = "#1a1a1a";
+    ctx.lineWidth = 1;
+    for (let i = -1; i <= 1; i++){
+      ctx.beginPath();
+      ctx.moveTo(shadowX + i * 1.6 - 0.5, cy - 1.9);
+      ctx.lineTo(shadowX + i * 1.6 + 0.5, cy - 0.6);
+      ctx.stroke();
+    }
   });
   ctx.restore();
 }
@@ -3454,7 +3473,7 @@ function onGameEvent(msg){
         trap:         ["TRAPPOLA SBLOCCATA!", "3 secondi \u00b7 3 usi \u00b7 premi 4"],
         turret:       ["TORRETTA SBLOCCATA!", "raggio 10 caselle \u00b7 premi 5 per piazzarla"],
         armor:        ["CORAZZA LASER SBLOCCATA!", "20 secondi \u00b7 premi 6 per attivarla"],
-        lightning:    ["FULMINE SBLOCCATO!", "colpisce tutti \u00b7 premi 7 per scatenarlo"],
+        lightning:    ["FULMINE SBLOCCATO!", "colpisce un avversario a caso \u00b7 premi 7 per scatenarlo"],
         pet:          ["PET FEDELE SBLOCCATO!", "premi 8 per evocarlo \u00b7 aggancia e insegue chi si avvicina entro 6 caselle"],
         robot:        ["EVOLUZIONE NAVICELLA SBLOCCATA!", "premi 9 per evolvere la torretta, se e' ancora viva"],
         mortar:       ["MORTAIO SBLOCCATO!", "raggio 15 caselle \u00b7 premi 0 per schierarlo \u00b7 scavalca i muri"],
@@ -3677,11 +3696,14 @@ function onGameEvent(msg){
       break;
     }
     case "lightning_on": {
-      // Bonus 800 punti: fulmine caduto dal cielo su tutti gli avversari
-      // vivi. Un fulmine per bersaglio (posizione presa dallo snapshot
-      // corrente), piu' un flash a schermo intero per la drammaticita'
-      // dell'impatto. Le eliminazioni vere e proprie arrivano comunque
-      // come eventi "kill" separati (stesso testo/suono di laser, mine...).
+      // Bonus 800 punti: fulmine caduto dal cielo su UN SOLO avversario
+      // vivo scelto a caso dal server (vedi try_activate_lightning in
+      // main.py). "targets" contiene quindi al piu' un id, ma il forEach
+      // resta generico. Un fulmine sul bersaglio (posizione presa dallo
+      // snapshot corrente), piu' un flash a schermo intero per la
+      // drammaticita' dell'impatto. L'eliminazione vera e propria arriva
+      // comunque come evento "kill" separato (stesso testo/suono di
+      // laser, mine...).
       (msg.targets || []).forEach(function(tid){
         const t = findPlayer(currSnapshot, tid);
         if (t) spawnLightningBolt(t.x, t.y);
@@ -3746,8 +3768,10 @@ function onGameEvent(msg){
     // il server non manda piu' l'evento "laser_expired".
     case "mine_boom": {
       explosions.push({ x: msg.x, y: msg.y, color: "#ff9d1f", start: now });
-      noiseBurst(0.22, 0.18);
-      tone(120, 0.2, "sawtooth", 0.14, 0.02);
+      // Stesso suono di esplosione della bomba sganciata dalla mongolfiera
+      // (bonus 1600 punti), su richiesta: prima la mina aveva un suo
+      // scoppio dedicato piu' fioco.
+      playBalloonBomb();
       break;
     }
     case "missile_fire": {
@@ -3757,11 +3781,9 @@ function onGameEvent(msg){
     }
     case "missile_end": {
       explosions.push({ x: msg.x, y: msg.y, color: "#8fd3ff", start: now });
-      // Stesso "scoppio" (rumore bianco in dissolvenza + tono grave) di
-      // mina/trappola: prima qui c'era solo il tono, che suonava piu'
-      // fioco e meno "esplosivo" delle altre due armi.
-      noiseBurst(0.2, 0.17);
-      tone(140, 0.15, "sawtooth", 0.12, 0.02);
+      // Stesso suono di esplosione della bomba sganciata dalla mongolfiera
+      // (bonus 1600 punti), su richiesta.
+      playBalloonBomb();
       break;
     }
     case "kill_life_bonus": {

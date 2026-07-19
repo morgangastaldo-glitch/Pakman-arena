@@ -663,10 +663,8 @@ class Room:
             sulla cella successiva).
          2. Svolta perpendicolare in coda: applicata solo AL CENTRO della
             cella (accum == 0), come nel Pac-Man originale.
-         3. Se la svolta e' bloccata da un muro nel momento in cui viene
-            controllata, si SCARTA subito: niente attesa per un incrocio
-            futuro. Un input arrivato troppo tardi per il varco a cui era
-            destinato viene dimenticato, non rimesso in coda per dopo.
+         3. Se la svolta e' bloccata da un muro, la coda RESTA in attesa e
+            scatta da sola al primo incrocio utile.
 
         Pura funzione di stato (non tocca self.players ne' side-effect come
         pallini/eventi): usata sia dal tick normale (update_movement) sia
@@ -697,13 +695,7 @@ class Room:
                                    x + ndx, y + ndy):
                         direction = next_direction
                         next_direction = None
-                    else:
-                        # Input arrivato troppo tardi per questo varco: si
-                        # scarta subito invece di restare in coda per un
-                        # incrocio futuro (evita che il personaggio "si
-                        # ricordi" una svolta vecchia e giri a una curva
-                        # molto piu' avanti, percepito come bug).
-                        next_direction = None
+                    # se e' muro: la coda resta in memoria (regola 3)
             if direction is None:
                 break
             facing = direction
@@ -1544,36 +1536,36 @@ class Room:
     def try_activate_lightning(self, player):
         """Tasto '7': se il bonus e' sbloccato (800 punti) e non e' ancora
         stato usato in questo round, scatena un fulmine che colpisce
-        ISTANTANEAMENTE tutti gli avversari vivi presenti sulla mappa,
-        ovunque si trovino (nessun raggio d'azione, a differenza della
-        torretta): ciascuno perde una vita tramite kill_player (la stessa
-        unica via usata da laser/mine/missili/trappola), con lo stesso
-        furto del 50% dei punti e lo stesso conteggio kill/vita-extra-ogni-
-        2-uccisioni del killer. UTILIZZABILE UNA SOLA VOLTA per round.
+        ISTANTANEAMENTE UN SOLO avversario vivo scelto A CASO tra quelli
+        presenti sulla mappa, ovunque si trovi (nessun raggio d'azione, a
+        differenza della torretta): perde una vita tramite kill_player (la
+        stessa unica via usata da laser/mine/missili/trappola), con lo
+        stesso furto del 50% dei punti e lo stesso conteggio
+        kill/vita-extra-ogni-2-uccisioni del killer. UTILIZZABILE UNA SOLA
+        VOLTA per round.
 
         Se il giocatore e' intrappolato dalla trappola di un avversario,
         NON puo' usare alcun bonus finche' non torna libero di muoversi."""
         if not player.alive or player.trapped_left > 0 or not player.has_lightning or player.lightning_used:
             return
         player.lightning_used = True
-        targets = [
+        candidates = [
             q for q in self.players.values()
             if q.alive and q.id != player.id
         ]
+        victim = random.choice(candidates) if candidates else None
         self.push_event({
             "kind": "lightning_on", "player": player.id,
             "bonus": "lightning", "points": LIGHTNING_THRESHOLD,
-            "targets": [t.id for t in targets],
+            "targets": [victim.id] if victim else [],
         })
-        # Si copia la lista prima di iterare: kill_player puo' modificare
-        # lo stato (respawn/eliminazione) dei bersagli, ma non la lista dei
-        # giocatori della stanza, quindi qui non serve altro accorgimento;
-        # si usa comunque una lista "congelata" per chiarezza.
-        for victim in targets:
-            self.kill_player(victim, "lightning", player.id)
-        # Bonus 900 punti: il fulmine distrugge anche i pet di tutti gli
-        # avversari colpiti (il proprio pet, se ne hai uno, resta illeso).
-        for pet in [pt for pt in list(self.pets) if pt["owner"] != player.id]:
+        if victim is None:
+            return
+        self.kill_player(victim, "lightning", player.id)
+        # Bonus 900 punti: il fulmine distrugge anche il pet dell'unico
+        # avversario colpito (il proprio pet, se ne hai uno, resta illeso,
+        # e cosi' anche quello degli altri giocatori NON colpiti).
+        for pet in [pt for pt in list(self.pets) if pt["owner"] == victim.id]:
             self.destroy_pet(pet, "lightning", player.id)
 
     # ---- bonus 400 punti: missile guidato (tasto "3") ----
@@ -2074,8 +2066,9 @@ class Room:
         sia player.superbomb_placed sono gia' True (finche' non lo sono
         entrambi, quella stessa pressione richiama invece
         try_place_mortar/try_place_superbomb). Fa librare in aria, UNA SOLA
-        VOLTA per round, una mongolfiera che nasce sulla cella corrente del
-        giocatore: da quel momento vaga a caso su TUTTA la mappa (vedi
+        VOLTA per round, DUE mongolfiere (con teschio disegnato sul pallone,
+        lato client) che nascono entrambe sulla cella corrente del
+        giocatore: da quel momento vagano a caso su TUTTA la mappa (vedi
         update_balloons), volando sopra ogni muro senza alcun bersaglio, e
         sgancia una bomba ogni BALLOON_BOMB_INTERVAL_SECONDS nella propria
         posizione corrente, che esplode ISTANTANEAMENTE (vedi
@@ -2084,22 +2077,30 @@ class Room:
         anche se il proprietario muore o si disconnette (come il mortaio).
 
         Se il giocatore e' intrappolato dalla trappola di un avversario,
-        NON puo' usare alcun bonus finche' non torna libero di muoversi."""
+        NON puo' usare alcun bonus finche' non torna libero di muoversi.
+
+        Da questo bonus vengono ora fatte librare in aria DUE mongolfiere
+        contemporaneamente (invece di una sola), entrambe con teschio
+        disegnato sul pallone lato client: nascono nello stesso punto ma
+        scelgono subito ciascuna una meta' casuale indipendente, cosi' si
+        separano immediatamente e vagano per conto proprio."""
         if not player.alive or player.trapped_left > 0 or not player.has_balloon or player.balloon_launched:
             return
         player.balloon_launched = True
-        balloon = {
-            "id": uuid.uuid4().hex[:8],
-            "owner": player.id,
-            "x": float(player.x), "y": float(player.y),
-            "tx": float(player.x), "ty": float(player.y),
-            "bomb_cd": BALLOON_BOMB_INTERVAL_SECONDS,
-        }
-        self.balloons.append(balloon)
-        self.push_event({
-            "kind": "balloon_launch", "id": balloon["id"], "player": player.id,
-            "x": player.x, "y": player.y,
-        })
+        for _ in range(2):
+            balloon = {
+                "id": uuid.uuid4().hex[:8],
+                "owner": player.id,
+                "x": float(player.x), "y": float(player.y),
+                "tx": random.uniform(0, self.maze_w - 1),
+                "ty": random.uniform(0, self.maze_h - 1),
+                "bomb_cd": BALLOON_BOMB_INTERVAL_SECONDS,
+            }
+            self.balloons.append(balloon)
+            self.push_event({
+                "kind": "balloon_launch", "id": balloon["id"], "player": player.id,
+                "x": player.x, "y": player.y,
+            })
 
     def balloon_public(self, b):
         return {
