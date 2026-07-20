@@ -485,11 +485,36 @@ class Room:
 
     # ---------- round setup ----------
 
+    def corner_spawns(self):
+        """Solo gli spawn d'angolo (esclude il punto centrale, se presente:
+        e' sempre l'ultimo della lista definita in common.py)."""
+        pts = self.spawn_points
+        return pts[:4] if len(pts) > 4 else pts[:]
+
+    def get_free_spawn(self, exclude_player=None):
+        """Sceglie un angolo casuale della mappa che non sia gia' occupato
+        da un altro giocatore vivo, cosi' non spawnano mai due giocatori
+        sulla stessa casella. Se (raro: 5 giocatori vivi) tutti gli angoli
+        sono occupati, ripiega su un qualunque spawn libero rimasto."""
+        occupied = {
+            (q.x, q.y)
+            for q in self.players.values()
+            if q.alive and q is not exclude_player
+        }
+        corners = self.corner_spawns()
+        free = [s for s in corners if tuple(s) not in occupied]
+        if free:
+            return random.choice(free)
+        free_any = [s for s in self.spawn_points if tuple(s) not in occupied]
+        if free_any:
+            return random.choice(free_any)
+        return random.choice(corners)
+
     def assign_spawns(self):
-        spots = self.spawn_points[:]
-        random.shuffle(spots)
-        for p, (x, y) in zip(self.players.values(), spots):
-            p.x, p.y = x, y
+        # Ogni giocatore riceve un angolo libero e diverso dagli altri
+        # (mai due giocatori sullo stesso spawn all'inizio del round).
+        for p in self.players.values():
+            x, y = self.get_free_spawn(exclude_player=p)
             p.direction = None
             p.next_direction = None
             p.move_accum = 0.0
@@ -1118,17 +1143,26 @@ class Room:
 
     def respawn_player(self, p):
         """Rimette in gioco chi aveva una vita extra: se un super assassino
-        e' attivo, nello spawn piu' lontano da lui, con qualche secondo di
-        protezione; altrimenti in uno spawn casuale."""
+        e' attivo, nell'angolo libero piu' lontano da lui, con qualche
+        secondo di protezione; altrimenti in un angolo libero casuale.
+        In ogni caso mai su una casella gia' occupata da un altro
+        giocatore vivo (mai due giocatori sullo stesso spawn)."""
         assassins = [q for q in self.players.values() if q.alive and q.is_assassin]
-        spots = self.spawn_points[:]
+        occupied = {
+            (q.x, q.y)
+            for q in self.players.values()
+            if q.alive and q is not p
+        }
+        corners = self.corner_spawns()
+        free_corners = [s for s in corners if tuple(s) not in occupied]
         if assassins:
+            candidates = free_corners if free_corners else corners
             def min_dist(s):
                 return min(abs(s[0] - a.x) + abs(s[1] - a.y) for a in assassins)
-            spots.sort(key=lambda s: -min_dist(s))
-            x, y = spots[0]
+            candidates = sorted(candidates, key=lambda s: -min_dist(s))
+            x, y = candidates[0]
         else:
-            x, y = random.choice(spots)
+            x, y = self.get_free_spawn(exclude_player=p)
         p.x, p.y = x, y
         p.direction = None
         p.next_direction = None
