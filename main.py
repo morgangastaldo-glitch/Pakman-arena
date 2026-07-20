@@ -49,7 +49,7 @@ from common import (
     PELLET_POINTS, POWER_PELLET_POINTS, POWER_PELLET_COUNT,
     PELLET_RESPAWN_SECONDS, SUPER_ASSASSIN_THRESHOLD,
     SUPER_ASSASSIN_DURATION_SECONDS, LASER_RANGE_CELLS,
-    SPAWN_PROTECT_SECONDS, LASER_INTERVAL_SECONDS, LASER_FIRST_DELAY_SECONDS,
+    SPAWN_PROTECT_SECONDS, MIN_SPAWN_DISTANCE, LASER_INTERVAL_SECONDS, LASER_FIRST_DELAY_SECONDS,
     LASER_PROJECTILE_SPEED, LASER_BOUNCE_DISTANCE, MINES_COUNT,
     PORTAL_COOLDOWN_SECONDS, PORTAL_ON_SECONDS, PORTAL_OFF_SECONDS,
     MISSILE_SPEED_MULT, MISSILES_COUNT, MISSILE_RETARGET_SECONDS,
@@ -534,11 +534,55 @@ class Room:
         # comunque espliciti invece di far esplodere il server.
         raise RuntimeError("Nessuna cella di pavimento disponibile sulla mappa corrente")
 
+    def pick_spaced_spawn(self, occupied_cells, min_dist=MIN_SPAWN_DISTANCE):
+        """Sceglie una cella di PAVIMENTO libera (mai un muro: filtrata con
+        is_floor esattamente come get_free_spawn) che sia ad almeno
+        min_dist caselle (distanza euclidea) da OGNUNA delle celle in
+        occupied_cells. Usata sia per lo spawn iniziale di tutti i
+        giocatori sia per i respawn singoli, cosi' nessuno spawna mai
+        troppo vicino a un altro (ne', tantomeno, dentro un muro).
+
+        Se la mappa/il numero di giocatori non permettono di rispettare la
+        distanza minima (caso raro: mappa piccola o troppi giocatori vivi),
+        si sceglie comunque la cella che MASSIMIZZA la distanza minima dagli
+        altri, cosi' i giocatori restano il piu' lontano possibile anche in
+        questo caso limite, invece di far fallire lo spawn."""
+        candidates = [c for c in self.free_cells if self.is_floor(c[0], c[1]) and c not in occupied_cells]
+        if not candidates:
+            # Stessa rete di sicurezza di get_free_spawn: ri-scansiona la
+            # mappa da zero se la cache di free_cells fosse disallineata.
+            candidates = [
+                (x, y) for y, row in enumerate(self.maze)
+                for x, ch in enumerate(row) if ch != "#"
+            ]
+        if not candidates:
+            raise RuntimeError("Nessuna cella di pavimento disponibile sulla mappa corrente")
+        if not occupied_cells:
+            return random.choice(candidates)
+
+        def min_dist_to_occupied(c):
+            return min(math.hypot(c[0] - o[0], c[1] - o[1]) for o in occupied_cells)
+
+        far_enough = [c for c in candidates if min_dist_to_occupied(c) >= min_dist]
+        if far_enough:
+            return random.choice(far_enough)
+        # Best-effort: nessuna cella rispetta la distanza minima richiesta,
+        # si prende quella che la massimizza (puo' capitare solo con mappe
+        # molto piccole rispetto al numero di giocatori vivi).
+        best = max(min_dist_to_occupied(c) for c in candidates)
+        best_candidates = [c for c in candidates if min_dist_to_occupied(c) == best]
+        return random.choice(best_candidates)
+
     def assign_spawns(self):
-        # Ogni giocatore riceve un angolo libero e diverso dagli altri
-        # (mai due giocatori sullo stesso spawn all'inizio del round).
+        # Ogni giocatore riceve una cella di pavimento libera, casuale e
+        # distante almeno MIN_SPAWN_DISTANCE caselle da quella di TUTTI gli
+        # altri giocatori (mai due giocatori sullo stesso spawn, mai vicini,
+        # e mai dentro un muro: vedi pick_spaced_spawn).
+        occupied_cells = []
         for p in self.players.values():
-            x, y = self.get_free_spawn(exclude_player=p)
+            x, y = self.pick_spaced_spawn(occupied_cells)
+            occupied_cells.append((x, y))
+            p.x, p.y = x, y
             p.direction = None
             p.next_direction = None
             p.move_accum = 0.0
@@ -557,7 +601,7 @@ class Room:
             p.assassin_left = 0.0
             p.ninja_used = False
             p.ghost_left = 0.0
-            p.prot_left = 0.0
+            p.prot_left = SPAWN_PROTECT_SECONDS  # immune per qualche secondo anche allo spawn iniziale
             p.has_laser = False
             p.laser_cd = 0.0
             p.has_bounce = False
@@ -1190,7 +1234,7 @@ class Room:
                 return min(abs(s[0] - a.x) + abs(s[1] - a.y) for a in assassins)
             x, y = max(free, key=min_dist)
         else:
-            x, y = self.get_free_spawn(exclude_player=p)
+            x, y = self.pick_spaced_spawn(occupied)
         p.x, p.y = x, y
         p.direction = None
         p.next_direction = None
