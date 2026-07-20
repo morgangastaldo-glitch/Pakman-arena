@@ -3842,6 +3842,7 @@ function onState(msg){
       predGridX = Math.round(myServerP.x);
       predGridY = Math.round(myServerP.y);
       predAccum = 0;
+      predDir = myServerP.direction;
       predInited = true;
     } else {
       // IMPORTANTE: l'errore va calcolato tra la posizione CONTINUA
@@ -3853,6 +3854,17 @@ function onState(msg){
       // sempre diverso da zero durante il movimento), facendo scattare la
       // correzione morbida in continuazione: e' questo che causava lo
       // scatto/jitter percepito sul proprio personaggio.
+      //
+      // La DIREZIONE invece va risincronizzata SEMPRE con quella del
+      // server, prima di calcolare l'errore: il server e' autorevole anche
+      // sulla direzione (non solo su x/y), e se un input tardivo viene
+      // risolto diversamente da come la predizione locale l'aveva gia'
+      // applicato (vedi Room._rewind_move sul server), tenersi la vecchia
+      // predDir fa proseguire il personaggio verso un muro anche dopo che
+      // la posizione e' stata corretta: e' questo che causava lo
+      // "sbattere contro il muro e andare a scatti" quando si girava con
+      // input in ritardo.
+      predDir = myServerP.direction;
       const curX = predGridX + (predDir ? DIR_VEC[predDir][0] * predAccum : 0);
       const curY = predGridY + (predDir ? DIR_VEC[predDir][1] * predAccum : 0);
       const dx = curX - myServerP.x;
