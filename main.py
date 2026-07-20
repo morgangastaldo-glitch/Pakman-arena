@@ -2148,29 +2148,46 @@ class Room:
     def update_superbombs(self):
         """Avanza il conto alla rovescia di ogni bombolone piazzato: dopo
         SUPERBOMB_FUSE_SECONDS esplode (vedi explode_superbomb) e viene
-        rimosso dalla mappa."""
+        rimosso dalla mappa. Un bombolone puo' anche venire neutralizzato
+        PRIMA che scada la sua miccia, colpito dall'esplosione di un altro
+        bombolone o di una bomba di mongolfiera avversari: in quel caso
+        viene marcato bomb["destroyed"]=True (vedi explode_superbomb/
+        explode_balloon_bomb) e va comunque rimosso qui, senza farlo
+        esplodere a sua volta. Si itera su una copia della lista perche'
+        neutralizzare un bombolone rivale dentro explode_superbomb
+        modifica self.superbombs mentre lo stiamo scorrendo."""
         if not self.superbombs:
             return
-        remaining = []
-        for bomb in self.superbombs:
+        for bomb in list(self.superbombs):
+            if bomb.get("destroyed"):
+                continue
             bomb["t"] += TICK_DT
             if bomb["t"] >= SUPERBOMB_FUSE_SECONDS:
+                bomb["destroyed"] = True
                 self.explode_superbomb(bomb)
-            else:
-                remaining.append(bomb)
-        self.superbombs = remaining
+        self.superbombs = [b for b in self.superbombs if not b.get("destroyed")]
 
     def explode_superbomb(self, bomb):
         """Esplosione del bombolone (bonus 1400 punti): onda concentrica di
         SUPERBOMB_RADIUS_CELLS caselle (distanza Manhattan) che distrugge o
-        neutralizza tutto cio' che trova nel raggio, tranne le cose del
-        proprietario stesso:
+        neutralizza TUTTO cio' che trova nel raggio, tranne le cose del
+        proprietario stesso. E' l'ordigno piu' potente del gioco: a
+        differenza della bomba di mongolfiera, non risparmia nessuno:
           - fa perdere una vita a ogni avversario vivo nel raggio (stessa
             immunita' ghost/protezione post-respawn di mortaio/mine/laser);
           - disinnesca ogni mina avversaria nel raggio;
           - distrugge ogni torretta/robot avversario nel raggio;
           - distrugge ogni mortaio avversario nel raggio;
-          - distrugge ogni pet avversario nel raggio (vedi destroy_pet)."""
+          - distrugge ogni pet avversario nel raggio (vedi destroy_pet);
+          - fa esplodere a sua volta (reazione a catena, con onda d'urto
+            indipendente) ogni altro bombolone avversario ancora inesploso
+            nel raggio - NON lo disinnesca soltanto;
+          - fa sganciare a sua volta la propria bomba (reazione a catena,
+            con onda d'urto indipendente) a ogni mongolfiera avversaria in
+            volo nel raggio - NON la abbatte soltanto;
+          - distrugge anche il blob gelatinoso avversario nel raggio (vedi
+            destroy_blob): l'UNICO ordigno del gioco capace di farlo oltre
+            al laser e al missile guidato."""
         ox, oy = bomb["x"], bomb["y"]
         owner = bomb["owner"]
         self.push_event({
@@ -2228,6 +2245,40 @@ class Room:
             if pet["owner"] != owner and abs(pet["x"] - ox) + abs(pet["y"] - oy) <= SUPERBOMB_RADIUS_CELLS:
                 self.destroy_pet(pet, "superbomb", owner)
 
+        # Ogni altro bombolone avversario ancora inesploso nel raggio NON
+        # viene "annullato": esplode a sua volta (reazione a catena), con
+        # la propria onda d'urto indipendente. Il flag "destroyed" viene
+        # marcato PRIMA di richiamare explode_superbomb() su di lui, cosi'
+        # da evitare che una catena si richiami all'infinito avanti e
+        # indietro tra due bomboloni che si trovano entrambi nel raggio
+        # l'uno dell'altro.
+        for other in list(self.superbombs):
+            if (other is not bomb and other["owner"] != owner and not other.get("destroyed")
+                    and abs(other["x"] - ox) + abs(other["y"] - oy) <= SUPERBOMB_RADIUS_CELLS):
+                other["destroyed"] = True
+                self.explode_superbomb(other)
+
+        # Ogni mongolfiera avversaria in volo nel raggio non viene abbattuta
+        # in silenzio: sgancia la propria bomba (con la propria onda
+        # d'urto indipendente) esattamente come se il suo timer fosse
+        # scaduto in quell'istante, poi esce di scena.
+        for bal in list(self.balloons):
+            if (bal["owner"] != owner and not bal.get("destroyed")
+                    and abs(bal["x"] - ox) + abs(bal["y"] - oy) <= SUPERBOMB_RADIUS_CELLS):
+                bal["destroyed"] = True
+                self.explode_balloon_bomb(bal)
+
+        # Distrugge anche il blob gelatinoso avversario nel raggio: a
+        # differenza della bomba di mongolfiera, il bombolone non risparmia
+        # nemmeno il blob (vedi destroy_blob).
+        blob_victims = [
+            blob for blob in self.blobs
+            if blob["owner"] != owner
+            and abs(blob["x"] - ox) + abs(blob["y"] - oy) <= SUPERBOMB_RADIUS_CELLS
+        ]
+        for blob in blob_victims:
+            self.destroy_blob(blob, "superbomb", owner)
+
     # ---- bonus 1600 punti: mongolfiera vagante (tasto "1", DOPO il bombolone) ----
 
     def try_launch_balloon(self, player):
@@ -2252,18 +2303,41 @@ class Room:
         Da questo bonus vengono ora fatte librare in aria DUE mongolfiere
         contemporaneamente (invece di una sola), entrambe con teschio
         disegnato sul pallone lato client: nascono nello stesso punto ma
-        scelgono subito ciascuna una meta' casuale indipendente, cosi' si
-        separano immediatamente e vagano per conto proprio."""
+        puntano SUBITO verso due meta' opposte della mappa (scelto a caso
+        se la divisione e' sinistra/destra o alto/basso, e a caso quale
+        mongolfiera va in quale meta'), cosi' si separano davvero invece
+        di rischiare - come con due bersagli scelti a caso senza vincoli -
+        di restare vicine per un bel po'. Dopo aver raggiunto questo primo
+        bersaglio, vagano di nuovo del tutto a caso su tutta la mappa
+        (vedi update_balloons), esattamente come prima."""
         if not player.alive or player.trapped_left > 0 or not player.has_balloon or player.balloon_launched or player.is_assassin or player.armor_active:
             return
         player.balloon_launched = True
-        for _ in range(2):
+        # Scelto UNA SOLA volta per il lancio (non per singola mongolfiera):
+        # split_axis decide se la mappa si divide in meta' sinistra/destra
+        # ("x") o alto/basso ("y"); flip decide a caso quale delle due
+        # mongolfiere finisce in quale meta'.
+        split_axis = random.choice(("x", "y"))
+        flip = random.random() < 0.5
+        for i in range(2):
+            half = i if not flip else 1 - i  # 0 = prima meta', 1 = seconda meta'
+            if split_axis == "x":
+                if half == 0:
+                    tx = random.uniform(0, max(self.maze_w / 2 - 1, 0))
+                else:
+                    tx = random.uniform(self.maze_w / 2, self.maze_w - 1)
+                ty = random.uniform(0, self.maze_h - 1)
+            else:
+                if half == 0:
+                    ty = random.uniform(0, max(self.maze_h / 2 - 1, 0))
+                else:
+                    ty = random.uniform(self.maze_h / 2, self.maze_h - 1)
+                tx = random.uniform(0, self.maze_w - 1)
             balloon = {
                 "id": uuid.uuid4().hex[:8],
                 "owner": player.id,
                 "x": float(player.x), "y": float(player.y),
-                "tx": random.uniform(0, self.maze_w - 1),
-                "ty": random.uniform(0, self.maze_h - 1),
+                "tx": tx, "ty": ty,
                 "bomb_cd": BALLOON_BOMB_INTERVAL_SECONDS,
             }
             self.balloons.append(balloon)
@@ -2284,10 +2358,20 @@ class Room:
         MAI attraverso bfs_path/corridoi) ogni volta che raggiunge quella
         corrente, esattamente come vola sopra i muri una bomba di mortaio in
         volo. Ogni BALLOON_BOMB_INTERVAL_SECONDS sgancia una bomba nella
-        propria posizione attuale (vedi explode_balloon_bomb)."""
+        propria posizione attuale (vedi explode_balloon_bomb).
+
+        Una mongolfiera puo' anche venire abbattuta in anticipo da un
+        bombolone o da un'altra bomba di mongolfiera avversari: in quel
+        caso viene marcata b["destroyed"]=True (vedi explode_superbomb/
+        explode_balloon_bomb) e va rimossa qui. Si itera su una copia
+        della lista perche' abbattere una mongolfiera rivale dentro
+        explode_balloon_bomb modifica self.balloons mentre lo stiamo
+        scorrendo."""
         if not self.balloons:
             return
-        for b in self.balloons:
+        for b in list(self.balloons):
+            if b.get("destroyed"):
+                continue
             dx, dy = b["tx"] - b["x"], b["ty"] - b["y"]
             dist = math.hypot(dx, dy)
             if dist <= BALLOON_RETARGET_EPSILON:
@@ -2304,6 +2388,7 @@ class Room:
             if b["bomb_cd"] <= 0:
                 b["bomb_cd"] = BALLOON_BOMB_INTERVAL_SECONDS
                 self.explode_balloon_bomb(b)
+        self.balloons = [bal for bal in self.balloons if not bal.get("destroyed")]
 
     def explode_balloon_bomb(self, b):
         """Bomba sganciata dalla mongolfiera (bonus 1600 punti): a
@@ -2317,7 +2402,17 @@ class Room:
           - disinnesca ogni mina avversaria nel raggio;
           - distrugge ogni torretta/robot avversario nel raggio;
           - distrugge ogni mortaio avversario nel raggio;
-          - distrugge ogni pet avversario nel raggio (vedi destroy_pet)."""
+          - distrugge ogni pet avversario nel raggio (vedi destroy_pet);
+          - fa esplodere a sua volta (reazione a catena, con onda d'urto
+            indipendente) ogni bombolone avversario ancora inesploso nel
+            raggio - NON lo disinnesca soltanto;
+          - fa sganciare a sua volta la propria bomba (reazione a catena,
+            con onda d'urto indipendente) a ogni altra mongolfiera
+            avversaria in volo nel raggio - NON la abbatte soltanto.
+        UNICA eccezione, a differenza del bombolone: il blob gelatinoso
+        (bonus 1800 punti) e' IMMUNE alla bomba di mongolfiera, che lo
+        sorvola senza alcun effetto - resta distruttibile solo da laser,
+        missile guidato o bombolone."""
         ox, oy = b["x"], b["y"]
         owner = b["owner"]
         self.push_event({
@@ -2374,6 +2469,27 @@ class Room:
         for pet in list(self.pets):
             if pet["owner"] != owner and abs(pet["x"] - ox) + abs(pet["y"] - oy) <= BALLOON_BOMB_RADIUS_CELLS:
                 self.destroy_pet(pet, "balloon", owner)
+
+        # Ogni bombolone avversario ancora inesploso nel raggio NON viene
+        # "annullato": esplode a sua volta (reazione a catena), con la
+        # propria onda d'urto indipendente.
+        for other in list(self.superbombs):
+            if (other["owner"] != owner and not other.get("destroyed")
+                    and abs(other["x"] - ox) + abs(other["y"] - oy) <= BALLOON_BOMB_RADIUS_CELLS):
+                other["destroyed"] = True
+                self.explode_superbomb(other)
+
+        # Ogni altra mongolfiera avversaria in volo nel raggio non viene
+        # abbattuta in silenzio: sgancia a sua volta la propria bomba
+        # (reazione a catena), poi esce di scena.
+        for bal in list(self.balloons):
+            if (bal is not b and bal["owner"] != owner and not bal.get("destroyed")
+                    and abs(bal["x"] - ox) + abs(bal["y"] - oy) <= BALLOON_BOMB_RADIUS_CELLS):
+                bal["destroyed"] = True
+                self.explode_balloon_bomb(bal)
+
+        # NOTA: il blob (bonus 1800 punti) e' volutamente escluso qui -
+        # resta immune alla bomba di mongolfiera (vedi docstring sopra).
 
     # ---- bonus 1800 punti: blob gelatinoso (tasto "1", DOPO la mongolfiera) ----
 
