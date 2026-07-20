@@ -5524,7 +5524,119 @@ document.addEventListener("keydown", function(ev){
 // D-pad touch rimosso su richiesta (le frecce sotto lo schermo davano
 // fastidio): il movimento resta disponibile da tastiera (WASD/frecce).
 // NB: su mobile senza tastiera fisica il gioco non e' piu' controllabile
-// da touch — se serve, si puo' reintrodurre uno swipe-gesture sul canvas.
+// da touch (a meno di non collegare un controller: vedi sezione GAMEPAD
+// qui sotto) — se serve, si puo' reintrodurre uno swipe-gesture sul canvas.
+
+/* =========================================================================
+   INPUT: CONTROLLER (Gamepad API) - PS5 DualSense e compatibili
+   Movimento: D-pad o levetta sinistra, esattamente come le frecce/WASD da
+   tastiera (stessa funzione requestDir, stessa coda next_direction lato
+   server: nessuna logica di gioco duplicata o divergente).
+
+   Bonus: il gioco ne ha 9, ognuno con un tasto numerico dedicato (1-9) e
+   una propria logica di sblocco/utilizzo, pensati per essere scelti dal
+   giocatore uno alla volta. Un controller PS5 non ha 9 pulsanti comodi da
+   usare come le dita su una tastiera, quindi mappare "tutti i bonus" sul
+   solo tasto X (Cross) con UNA pressione = UN bonus alla volta non e'
+   possibile in modo onesto: o si sceglie quale mappare (perdendo gli
+   altri), o si spara tutto insieme in un colpo solo (eliminando la scelta
+   strategica che e' il senso stesso di avere bonus diversi).
+   La soluzione qui implementata: X attiva SEMPRE E SOLO il primo bonus
+   ancora disponibile e non ancora usato, seguendo lo stesso ordine in cui
+   si sbloccano in partita (200, 300, 400... punti). Appena quel bonus e'
+   stato consumato (il server lo segnala nello snapshot, es. ninja_used,
+   armor_used, ecc.), la pressione successiva di X passa automaticamente
+   al bonus successivo sbloccato. E' lo stesso identico messaggio che
+   manderebbe la tastiera per quel bonus preciso: il server resta
+   comunque l'unica autorita' su cosa e' davvero valido in quel momento.
+   ========================================================================= */
+const GP_DEADZONE = 0.35;
+let gpLastDir = null;
+let gpXWasPressed = false;
+
+window.addEventListener("gamepadconnected", function(ev){
+  showToast("Controller collegato" + (ev.gamepad && ev.gamepad.id ? ": " + ev.gamepad.id : ""));
+});
+window.addEventListener("gamepaddisconnected", function(){
+  gpLastDir = null;
+  gpXWasPressed = false;
+  showToast("Controller disconnesso");
+});
+
+// La catena mina/mortaio/bombolone/mongolfiera/blob/muro di spunzoni/tesla
+// (tasto "1" da tastiera) e' gestita INTERAMENTE dal server con un solo
+// tipo di messaggio ("place_mine" finche' restano mine, poi "place_mortar"
+// per ogni gradino successivo): qui replichiamo solo il controllo
+// client-side che decide QUANDO c'e' ancora qualcosa da piazzare in questa
+// catena, per non "consumare" il tasto X su di essa quando e' gia' esaurita.
+function mineMortarChainPending(me){
+  if (me.mines_left > 0) return true;
+  if (me.mortar && !me.mortar_placed) return true;
+  if (me.superbomb && me.superbomb_left > 0) return true;
+  if (me.balloon && !me.balloon_launched) return true;
+  if (me.blob && !me.blob_placed) return true;
+  if (me.blob_alive_bonus && !me.blob_alive_used) return true;
+  if (me.spike_wall && !me.spike_wall_placed) return true;
+  if (me.tesla && !me.tesla_placed) return true;
+  return false;
+}
+
+// Sceglie il PROSSIMO messaggio bonus da mandare, nell'ordine di sblocco
+// (200 -> 300 -> ... -> 1000, poi la catena mina/mortaio prosegue da sola
+// oltre i 1000 punti tramite "place_mortar"). Ritorna null se in questo
+// momento non c'e' alcun bonus sbloccato e non ancora usato.
+function getNextBonusAction(me){
+  if (!me) return null;
+  if (me.mines_left > 0) return { type: "place_mine" };
+  if (mineMortarChainPending(me)) return { type: "place_mortar" };
+  if (me.ninja && !me.ninja_used) return { type: "activate_ninja" };
+  if (me.missile && me.missiles_left > 0) return { type: "fire_missile" };
+  if (me.trap && me.trap_uses_left > 0) return { type: "activate_trap" };
+  if (me.turret && !me.turret_placed) return { type: "place_turret" };
+  if (me.armor && !me.armor_used) return { type: "activate_armor" };
+  if (me.lightning && !me.lightning_used) return { type: "activate_lightning" };
+  if (me.pet && !me.pet_summoned) return { type: "activate_pet" };
+  if (me.robot && !me.robot_used) return { type: "evolve_turret" };
+  return null;
+}
+
+function pollGamepad(){
+  requestAnimationFrame(pollGamepad);
+  if (currentScreen !== "game") return;
+  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+  let gp = null;
+  for (let i = 0; i < pads.length; i++){ if (pads[i]){ gp = pads[i]; break; } }
+  if (!gp) return;
+
+  // Direzione: D-pad (indici standard 12-15) oppure levetta sinistra
+  // (assi 0/1). Se non si preme nulla la direzione resta quella corrente
+  // (esattamente come rilasciare un tasto: il personaggio continua a
+  // muoversi da solo, vedi commento sopra su keyup).
+  let dir = null;
+  if (gp.buttons[12] && gp.buttons[12].pressed) dir = "up";
+  else if (gp.buttons[13] && gp.buttons[13].pressed) dir = "down";
+  else if (gp.buttons[14] && gp.buttons[14].pressed) dir = "left";
+  else if (gp.buttons[15] && gp.buttons[15].pressed) dir = "right";
+  else {
+    const ax = gp.axes[0] || 0, ay = gp.axes[1] || 0;
+    if (Math.abs(ax) > Math.abs(ay) && Math.abs(ax) > GP_DEADZONE) dir = ax > 0 ? "right" : "left";
+    else if (Math.abs(ay) > GP_DEADZONE) dir = ay > 0 ? "down" : "up";
+  }
+  if (dir && dir !== gpLastDir){ requestDir(dir); gpLastDir = dir; }
+
+  // Tasto X (Cross, indice 0 nello standard mapping della Gamepad API):
+  // fronte di salita, scatta solo al momento della pressione e non mentre
+  // resta tenuto premuto (altrimenti spammerebbe lo stesso bonus ad ogni
+  // frame finche' il dito resta sul tasto).
+  const xPressed = !!(gp.buttons[0] && gp.buttons[0].pressed);
+  if (xPressed && !gpXWasPressed){
+    const me = findPlayer(currSnapshot, myId);
+    const action = getNextBonusAction(me);
+    if (action) sendMsg(action);
+  }
+  gpXWasPressed = xPressed;
+}
+requestAnimationFrame(pollGamepad);
 
 })();
 </script>
