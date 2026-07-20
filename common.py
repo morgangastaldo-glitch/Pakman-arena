@@ -298,6 +298,23 @@ BLOB_ALIVE_SPEED_MULT = ROBOT_SPEED_MULT          # stessa velocita' della torre
 SPIKE_WALL_THRESHOLD = 2200
 SPIKE_WALL_DURATION_SECONDS = 60.0   # il muro resta in piedi 1 minuto, poi si sgretola
 SPIKE_WALL_HIT_RANGE = 0.6           # distanza (frazione di cella, per asse) sotto la quale un avversario e' considerato "all'impatto" con gli spunzoni
+
+# ---- bonus 2400 punti: Tesla laser (tasto "1", DOPO il muro di spunzoni) ----
+# Ultimo gradino della catena del tasto "1". Ispirata alla torre "Tesla" di
+# Clash Royale: una struttura fissa, grande quanto una sola casella ma
+# visivamente PIU' ALTA di un muro normale (spunta oltre i muri della
+# mappa). Proprio perche' e' piu' alta, ignora i muri quando spara: non
+# lancia un proiettile che puo' schiantarsi o mancare il bersaglio come la
+# torretta normale, ma fulmina ISTANTANEAMENTE, ogni
+# TESLA_FIRE_INTERVAL_SECONDS, TUTTO cio' che appartiene alla squadra
+# avversaria entro TESLA_RANGE_CELLS caselle (distanza Manhattan, come le
+# altre armi ad area del gioco): giocatori vivi, mine, torrette/robot,
+# mortai, pet, bomboloni (li fa esplodere a catena), mongolfiere (le fa
+# sganciare la bomba a catena), blob gelatinosi e muri di spunzoni
+# avversari. E' permanente per tutto il round, come torretta/mortaio/pet.
+TESLA_THRESHOLD = 2400
+TESLA_FIRE_INTERVAL_SECONDS = 2.5    # cadenza dei fulmini ad area
+TESLA_RANGE_CELLS = 8                # raggio d'azione (distanza Manhattan), ignora i muri
 BLOB_POISON_DURATION_SECONDS = 4.0                # quanto resta a terra ciascuna nuvola della scia del blob vivo
 BLOB_EAT_RANGE_CELLS = 1                          # distanza (caselle, stile scacchi/Chebyshev): il blob mangia anche chi non e' esattamente sopra di lui, ma solo adiacente
 

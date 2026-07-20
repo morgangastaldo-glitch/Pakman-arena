@@ -643,6 +643,7 @@ const ASSASSIN_COLOR = "#ff2b4e";
 const ARMOR_COLOR = "#4dffe8";
 const LIGHTNING_COLOR = "#ffe14d";
 const POISON_COLOR = "#7cff3b";
+const TESLA_COLOR = "#5ad1ff";
 const COLOR_NAMES = Object.keys(COLOR_HEX);
 const DIR_ANGLE = { right: 0, down: 90, left: 180, up: 270 };
 // Deve restare identico a DIRECTIONS in common.py: usato dalla simulazione
@@ -805,6 +806,7 @@ let lobbyPlayersCache = [];
 let portals = [];          // [[x,y],[x,y]] ricevuti dal server con la mappa
 let beams = [];            // (non piu' usato: il vecchio raggio istantaneo e' stato sostituito dai proiettili)
 let sparks = [];           // scintille per rimbalzo/estinzione laser: {x,y,start}
+let teslaBolts = [];       // fulmini in corso di una Tesla: {x,y,targets:[[x,y],...],start}
 let swirls = [];           // effetti di teletrasporto in corso: {x,y,start,color}
 let themeFx = [];          // particelle atmosferiche a tema della mappa corrente
 let themeFxKind = null;    // tipo di effetto della mappa corrente (embers/snow/...)
@@ -3186,7 +3188,140 @@ function drawSpikeWalls(now){
   ctx.restore();
 }
 
-// Mongolfiera vagante (bonus 1600 punti, tasto 0 dopo il bombolone): vola
+// Tesla laser (bonus 2400 punti, tasto 1 ultimo gradino della catena, dopo
+// il muro di spunzoni): torre fissa ispirata alla Tesla di Clash Royale,
+// grande quanto una sola casella di base ma disegnata PIU' ALTA di un muro
+// normale (la bobina spunta ben oltre il bordo superiore della cella), per
+// rendere leggibile che spara "da sopra" ignorando i muri della mappa
+// (server-authoritative, vedi try_place_tesla/tesla_public/tesla_zap in
+// main.py). La bobina pulsa sempre piu' in fretta man mano che si carica
+// (t.charge, 0 -> 1) verso il prossimo fulmine ad area.
+function drawTeslas(now){
+  const list = (currSnapshot && currSnapshot.teslas) || [];
+  if (!list.length) return;
+  ctx.save();
+  list.forEach(function(t){
+    const x0 = t.x * BASE_CELL, y0 = t.y * BASE_CELL;
+    const cx = x0 + BASE_CELL / 2, cy = y0 + BASE_CELL / 2;
+    const owner = findPlayer(currSnapshot, t.owner);
+    const col = (owner && COLOR_HEX[(owner.colors || [])[0]]) || "#5ad1ff";
+    const METAL = "#3a3d46", METAL_LIGHT = "#6b6f7a";
+    const charge = t.charge || 0;
+    const pulse = 0.55 + 0.45 * Math.abs(Math.sin(now / (140 - charge * 90)));
+
+    // Anello del raggio d'azione (8 caselle): visibile solo al proprietario.
+    if (t.owner === myId){
+      ctx.globalAlpha = 0.10;
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 6]);
+      ctx.beginPath(); ctx.arc(cx, cy, 8 * BASE_CELL, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // Base ottagonale a terra, come la torretta ma piu' larga e scura
+    // (metallo), con una fascia nel colore del proprietario.
+    ctx.globalAlpha = 0.95;
+    ctx.fillStyle = METAL;
+    ctx.beginPath();
+    for (let i = 0; i < 8; i++){
+      const a = i * Math.PI / 4;
+      const px = cx + Math.cos(a) * 9, py = cy + 3 + Math.sin(a) * 5;
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Traliccio che sale ben oltre il bordo superiore della cella: e'
+    // questo che rende la Tesla visivamente "piu' alta di un muro".
+    const towerTopY = cy - BASE_CELL * 1.05;
+    ctx.strokeStyle = METAL_LIGHT;
+    ctx.lineWidth = 3;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(cx - 5, cy); ctx.lineTo(cx - 2.5, towerTopY);
+    ctx.moveTo(cx + 5, cy); ctx.lineTo(cx + 2.5, towerTopY);
+    ctx.stroke();
+    // Pioli/isolatori del traliccio (a scaletta), nel colore del proprietario.
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 1.6;
+    for (let i = 1; i <= 3; i++){
+      const yy = cy - (cy - towerTopY) * (i / 4);
+      const half = 5 - (i / 4) * 2.5;
+      ctx.beginPath(); ctx.moveTo(cx - half, yy); ctx.lineTo(cx + half, yy); ctx.stroke();
+    }
+
+    // Bobina in cima: nucleo pulsante che si accende sempre di piu' man
+    // mano che la Tesla si ricarica, con un piccolo alone.
+    ctx.globalAlpha = 0.30 + 0.25 * pulse;
+    ctx.fillStyle = col;
+    ctx.beginPath(); ctx.arc(cx, towerTopY, 6.5, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 0.9;
+    ctx.fillStyle = "#fff";
+    ctx.beginPath(); ctx.arc(cx, towerTopY, 2.6 * (0.6 + 0.4 * pulse), 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.arc(cx, towerTopY, 6.5, 0, Math.PI * 2); ctx.stroke();
+
+    // Micro-scintille intorno alla bobina quando la carica e' quasi piena,
+    // per anticipare visivamente il fulmine imminente.
+    if (charge > 0.7){
+      ctx.globalAlpha = (charge - 0.7) / 0.3 * 0.8;
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = 1;
+      for (let i = 0; i < 4; i++){
+        const a = (i / 4) * Math.PI * 2 + now / 90;
+        ctx.beginPath();
+        ctx.moveTo(cx + Math.cos(a) * 4, towerTopY + Math.sin(a) * 4);
+        ctx.lineTo(cx + Math.cos(a) * 10, towerTopY + Math.sin(a) * 10);
+        ctx.stroke();
+      }
+    }
+  });
+  ctx.restore();
+}
+
+// Fulmini istantanei di una Tesla appena scattati (evento "tesla_fire",
+// vedi tesla_zap in main.py): un lampo a zig-zag per OGNI bersaglio
+// colpito nello stesso istante, dalla bobina in cima alla torre fino alla
+// cella del bersaglio. Durano pochissimo (200ms), come le scintille.
+function drawTeslaBolts(now){
+  teslaBolts = teslaBolts.filter(function(b){ return now - b.start < 200; });
+  if (!teslaBolts.length) return;
+  ctx.save();
+  teslaBolts.forEach(function(b){
+    const t = (now - b.start) / 200;
+    const alpha = 1 - t;
+    const ox = b.x * BASE_CELL + BASE_CELL / 2;
+    const oy = b.y * BASE_CELL + BASE_CELL / 2 - BASE_CELL * 1.05;
+    b.targets.forEach(function(tg){
+      const tx = tg[0] * BASE_CELL + BASE_CELL / 2;
+      const ty = tg[1] * BASE_CELL + BASE_CELL / 2;
+      const segs = 6;
+      ctx.globalAlpha = alpha;
+      ctx.strokeStyle = b.color;
+      ctx.lineWidth = 2.4;
+      ctx.beginPath();
+      ctx.moveTo(ox, oy);
+      for (let i = 1; i < segs; i++){
+        const f = i / segs;
+        const jx = ox + (tx - ox) * f + (Math.random() - 0.5) * 10;
+        const jy = oy + (ty - oy) * f + (Math.random() - 0.5) * 10;
+        ctx.lineTo(jx, jy);
+      }
+      ctx.lineTo(tx, ty);
+      ctx.stroke();
+      ctx.globalAlpha = alpha * 0.5;
+      ctx.lineWidth = 6;
+      ctx.stroke();
+    });
+  });
+  ctx.restore();
+}
+
+
 // libera su tutta la mappa senza alcun bersaglio (server-authoritative,
 // vedi update_balloons/balloon_public in main.py), sganciando una bomba
 // istantanea ogni 3 secondi nel punto esatto in cui si trova. Disegnata
@@ -3853,12 +3988,14 @@ function renderLoop(now){
   drawMortars(now);
   drawSuperbombs(now);
   drawSpikeWalls(now);
+  drawTeslas(now);
   drawBalloons(now);
   drawBlobs(now);
   drawMissiles(now);
   drawBombs(now);
   drawLaserProjectiles(now);
   drawSparks(now);
+  drawTeslaBolts(now);
   drawExplosions(now);
   drawShockwaves(now);
   drawSkyBolts(now);
@@ -4302,6 +4439,7 @@ function onGameEvent(msg){
         blob:         ["BLOB SBLOCCATO!", "blocca la strada e mangia chi passa \u00b7 premi 1 (dopo la mongolfiera) per piazzarlo \u00b7 si rimuove solo sparandogli"],
         blob_alive:   ["BLOB VIVO SBLOCCATO!", "premi 1 (dopo averlo piazzato) per risvegliarlo \u00b7 vaga sulla mappa lasciando una scia velenosa e mangia chi gli e' vicino"],
         spike_wall:   ["MURO DI SPUNZONI SBLOCCATO!", "premi 1 (a fine catena) per piazzarlo dove ti trovi \u00b7 dura 1 minuto \u00b7 solo tu e i tuoi gadget lo attraversate, chiunque altro ci sbatta muore"],
+        tesla:        ["TESLA LASER SBLOCCATA!", "premi 1 (dopo il muro di spunzoni) per piazzarla \u00b7 fulmina tutto cio' che e' nemico entro 8 caselle, ignorando i muri"],
       };
       const lb = labels[msg.bonus] || ["BONUS!", ""];
       const txt = lb[0] + (lb[1] ? " \u00b7 " + lb[1] : "");
@@ -4318,6 +4456,7 @@ function onGameEvent(msg){
       const victim = findPlayer(currSnapshot, msg.victim);
       const at = msg.at || (victim ? [victim.x, victim.y] : [0, 0]);
       const col = (msg.cause === "lightning") ? LIGHTNING_COLOR
+                : (msg.cause === "tesla") ? TESLA_COLOR
                 : (msg.cause === "poison") ? POISON_COLOR
                 : (victim && victim.assassin) ? ASSASSIN_COLOR
                 : (victim && victim.armor_on) ? ARMOR_COLOR
@@ -4338,13 +4477,14 @@ function onGameEvent(msg){
       const byBalloon = msg.cause === "balloon";
       const byBlob = msg.cause === "blob";
       const bySpikeWall = msg.cause === "spike_wall";
+      const byTesla = msg.cause === "tesla";
       // Schianto contro un muro di spunzoni: oltre al suono di
       // eliminazione normale, l'impatto di roccia dedicato.
       if (bySpikeWall) playSpikeWallCrash();
       const causeTxt = byLaser ? " dal laser" : (byMine ? " da una mina" : (byAssassin ? " da un ninja invisibile"
         : (byMissile ? " da un missile guidato" : (byTrap ? " da una trappola" : (byArmor ? " dalla corazza laser"
         : (byLightning ? " da un fulmine" : (byPet ? " dal pet avversario" : (byMortar ? " da una bomba di mortaio"
-        : (byPoison ? " dalla nuvola velenosa" : (bySuperbomb ? " da un bombolone" : (byBalloon ? " da una bomba di mongolfiera" : (byBlob ? " mangiato da un blob gelatinoso" : (bySpikeWall ? " schiantato contro un muro di spunzoni" : "")))))))))))));
+        : (byPoison ? " dalla nuvola velenosa" : (bySuperbomb ? " da un bombolone" : (byBalloon ? " da una bomba di mongolfiera" : (byBlob ? " mangiato da un blob gelatinoso" : (bySpikeWall ? " schiantato contro un muro di spunzoni" : (byTesla ? " fulminato da una Tesla laser" : ""))))))))))))));
       const stolenTxt = msg.stolen ? (" (-" + msg.stolen + " punti)") : "";
       if (msg.victim === myId){
         showBonusBanner(msg.respawn ? ("HAI PERSO UNA VITA \u2665" + msg.lives) : "SEI STATO ELIMINATO");
@@ -4481,9 +4621,35 @@ function onGameEvent(msg){
     }
     case "spike_wall_expired": {
       // Scaduto il minuto: il muro si sgretola da solo, con una piccola
-      // frana di detriti nel punto in cui si trovava.
+      // frana di detriti nel punto in cui si trovava. Riusato anche per
+      // un muro di spunzoni sgretolato da un fulmine di Tesla (bonus 2400
+      // punti, vedi tesla_zap in main.py): stesso identico effetto.
       sparks.push({ x: msg.x, y: msg.y, start: now });
       playSpikeWallCrumble();
+      break;
+    }
+    case "tesla_place": {
+      // Tesla laser piazzata (bonus 2400 punti, ultimo gradino della
+      // catena del tasto "1"): la torre in se' viene disegnata ad ogni
+      // frame leggendo currSnapshot.teslas (autorita' server).
+      if (msg.player === myId) showToast("Tesla laser piazzata! Fulmina tutto cio' che appartiene al nemico entro 8 caselle, ignorando i muri.");
+      tone(500, 0.09, "sawtooth", 0.14);
+      tone(1000, 0.06, "square", 0.1, 0.05);
+      break;
+    }
+    case "tesla_fire": {
+      // Fulmine ad area della Tesla (vedi tesla_zap in main.py): un
+      // lampo separato dalla torre verso OGNI bersaglio colpito nello
+      // stesso istante. Gli eventuali "kill"/"mine_destroyed"/
+      // "turret_destroyed"/... arrivano come eventi separati subito dopo,
+      // con il loro suono/toast dedicato: qui c'e' solo il lampo e il
+      // boato elettrico della scarica.
+      const owner = findPlayer(currSnapshot, msg.player);
+      const col = (owner && COLOR_HEX[(owner.colors || [])[0]]) || "#5ad1ff";
+      teslaBolts.push({ x: msg.x, y: msg.y, targets: msg.targets || [], color: col, start: now });
+      noiseBurst(0.2, 0.16);
+      tone(220, 0.16, "sawtooth", 0.14);
+      tone(1600, 0.05, "square", 0.1, 0.03);
       break;
     }
     case "poison_spawn": {
@@ -4502,7 +4668,7 @@ function onGameEvent(msg){
       noiseBurst(0.2, 0.16);
       tone(120, 0.18, "sawtooth", 0.13, 0.02);
       if (msg.by === myId){
-        const mortarCauseTxt = { superbomb: "dal bombolone", balloon: "da una bomba di mongolfiera" }[msg.cause] || "dalla corazza";
+        const mortarCauseTxt = { superbomb: "dal bombolone", balloon: "da una bomba di mongolfiera", tesla: "da una Tesla laser" }[msg.cause] || "dalla corazza";
         showToast("Mortaio avversario distrutto " + mortarCauseTxt + "!");
       }
       break;
@@ -4510,7 +4676,8 @@ function onGameEvent(msg){
     case "pet_destroyed": {
       const causeTxt = { mine: "una mina", missile: "un missile guidato", laser: "un colpo laser",
                           armor: "la corazza laser", lightning: "un fulmine", mortar: "un colpo di mortaio",
-                          superbomb: "un bombolone", balloon: "una bomba di mongolfiera", blob: "un blob gelatinoso" }[msg.cause] || "un nemico";
+                          superbomb: "un bombolone", balloon: "una bomba di mongolfiera", blob: "un blob gelatinoso",
+                          tesla: "una Tesla laser" }[msg.cause] || "un nemico";
       explosions.push({ x: msg.x, y: msg.y, color: (findPlayer(currSnapshot, msg.owner) &&
         COLOR_HEX[(findPlayer(currSnapshot, msg.owner).colors || [])[0]]) || "#fff", start: now });
       noiseBurst(0.18, 0.15);
@@ -4611,7 +4778,7 @@ function onGameEvent(msg){
       }
       if (msg.by === myId){
         const what = msg.evolved ? "Navicella avversaria" : "Torretta avversaria";
-        const turretCauseTxt = { superbomb: "dal bombolone", balloon: "da una bomba di mongolfiera" }[msg.cause] || "dalla corazza";
+        const turretCauseTxt = { superbomb: "dal bombolone", balloon: "da una bomba di mongolfiera", tesla: "da una Tesla laser" }[msg.cause] || "dalla corazza";
         showToast(what + " distrutta " + turretCauseTxt + "!");
       }
       break;
@@ -4624,7 +4791,7 @@ function onGameEvent(msg){
       noiseBurst(0.16, 0.14);
       tone(180, 0.14, "square", 0.11);
       if (msg.by === myId){
-        const mineCauseTxt = { superbomb: "dal bombolone", balloon: "da una bomba di mongolfiera" }[msg.cause] || "disinnescata dalla corazza";
+        const mineCauseTxt = { superbomb: "dal bombolone", balloon: "da una bomba di mongolfiera", tesla: "da una Tesla laser" }[msg.cause] || "disinnescata dalla corazza";
         showToast("Mina avversaria " + (msg.cause ? "distrutta " + mineCauseTxt : mineCauseTxt) + "!");
       }
       break;
@@ -4838,6 +5005,7 @@ function mineChainStep(p){
   const myBlobStillThere = !!(currSnapshot && (currSnapshot.blobs || []).some(function(b){ return b.owner === p.id; }));
   if (p.blob_alive_bonus && !p.blob_alive_used && myBlobStillThere) return "blob_alive";
   if (p.spike_wall && !p.spike_wall_placed) return "spike_wall";
+  if (p.tesla && !p.tesla_placed) return "tesla";
   return null;
 }
 const GADGET_RAIL_KEYS = [
@@ -5009,6 +5177,46 @@ function renderGadgetIcon(icx, key, color){
     icx.fillStyle = "#1a1a1a";
     icx.beginPath(); icx.arc(cx - rS * 0.16, cy - rS * 0.3, rS * 0.09, 0, Math.PI * 2); icx.fill();
     icx.beginPath(); icx.arc(cx + rS * 0.16, cy - rS * 0.3, rS * 0.09, 0, Math.PI * 2); icx.fill();
+  } else if (key === "tesla"){
+    // Tesla laser (vedi drawTeslas): stesso disegno in miniatura, base
+    // ottagonale metallica, traliccio che sale e bobina pulsante in cima
+    // nel colore del proprietario, con un piccolo fulmine decorativo.
+    const METAL = "#3a3d46", METAL_LIGHT = "#6b6f7a";
+    const by = cy + res * 0.20;
+    icx.fillStyle = METAL;
+    icx.beginPath();
+    for (let i = 0; i < 8; i++){
+      const a = i * Math.PI / 4;
+      const px = cx + Math.cos(a) * res * 0.20, py = by + Math.sin(a) * res * 0.11;
+      if (i === 0) icx.moveTo(px, py); else icx.lineTo(px, py);
+    }
+    icx.closePath(); icx.fill();
+    icx.strokeStyle = color;
+    icx.lineWidth = res * 0.03;
+    icx.stroke();
+    const topY = cy - res * 0.34;
+    icx.strokeStyle = METAL_LIGHT;
+    icx.lineWidth = res * 0.06;
+    icx.lineCap = "round";
+    icx.beginPath();
+    icx.moveTo(cx - res * 0.10, by); icx.lineTo(cx - res * 0.05, topY);
+    icx.moveTo(cx + res * 0.10, by); icx.lineTo(cx + res * 0.05, topY);
+    icx.stroke();
+    icx.lineCap = "butt";
+    icx.fillStyle = color;
+    icx.globalAlpha = 0.5;
+    icx.beginPath(); icx.arc(cx, topY, res * 0.14, 0, Math.PI * 2); icx.fill();
+    icx.globalAlpha = 1;
+    icx.fillStyle = "#fff";
+    icx.beginPath(); icx.arc(cx, topY, res * 0.06, 0, Math.PI * 2); icx.fill();
+    icx.strokeStyle = "#fff";
+    icx.lineWidth = res * 0.025;
+    icx.beginPath();
+    icx.moveTo(cx - res * 0.02, topY + res * 0.02);
+    icx.lineTo(cx + res * 0.05, topY - res * 0.08);
+    icx.lineTo(cx + res * 0.01, topY - res * 0.03);
+    icx.lineTo(cx + res * 0.07, topY - res * 0.16);
+    icx.stroke();
   } else if (key === "2" || key === "8"){
     // Ninja/pet (vedi drawPacmanVariant): stesso mini Pac-Man del gioco.
     // Il ninja e' semitrasparente con alone rosso pulsante (come si vede

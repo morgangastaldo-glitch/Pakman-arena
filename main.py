@@ -72,6 +72,7 @@ from common import (
     BLOB_ALIVE_THRESHOLD, BLOB_ALIVE_SPEED_MULT,
     BLOB_POISON_DURATION_SECONDS, BLOB_EAT_RANGE_CELLS,
     SPIKE_WALL_THRESHOLD, SPIKE_WALL_DURATION_SECONDS, SPIKE_WALL_HIT_RANGE,
+    TESLA_THRESHOLD, TESLA_FIRE_INTERVAL_SECONDS, TESLA_RANGE_CELLS,
     RTT_PING_INTERVAL_SECONDS, RTT_DEFAULT_SECONDS,
     REWIND_MAX_SECONDS, REWIND_HISTORY_SECONDS,
 )
@@ -261,6 +262,18 @@ class Player:
         # dict dentro self.spike_walls della Room, non qui.
         self.has_spike_wall = False    # bonus sbloccato (una volta per round)
         self.spike_wall_placed = False # True dopo il piazzamento: il tasto "1" (a fine catena) e' utilizzabile una sola volta
+
+        # ---- bonus 2400 punti: Tesla laser (tasto "1", DOPO il muro di spunzoni) ----
+        # Ultimo gradino della catena del tasto "1". Si piazza a comando
+        # RIUSANDO ancora il tasto "1" (vedi try_place_tesla), UNA SOLA
+        # VOLTA per round, ma solo DOPO aver esaurito tutta la catena
+        # precedente (mine, mortaio, bombolone, mongolfiera, blob,
+        # risveglio del blob, muro di spunzoni). La Tesla vera e propria
+        # (posizione, cadenza di fuoco) vive nel dict dentro self.teslas
+        # della Room, non qui: qui si tiene solo lo stato dello
+        # sblocco/utilizzo, come per gli altri bonus a comando.
+        self.has_tesla = False         # bonus sbloccato (una volta per round)
+        self.tesla_placed = False      # True dopo il piazzamento: il tasto "1" (dopo il muro di spunzoni) e' utilizzabile una sola volta
         # Uccisioni fatte in questo round: ogni 2 kill si guadagna una vita extra.
         self.kills = 0
 
@@ -326,6 +339,8 @@ class Player:
             "blob_alive_used": self.blob_alive_used,
             "spike_wall": self.has_spike_wall,
             "spike_wall_placed": self.spike_wall_placed,
+            "tesla": self.has_tesla,
+            "tesla_placed": self.tesla_placed,
         }
 
 
@@ -385,6 +400,11 @@ class Room:
         # vedi update_spike_walls), dopo la quale si sgretolano da soli.
         # Azzerati ad ogni nuovo round.
         self.spike_walls = []
+        # Tesla laser piazzate (bonus 2400 punti): permanenti per tutto il
+        # round come torrette/mortai/pet, a differenza dei muri di spunzoni
+        # non scadono mai (vedi update_teslas/tesla_zap). Azzerate ad ogni
+        # nuovo round.
+        self.teslas = []
         # Mappa corrente della stanza: viene ripescata a caso tra le 10
         # disponibili a OGNI inizio round (vedi run_round), cosi' ogni
         # partita puo' capitare su una mappa diversa per forma/colore/misura.
@@ -673,6 +693,8 @@ class Room:
             p.blob_alive_used = False
             p.has_spike_wall = False
             p.spike_wall_placed = False
+            p.has_tesla = False
+            p.tesla_placed = False
             p.kills = 0
         self.lasers = []
         self.mines = []
@@ -684,6 +706,7 @@ class Room:
         self.balloons = []
         self.blobs = []
         self.spike_walls = []
+        self.teslas = []
         self.bombs = []
         self.poison_zones = []  # nuvole velenose lasciate a terra dagli impatti del mortaio
 
@@ -1246,6 +1269,26 @@ class Room:
             self.push_event({
                 "kind": "bonus", "player": p.id,
                 "bonus": "spike_wall", "points": SPIKE_WALL_THRESHOLD,
+            })
+
+        # Bonus 2400 punti: sblocca la Tesla laser, ma NON la piazza
+        # subito. Si piazza a comando RIUSANDO ancora il tasto "1" (vedi
+        # try_place_tesla), UNA SOLA VOLTA per giocatore per round, ma solo
+        # DOPO aver esaurito tutta la catena precedente del tasto "1"
+        # (mine, mortaio, bombolone, mongolfiera, blob, risveglio del blob
+        # e muro di spunzoni): finche' la catena non e' esaurita, il tasto
+        # "1" resta dedicato a quella (vedi il dispatch del messaggio
+        # "place_mortar").
+        if (
+            p.alive
+            and p.points >= TESLA_THRESHOLD
+            and TESLA_THRESHOLD not in p.claimed
+        ):
+            p.claimed.add(TESLA_THRESHOLD)
+            p.has_tesla = True
+            self.push_event({
+                "kind": "bonus", "player": p.id,
+                "bonus": "tesla", "points": TESLA_THRESHOLD,
             })
 
     def try_portal(self, p):
@@ -2932,6 +2975,196 @@ class Room:
                     "evolved": t.get("evolved", False),
                 })
 
+    # ---- bonus 2400 punti: Tesla laser (tasto "1", DOPO il muro di spunzoni) ----
+
+    def try_place_tesla(self, player):
+        """Tasto '1', RIUSATO una settima volta: viene chiamato dal
+        dispatch del messaggio "place_mortar" solo quando TUTTA la catena
+        precedente del tasto "1" e' esaurita (mine, mortaio, bombolone,
+        mongolfiera, blob, risveglio del blob e muro di spunzoni). Piazza
+        UNA SOLA VOLTA (per tutto il round) una Tesla laser nella cella
+        corrente del giocatore: una torre fissa in stile "Tesla" di Clash
+        Royale, grande quanto una sola casella ma visivamente PIU' ALTA di
+        un muro normale. Da quel momento e' permanente (resta sulla mappa
+        fino a fine round, anche se il proprietario muore o si disconnette,
+        esattamente come torretta/mortaio/pet) e fulmina da sola, ogni
+        TESLA_FIRE_INTERVAL_SECONDS, TUTTO cio' che appartiene alla
+        squadra avversaria entro TESLA_RANGE_CELLS caselle, IGNORANDO i
+        muri della mappa (vedi update_teslas/tesla_zap).
+
+        Se il giocatore e' intrappolato dalla trappola di un avversario,
+        NON puo' usare alcun bonus finche' non torna libero di muoversi."""
+        if not player.alive or player.trapped_left > 0 or not player.has_tesla or player.tesla_placed or player.is_assassin or player.armor_active:
+            return
+        player.tesla_placed = True
+        tesla = {
+            "id": uuid.uuid4().hex[:8],
+            "owner": player.id,
+            "x": player.x, "y": player.y,
+            "cd": TESLA_FIRE_INTERVAL_SECONDS,
+        }
+        self.teslas.append(tesla)
+        self.push_event({
+            "kind": "tesla_place", "id": tesla["id"], "player": player.id,
+            "x": player.x, "y": player.y,
+        })
+
+    def tesla_public(self, t):
+        return {
+            "id": t["id"], "x": t["x"], "y": t["y"], "owner": t["owner"],
+            # Frazione di carica (0 -> 1) verso il prossimo fulmine: il
+            # client la usa per animare la bobina che pulsa sempre piu'
+            # in fretta man mano che si ricarica, esattamente come la
+            # mira continua della torretta (t["aim"]).
+            "charge": round(max(0.0, 1 - t["cd"] / TESLA_FIRE_INTERVAL_SECONDS), 2),
+        }
+
+    def update_teslas(self):
+        """Ogni Tesla piazzata (bonus 2400 punti) fulmina automaticamente,
+        ogni TESLA_FIRE_INTERVAL_SECONDS, TUTTO cio' che appartiene alla
+        squadra avversaria entro TESLA_RANGE_CELLS caselle (distanza
+        Manhattan): a differenza della torretta normale non spara un
+        proiettile che vola, puo' mancare il bersaglio o schiantarsi sui
+        muri, ma colpisce ISTANTANEAMENTE e ad AREA (vedi tesla_zap),
+        ignorando i muri della mappa esattamente come l'esplosione del
+        bombolone o della bomba di mongolfiera - solo che, a differenza di
+        quelle, non si esaurisce mai: resta li' a ripetere il colpo per
+        tutto il resto del round."""
+        if not self.teslas:
+            return
+        for t in self.teslas:
+            t["cd"] -= TICK_DT
+            if t["cd"] > 0:
+                continue
+            t["cd"] = TESLA_FIRE_INTERVAL_SECONDS
+            self.tesla_zap(t)
+
+    def tesla_zap(self, t):
+        """Il fulmine vero e proprio di una Tesla: colpisce, tutti insieme
+        nello stesso istante, TUTTI i bersagli avversari entro
+        TESLA_RANGE_CELLS caselle (distanza Manhattan) dalla torre,
+        IGNORANDO i muri della mappa (la Tesla e' piu' alta e spara "da
+        sopra"), esattamente come fa il bombolone alla sua esplosione:
+          - fa perdere una vita a ogni avversario vivo nel raggio (stessa
+            immunita' ghost/protezione post-respawn delle altre armi);
+          - disinnesca ogni mina avversaria nel raggio;
+          - distrugge ogni torretta/robot avversario nel raggio;
+          - distrugge ogni mortaio avversario nel raggio;
+          - distrugge ogni pet avversario nel raggio (vedi destroy_pet);
+          - fa esplodere a sua volta (reazione a catena, con onda d'urto
+            indipendente) ogni bombolone avversario ancora inesploso nel
+            raggio;
+          - fa sganciare a sua volta la propria bomba (reazione a catena,
+            con onda d'urto indipendente) a ogni mongolfiera avversaria in
+            volo nel raggio;
+          - distrugge anche il blob gelatinoso avversario nel raggio (vedi
+            destroy_blob), come solo il bombolone sapeva fare finora;
+          - sgretola anche ogni muro di spunzoni avversario nel raggio.
+        Manda un unico evento "tesla_fire" con la lista di tutte le celle
+        colpite, cosi' il client disegna un fulmine separato dalla torre
+        verso OGNUNO dei bersagli nello stesso istante (niente evento se
+        non c'era nessun nemico nel raggio: la torre resta silenziosa)."""
+        ox, oy = t["x"], t["y"]
+        owner = t["owner"]
+        hits = []
+
+        victims = [
+            p for p in self.players.values()
+            if p.alive and p.id != owner
+            and p.ghost_left <= 0 and p.prot_left <= 0
+            and abs(p.x - ox) + abs(p.y - oy) <= TESLA_RANGE_CELLS
+        ]
+        for victim in victims:
+            hits.append([victim.x, victim.y])
+            self.kill_player(victim, "tesla", shooter_id=owner)
+
+        if self.mines:
+            remaining_mines = []
+            for m in self.mines:
+                if m["owner"] != owner and abs(m["x"] - ox) + abs(m["y"] - oy) <= TESLA_RANGE_CELLS:
+                    hits.append([m["x"], m["y"]])
+                    self.push_event({
+                        "kind": "mine_destroyed", "id": m["id"],
+                        "x": m["x"], "y": m["y"], "by": owner, "cause": "tesla",
+                    })
+                else:
+                    remaining_mines.append(m)
+            self.mines = remaining_mines
+
+        if self.turrets:
+            remaining_turrets = []
+            for tt in self.turrets:
+                if tt["owner"] != owner and abs(tt["x"] - ox) + abs(tt["y"] - oy) <= TESLA_RANGE_CELLS:
+                    hits.append([tt["x"], tt["y"]])
+                    self.push_event({
+                        "kind": "turret_destroyed", "id": tt["id"],
+                        "x": tt["x"], "y": tt["y"], "by": owner, "cause": "tesla",
+                        "evolved": tt.get("evolved", False),
+                    })
+                else:
+                    remaining_turrets.append(tt)
+            self.turrets = remaining_turrets
+
+        if self.mortars:
+            remaining_mortars = []
+            for mt in self.mortars:
+                if mt["owner"] != owner and abs(mt["x"] - ox) + abs(mt["y"] - oy) <= TESLA_RANGE_CELLS:
+                    hits.append([mt["x"], mt["y"]])
+                    self.push_event({
+                        "kind": "mortar_destroyed", "id": mt["id"],
+                        "x": mt["x"], "y": mt["y"], "by": owner, "cause": "tesla",
+                    })
+                else:
+                    remaining_mortars.append(mt)
+            self.mortars = remaining_mortars
+
+        for pet in list(self.pets):
+            if pet["owner"] != owner and abs(pet["x"] - ox) + abs(pet["y"] - oy) <= TESLA_RANGE_CELLS:
+                hits.append([pet["x"], pet["y"]])
+                self.destroy_pet(pet, "tesla", owner)
+
+        for bomb in list(self.superbombs):
+            if (bomb["owner"] != owner and not bomb.get("destroyed")
+                    and abs(bomb["x"] - ox) + abs(bomb["y"] - oy) <= TESLA_RANGE_CELLS):
+                hits.append([bomb["x"], bomb["y"]])
+                bomb["destroyed"] = True
+                self.explode_superbomb(bomb)
+
+        for bal in list(self.balloons):
+            if (bal["owner"] != owner and not bal.get("destroyed")
+                    and abs(bal["x"] - ox) + abs(bal["y"] - oy) <= TESLA_RANGE_CELLS):
+                hits.append([bal["x"], bal["y"]])
+                bal["destroyed"] = True
+                self.explode_balloon_bomb(bal)
+
+        blob_victims = [
+            blob for blob in self.blobs
+            if blob["owner"] != owner
+            and abs(blob["x"] - ox) + abs(blob["y"] - oy) <= TESLA_RANGE_CELLS
+        ]
+        for blob in blob_victims:
+            hits.append([blob["x"], blob["y"]])
+            self.destroy_blob(blob, "tesla", owner)
+
+        if self.spike_walls:
+            remaining_walls = []
+            for w in self.spike_walls:
+                if w["owner"] != owner and abs(w["x"] - ox) + abs(w["y"] - oy) <= TESLA_RANGE_CELLS:
+                    hits.append([w["x"], w["y"]])
+                    self.push_event({
+                        "kind": "spike_wall_expired", "id": w["id"],
+                        "x": w["x"], "y": w["y"],
+                    })
+                else:
+                    remaining_walls.append(w)
+            self.spike_walls = remaining_walls
+
+        if hits:
+            self.push_event({
+                "kind": "tesla_fire", "id": t["id"], "player": owner,
+                "x": ox, "y": oy, "targets": hits, "radius": TESLA_RANGE_CELLS,
+            })
+
     def mortar_public(self, mt):
         return {
             "id": mt["id"], "x": mt["x"], "y": mt["y"],
@@ -3354,6 +3587,7 @@ class Room:
             "balloons": [self.balloon_public(b) for b in self.balloons],
             "blobs": [self.blob_public(b) for b in self.blobs],
             "spike_walls": [self.spike_wall_public(w) for w in self.spike_walls],
+            "teslas": [self.tesla_public(t) for t in self.teslas],
             "portal_on": self.portal_on,
             "portal_cycle_left": round(max(self.portal_cycle_left, 0), 1),
             "missiles": [self.missile_public(mz) for mz in self.missiles],
@@ -3381,6 +3615,7 @@ class Room:
         self.balloons = []
         self.blobs = []
         self.spike_walls = []
+        self.teslas = []
         self.bombs = []
         self.poison_zones = []  # nuvole velenose lasciate a terra dagli impatti del mortaio
         for p in self.players.values():
@@ -3427,6 +3662,8 @@ class Room:
             p.blob_alive_used = False
             p.has_spike_wall = False
             p.spike_wall_placed = False
+            p.has_tesla = False
+            p.tesla_placed = False
             p.kills = 0
 
     # ---------- main loop ----------
@@ -3472,6 +3709,7 @@ class Room:
                 self.update_blobs_wander()  # bonus 2000 punti: fa vagare i blob "vivi" lasciando la scia velenosa
                 self.check_blobs()    # bonus 1800/2000 punti: fa mangiare al blob (fermo o vivo) chiunque tocchi o gli sia adiacente
                 self.update_spike_walls()  # bonus 2200 punti: scala la durata dei muri di spunzoni (1 minuto) e uccide gli avversari che ci sbattono contro
+                self.update_teslas()  # bonus 2400 punti: la Tesla fulmina ad area, ogni 2.5s, tutto cio' che appartiene al nemico entro 8 caselle, ignorando i muri
                 self.move_missiles()  # bonus 400 punti: avanza i missili guidati verso il bersaglio
                 self.update_bombs()   # bonus 1200 punti: avanza le bombe di mortaio in volo e le fa esplodere all'impatto
                 self.update_poison_zones()  # bonus 1200 punti: le nuvole velenose lasciate dagli impatti continuano a fare danno nel tempo
@@ -3755,11 +3993,15 @@ async def handle_client(ws):
                 # try_place_blob). Una volta che ANCHE il blob e' gia' stato
                 # piazzato, la stessa pressione lo risveglia infine
                 # facendolo vagare per la mappa (bonus 2000 punti, vedi
-                # try_animate_blob). Ogni step e' utilizzabile una sola
+                # try_animate_blob), poi piazza il muro di spunzoni (bonus
+                # 2200 punti, vedi try_place_spike_wall) e infine, ultimo
+                # gradino della catena, la Tesla laser (bonus 2400 punti,
+                # vedi try_place_tesla). Ogni step e' utilizzabile una sola
                 # volta per giocatore (i due bomboloni fanno eccezione, ne
                 # hanno due) (vedi try_place_mortar/try_place_superbomb/
-                # try_launch_balloon/try_place_blob/try_animate_blob): il
-                # server resta l'autorita'.
+                # try_launch_balloon/try_place_blob/try_animate_blob/
+                # try_place_spike_wall/try_place_tesla): il server resta
+                # l'autorita'.
                 if not room or not player:
                     continue
                 superbomb_done = player.has_superbomb and player.superbomb_left <= 0
@@ -3768,13 +4010,19 @@ async def handle_client(ws):
                     # usato - oppure e' diventato IMPOSSIBILE per sempre
                     # (blob distrutto da un bombolone avversario prima del
                     # risveglio) - la stessa pressione piazza il muro di
-                    # spunzoni (bonus 2200 punti, vedi try_place_spike_wall).
-                    # Altrimenti risveglia il blob come prima.
+                    # spunzoni (bonus 2200 punti, vedi try_place_spike_wall)
+                    # e, una volta che ANCHE quello e' gia' stato piazzato,
+                    # la Tesla laser (bonus 2400 punti, vedi
+                    # try_place_tesla). Altrimenti risveglia il blob come
+                    # prima.
                     blob_still_there = any(
                         b["owner"] == player.id for b in room.blobs
                     )
                     if player.blob_alive_used or not blob_still_there:
-                        room.try_place_spike_wall(player)
+                        if player.spike_wall_placed:
+                            room.try_place_tesla(player)
+                        else:
+                            room.try_place_spike_wall(player)
                     else:
                         room.try_animate_blob(player)
                 elif player.mortar_placed and superbomb_done and player.balloon_launched:
