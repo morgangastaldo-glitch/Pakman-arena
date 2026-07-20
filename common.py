@@ -74,7 +74,7 @@ SUPER_ASSASSIN_THRESHOLD = 300     # punti oltre i quali si sblocca la modalita'
 # UNA SOLA VOLTA per round: una volta terminata (scaduto il tempo o dopo
 # un'eliminazione) non si puo' piu' riattivare (vedi Player.ninja_used e
 # try_activate_ninja in main.py).
-SUPER_ASSASSIN_DURATION_SECONDS = 45.0
+SUPER_ASSASSIN_DURATION_SECONDS = 10.0
 LASER_RANGE_CELLS = 12          # bonus 150 punti: il laser (arma principale, sbloccata per tutta la partita) spara SOLO quando un avversario vivo e' entro questa distanza (caselle, stile Manhattan, come TURRET_RANGE_CELLS)
 GHOST_SECONDS = 10.0            # (bonus rimosso dal gioco, costante tenuta per compatibilita')
 SPAWN_PROTECT_SECONDS = 3.0    # invulnerabilita' temporanea dopo un respawn
@@ -137,7 +137,7 @@ KILL_STEAL_FRACTION = 0.2
 # differenza del ninja, non da' invisibilita') ed e' utilizzabile UNA SOLA
 # VOLTA per round, come la modalita' ninja.
 ARMOR_THRESHOLD = 700
-ARMOR_DURATION_SECONDS = 20.0
+ARMOR_DURATION_SECONDS = 10.0
 
 # ---- bonus 800 punti: fulmine (tasto "7") ----
 # Allo sblocco NON scatta nulla in automatico: premendo il tasto "7" il

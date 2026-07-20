@@ -134,7 +134,7 @@ class Player:
         # (tasto "2"), attivabile a comando finche' il round e' in corso.
         # Una volta attivata: invisibile agli altri, piu' veloce (1.1x
         # rispetto a 1.0 dei giocatori normali) e uccide chiunque al solo
-        # contatto. Dura solo SUPER_ASSASSIN_DURATION_SECONDS (45s) poi si
+        # contatto. Dura solo SUPER_ASSASSIN_DURATION_SECONDS (10s) poi si
         # disattiva da sola (vedi il countdown in update_movement); si
         # disattiva anche prima se il giocatore viene ucciso (vedi
         # kill_player). E' UTILIZZABILE UNA SOLA VOLTA per round (vedi
@@ -1439,7 +1439,7 @@ class Room:
         Se il giocatore e' intrappolato dalla trappola di un avversario
         (bonus 500 punti), NON puo' usare alcun bonus finche' non torna
         libero di muoversi (vedi player.trapped_left)."""
-        if not player.alive or player.trapped_left > 0 or not player.has_mines or player.mines_left <= 0:
+        if not player.alive or player.trapped_left > 0 or not player.has_mines or player.mines_left <= 0 or player.is_assassin or player.armor_active:
             return
         if any(m["x"] == player.x and m["y"] == player.y for m in self.mines):
             return  # niente due mine sulla stessa cella
@@ -1571,15 +1571,18 @@ class Room:
     def try_activate_ninja(self, player):
         """Tasto '2': se il bonus e' sbloccato (300 punti) e non e' ancora
         stato usato in questo round, attiva la modalita' ninja per
-        SUPER_ASSASSIN_DURATION_SECONDS (45s: invisibile agli altri, 1.1x
+        SUPER_ASSASSIN_DURATION_SECONDS (10s: invisibile agli altri, 1.1x
         piu' veloce, uccide chiunque tocchi). UTILIZZABILE UNA SOLA VOLTA
         per round: una volta terminata (scaduto il tempo o dopo
         un'eliminazione) non si puo' piu' riattivare, a differenza di
         prima.
 
         Se il giocatore e' intrappolato dalla trappola di un avversario,
-        NON puo' usare alcun bonus finche' non torna libero di muoversi."""
-        if not player.alive or player.trapped_left > 0 or not player.has_ninja or player.is_assassin or player.ninja_used:
+        NON puo' usare alcun bonus finche' non torna libero di muoversi.
+        Mentre la modalita' ninja e' attiva, NESSUN altro gadget e'
+        utilizzabile (e viceversa, non si puo' attivare il ninja se la
+        corazza e' gia' attiva): sono mutuamente esclusivi."""
+        if not player.alive or player.trapped_left > 0 or not player.has_ninja or player.is_assassin or player.ninja_used or player.armor_active:
             return
         player.ninja_used = True
         player.is_assassin = True
@@ -1601,8 +1604,11 @@ class Room:
         UTILIZZABILE UNA SOLA VOLTA per round.
 
         Se il giocatore e' intrappolato dalla trappola di un avversario,
-        NON puo' usare alcun bonus finche' non torna libero di muoversi."""
-        if not player.alive or player.trapped_left > 0 or not player.has_armor or player.armor_active or player.armor_used:
+        NON puo' usare alcun bonus finche' non torna libero di muoversi.
+        Mentre la corazza e' attiva, NESSUN altro gadget e' utilizzabile
+        (e viceversa, non si puo' attivare la corazza se il ninja e' gia'
+        attivo): sono mutuamente esclusivi."""
+        if not player.alive or player.trapped_left > 0 or not player.has_armor or player.armor_active or player.armor_used or player.is_assassin:
             return
         player.armor_used = True
         player.armor_active = True
@@ -1627,7 +1633,7 @@ class Room:
 
         Se il giocatore e' intrappolato dalla trappola di un avversario,
         NON puo' usare alcun bonus finche' non torna libero di muoversi."""
-        if not player.alive or player.trapped_left > 0 or not player.has_lightning or player.lightning_used:
+        if not player.alive or player.trapped_left > 0 or not player.has_lightning or player.lightning_used or player.is_assassin or player.armor_active:
             return
         player.lightning_used = True
         candidates = [
@@ -1660,7 +1666,7 @@ class Room:
 
         Se il giocatore e' intrappolato dalla trappola di un avversario,
         NON puo' usare alcun bonus finche' non torna libero di muoversi."""
-        if not player.alive or player.trapped_left > 0 or not player.has_missile or player.missiles_left <= 0:
+        if not player.alive or player.trapped_left > 0 or not player.has_missile or player.missiles_left <= 0 or player.is_assassin or player.armor_active:
             return
         # Un ninja e' invisibile: il missile non puo' agganciarlo nemmeno al
         # lancio (vedi anche move_missiles per il riaggancio in volo).
@@ -1798,7 +1804,7 @@ class Room:
         Se il giocatore e' intrappolato dalla trappola di un avversario,
         NON puo' usare alcun bonus (nemmeno far detonare una sua trappola
         gia' innescata) finche' non torna libero di muoversi."""
-        if not player.alive or player.trapped_left > 0 or not player.has_trap:
+        if not player.alive or player.trapped_left > 0 or not player.has_trap or player.is_assassin or player.armor_active:
             return
 
         if player.trap_target:
@@ -1843,7 +1849,7 @@ class Room:
 
         Se il giocatore e' intrappolato dalla trappola di un avversario,
         NON puo' usare alcun bonus finche' non torna libero di muoversi."""
-        if not player.alive or player.trapped_left > 0 or not player.has_turret or player.turret_placed:
+        if not player.alive or player.trapped_left > 0 or not player.has_turret or player.turret_placed or player.is_assassin or player.armor_active:
             return
         player.turret_placed = True
         turret = {
@@ -1871,7 +1877,7 @@ class Room:
 
         Se il giocatore e' intrappolato dalla trappola di un avversario,
         NON puo' usare alcun bonus finche' non torna libero di muoversi."""
-        if not player.alive or player.trapped_left > 0 or not player.has_robot or player.robot_used:
+        if not player.alive or player.trapped_left > 0 or not player.has_robot or player.robot_used or player.is_assassin or player.armor_active:
             return
         turret = next((t for t in self.turrets if t["owner"] == player.id), None)
         if turret is None:
@@ -2014,7 +2020,7 @@ class Room:
 
         Se il giocatore e' intrappolato dalla trappola di un avversario,
         NON puo' usare alcun bonus finche' non torna libero di muoversi."""
-        if not player.alive or player.trapped_left > 0 or not player.has_mortar or player.mortar_placed:
+        if not player.alive or player.trapped_left > 0 or not player.has_mortar or player.mortar_placed or player.is_assassin or player.armor_active:
             return
         player.mortar_placed = True
         mortar = {
@@ -2045,7 +2051,7 @@ class Room:
 
         Se il giocatore e' intrappolato dalla trappola di un avversario,
         NON puo' usare alcun bonus finche' non torna libero di muoversi."""
-        if not player.alive or player.trapped_left > 0 or not player.has_superbomb or player.superbomb_placed:
+        if not player.alive or player.trapped_left > 0 or not player.has_superbomb or player.superbomb_placed or player.is_assassin or player.armor_active:
             return
         player.superbomb_placed = True
         bomb = {
@@ -2176,7 +2182,7 @@ class Room:
         disegnato sul pallone lato client: nascono nello stesso punto ma
         scelgono subito ciascuna una meta' casuale indipendente, cosi' si
         separano immediatamente e vagano per conto proprio."""
-        if not player.alive or player.trapped_left > 0 or not player.has_balloon or player.balloon_launched:
+        if not player.alive or player.trapped_left > 0 or not player.has_balloon or player.balloon_launched or player.is_assassin or player.armor_active:
             return
         player.balloon_launched = True
         for _ in range(2):
@@ -2317,7 +2323,7 @@ class Room:
 
         Se il giocatore e' intrappolato dalla trappola di un avversario,
         NON puo' usare alcun bonus finche' non torna libero di muoversi."""
-        if not player.alive or player.trapped_left > 0 or not player.has_blob or player.blob_placed:
+        if not player.alive or player.trapped_left > 0 or not player.has_blob or player.blob_placed or player.is_assassin or player.armor_active:
             return
         player.blob_placed = True
         blob = {
@@ -2614,7 +2620,7 @@ class Room:
 
         Se il giocatore e' intrappolato dalla trappola di un avversario,
         NON puo' usare alcun bonus finche' non torna libero di muoversi."""
-        if not player.alive or player.trapped_left > 0 or not player.has_pet or player.pet_summoned:
+        if not player.alive or player.trapped_left > 0 or not player.has_pet or player.pet_summoned or player.is_assassin or player.armor_active:
             return
         player.pet_summoned = True
         pet = {
