@@ -217,6 +217,19 @@
   .hud .timer{ color:var(--phosphor); }
   .hud .timer.urgent{ color:var(--danger); text-shadow:0 0 8px var(--danger); }
   .hud .roomtag{ color:var(--phosphor-dim); font-size:11px; }
+  /* Pulsante manuale "schermo intero": nostro tentativo automatico scatta
+     gia' al primo tap su "Entra in partita"/"Unisciti", ma alcuni browser
+     lo negano in modo silenzioso per motivi che non possiamo controllare
+     da qui (permessi del sito, versione del browser, webview...). Questo
+     pulsante e' un tap diretto e sempre disponibile per ritentare, con
+     un messaggio chiaro se anche questo fallisce (vedi requestFullscreenSafe). */
+  .fs-btn{
+    flex:0 0 auto; font-size:16px; line-height:1; padding:4px 8px;
+    background:rgba(53,255,141,0.08); color:var(--phosphor);
+    border:1px solid var(--phosphor-dim); border-radius:6px;
+    cursor:pointer;
+  }
+  .fs-btn:active{ background:rgba(53,255,141,0.2); }
 
   /* ---- HUD di gioco: nomi/punti e gadget NON stanno piu' sovrapposti
      alla mappa (coprivano gli angoli e rendevano illeggibile il labirinto
@@ -566,6 +579,7 @@
     <div class="hud">
       <span class="timer" id="hudTimer">--</span>
       <span class="roomtag" id="hudMap"></span>
+      <button type="button" class="fs-btn" id="btnFullscreen" title="Schermo intero" aria-label="Schermo intero">⛶</button>
       <span class="roomtag" id="hudRoom"></span>
     </div>
 
@@ -1140,19 +1154,36 @@ function showScreen(name){
 function requestFullscreenSafe(){
   const el = document.documentElement;
   try {
+    if (document.fullscreenElement) return; // gia' attivo, niente da fare
     const fn = el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen;
-    if (fn){
-      const p = fn.call(el);
-      if (p && p.then){
-        p.then(lockLandscapeSafe).catch(function(){ /* negato o non supportato: ok, resta il fallback CSS */ });
-      } else {
-        // Alcuni browser piu' vecchi non ritornano una Promise: proviamo
-        // comunque il lock subito dopo, non fa danno se fallisce.
-        lockLandscapeSafe();
-      }
+    if (!fn){
+      // L'API Fullscreen non esiste proprio su questo browser (tipico di
+      // iOS Safari per elementi generici): lo diciamo chiaramente invece
+      // di fallire in silenzio. Resta comunque attivo il fallback CSS.
+      showToast("Schermo intero non supportato da questo browser");
+      return;
     }
-  } catch (e) { /* ok, resta il fallback CSS */ }
+    const p = fn.call(el);
+    if (p && p.then){
+      p.then(lockLandscapeSafe).catch(function(err){
+        showToast("Schermo intero negato dal browser" + (err && err.message ? ": " + err.message : ""));
+      });
+    } else {
+      lockLandscapeSafe();
+    }
+  } catch (e) {
+    showToast("Schermo intero non disponibile" + (e && e.message ? ": " + e.message : ""));
+  }
 }
+function toggleFullscreenManual(){
+  if (document.fullscreenElement || document.webkitFullscreenElement){
+    const exitFn = document.exitFullscreen || document.webkitExitFullscreen;
+    if (exitFn) exitFn.call(document);
+  } else {
+    requestFullscreenSafe();
+  }
+}
+document.getElementById("btnFullscreen").addEventListener("click", toggleFullscreenManual);
 // Blocco automatico dell'orientamento in orizzontale: funziona su
 // Android/Chrome (richiede lo schermo intero gia' attivo, per questo e'
 // chiamato subito dopo). Su iOS Safari la Screen Orientation API non
