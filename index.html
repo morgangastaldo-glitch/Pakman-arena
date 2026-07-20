@@ -456,11 +456,55 @@
     .gadget-rail .gadget-key{ font-size:clamp(18px, 6vh, 44px); }
     .gadget-rail .gadget-icon{ width:clamp(36px, 12vh, 88px); height:clamp(36px, 12vh, 88px); }
   }
+
+  /* ---------- overlay "ruota il telefono" ----------
+     Il LAYOUT di gioco (gadget a sinistra, mappa al centro, punteggi
+     sotto) resta sempre lo stesso identico markup/CSS usato su PC: non
+     viene mai riscritto in verticale. Se lo schermo e' in verticale
+     mostriamo invece questo overlay a piena pagina, che nasconde tutto
+     finche' l'utente non ruota fisicamente il telefono. */
+  .rotate-hint{
+    display:none;
+    position:fixed; inset:0; z-index:9999;
+    flex-direction:column; align-items:center; justify-content:center;
+    gap:14px; text-align:center; padding:24px;
+    background:#03060a;
+    color:var(--phosphor, #35ff8d);
+  }
+  .rotate-hint-icon{
+    font-size:52px; line-height:1;
+    animation:rotateHintSpin 1.6s ease-in-out infinite;
+  }
+  .rotate-hint-text{ font-size:15px; letter-spacing:0.5px; line-height:1.5; }
+  @keyframes rotateHintSpin{
+    0%, 15%{ transform:rotate(0deg); }
+    50%, 65%{ transform:rotate(-90deg); }
+    100%{ transform:rotate(-90deg); }
+  }
+  /* Attivo SOLO mentre siamo nella schermata di gioco (body.game-fullscreen)
+     e SOLO se lo schermo e' piu' alto che largo: su PC in orizzontale non
+     scatta mai, indipendentemente dalla larghezza della finestra. */
+  @media (orientation:portrait){
+    body.game-fullscreen .rotate-hint{ display:flex; }
+    body.game-fullscreen main.cabinet{ visibility:hidden; }
+  }
 </style>
 </head>
 <body>
 
 <div class="crt" aria-hidden="true"></div>
+
+<!-- Overlay "ruota il telefono": compare SOLO durante la partita (body
+     con classe game-fullscreen), SOLO se lo schermo e' in verticale.
+     Copre tutto (z-index altissimo) cosi' il gioco, sotto, resta nel
+     LAYOUT IDENTICO al PC (colonna gadget a sinistra, mappa al centro,
+     punteggi sotto) invece di provare a riadattarlo in verticale, cosa
+     che lo schiaccerebbe rendendolo illeggibile. Appena si ruota il
+     telefono l'overlay sparisce da solo (vedi @media orientation). -->
+<div class="rotate-hint" aria-hidden="true">
+  <div class="rotate-hint-icon">⤾</div>
+  <div class="rotate-hint-text">Ruota il telefono in orizzontale<br>per vedere il gioco a schermo intero</div>
+</div>
 
 <main class="cabinet">
 
@@ -1106,9 +1150,27 @@ function requestFullscreenSafe(){
     const fn = el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen;
     if (fn){
       const p = fn.call(el);
-      if (p && p.catch) p.catch(function(){ /* negato o non supportato: ok, resta il fallback CSS */ });
+      if (p && p.then){
+        p.then(lockLandscapeSafe).catch(function(){ /* negato o non supportato: ok, resta il fallback CSS */ });
+      } else {
+        // Alcuni browser piu' vecchi non ritornano una Promise: proviamo
+        // comunque il lock subito dopo, non fa danno se fallisce.
+        lockLandscapeSafe();
+      }
     }
   } catch (e) { /* ok, resta il fallback CSS */ }
+}
+// Blocco automatico dell'orientamento in orizzontale: funziona su
+// Android/Chrome (richiede lo schermo intero gia' attivo, per questo e'
+// chiamato subito dopo). Su iOS Safari la Screen Orientation API non
+// esiste proprio: in quel caso resta solo l'overlay "ruota il telefono"
+// (vedi .rotate-hint in CSS) a guidare l'utente a farlo a mano.
+function lockLandscapeSafe(){
+  try {
+    if (screen.orientation && screen.orientation.lock){
+      screen.orientation.lock("landscape").catch(function(){ /* negato: ok, resta l'overlay come guida */ });
+    }
+  } catch (e) { /* ok */ }
 }
 function resettleCanvas(){
   // Il passaggio a schermo intero (o la rotazione su mobile) cambia le
