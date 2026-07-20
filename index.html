@@ -250,12 +250,12 @@
   }
   .gadget-rail .gadget-item{
     flex:1 1 0; min-height:0; width:1cm; max-width:1cm;
-    display:flex; align-items:center; justify-content:flex-start; gap:0.08cm;
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:1px;
     line-height:1;
   }
   .gadget-rail .gadget-key{ font-size:0.5cm; }
   .gadget-rail .gadget-icon{
-    width:0.5cm; height:0.5cm; flex:0 0 auto;
+    width:1cm; height:1cm; flex:0 0 auto;
     image-rendering:crisp-edges;
   }
 
@@ -451,7 +451,7 @@
     .score-strip .score-card .sc-lives .sc-heart{ font-size:11.5px; }
     .gadget-rail{ gap:3px; }
     .gadget-rail .gadget-key{ font-size:clamp(18px, 6vh, 44px); }
-    .gadget-rail .gadget-icon{ width:clamp(18px, 6vh, 44px); height:clamp(18px, 6vh, 44px); }
+    .gadget-rail .gadget-icon{ width:clamp(36px, 12vh, 88px); height:clamp(36px, 12vh, 88px); }
   }
 </style>
 </head>
@@ -4458,15 +4458,31 @@ function updateScoreStrip(msg){
 /* ---- colonna a sinistra della mappa (vedi .gadget-rail): elenca, in
    giallo, i tasti dei gadget che ho gia' sbloccato ma non ho ancora finito
    di usare in questo round, in ordine crescente (es: "1 3 4 5 7"), ognuno
-   affiancato da una piccola icona disegnata a canvas. Appena un gadget si
-   esaurisce il suo tasto sparisce dalla colonna. Il tasto "1" (mine, poi
-   mortaio/bombolone/mongolfiera/blob una volta finite le mine) resta
-   visibile finche' resta qualcosa da piazzare con quel tasto: e' un'arma
-   riutilizzabile a piu' riprese, non un bonus "usa una volta sola" come
-   gli altri, quindi il criterio di "used" e' diverso (mai True finche' il
-   bonus mine e' sbloccato: il tasto 1 fa sempre qualcosa). ---- */
+   affiancato da una piccola icona disegnata a canvas, ORA sotto al numero
+   invece che di fianco. Appena un gadget si esaurisce il suo tasto
+   sparisce dalla colonna.
+
+   Il tasto "1" e' un caso speciale: dietro c'e' un'intera CATENA di armi
+   che si sbloccano una dopo l'altra allo stesso tasto (mine -> mortaio ->
+   bombolone -> mongolfiera -> blob -> risveglio del blob, vedi il
+   dispatch del tasto "1" in requestDir/keydown). Il NUMERO mostrato resta
+   sempre "1", ma l'ICONA deve seguire l'arma attualmente attiva in quel
+   momento (mineChainStep), altrimenti una volta finite le mine il
+   giocatore continuava a vedere il disegno della mina anche premendo il
+   mortaio, il bombolone etc. La voce sparisce solo quando l'INTERA catena
+   e' esaurita (mineChainStep torna null). ---- */
+function mineChainStep(p){
+  if (p.mines && p.mines_left > 0) return "mine";
+  if (p.mortar && !p.mortar_placed) return "mortar";
+  if (p.superbomb && !p.superbomb_placed) return "superbomb";
+  if (p.balloon && !p.balloon_launched) return "balloon";
+  if (p.blob && !p.blob_placed) return "blob";
+  if (p.blob_alive_bonus && !p.blob_alive_used) return "blob_alive";
+  return null;
+}
 const GADGET_RAIL_KEYS = [
-  { key: "1", unlocked: function(p){ return !!p.mines; },    used: function(p){ return false; } },
+  { key: "1", unlocked: function(p){ return !!p.mines; },     used: function(p){ return mineChainStep(p) === null; },
+    variant: function(p){ return mineChainStep(p); } },
   { key: "2", unlocked: function(p){ return !!p.ninja; },     used: function(p){ return !!p.ninja_used; } },
   { key: "3", unlocked: function(p){ return !!p.missile; },   used: function(p){ return !(p.missiles_left > 0); } },
   { key: "4", unlocked: function(p){ return !!p.trap; },      used: function(p){ return !(p.trap_uses_left > 0); } },
@@ -4477,10 +4493,10 @@ const GADGET_RAIL_KEYS = [
   { key: "9", unlocked: function(p){ return !!p.robot; },     used: function(p){ return !!p.robot_used; } },
 ];
 
-// Risoluzione interna dei mini-canvas icona (poi scalati a 0.5cm via CSS,
+// Risoluzione interna dei mini-canvas icona (poi scalati a 1cm via CSS,
 // vedi .gadget-icon): abbastanza alta da restare nitidi anche su schermi
 // ad alta densita'.
-const GADGET_ICON_RES = 32;
+const GADGET_ICON_RES = 48;
 
 // Disegna, DENTRO icx (contesto 2D del mini-canvas dell'icona), la stessa
 // identica forma/colore usata sulla mappa di gioco per quel gadget - non
@@ -4489,13 +4505,15 @@ const GADGET_ICON_RES = 32;
 // drawPacmanVariant (scambiando temporaneamente la `ctx` globale col
 // contesto del mini-canvas, dato che quella funzione disegna sempre su
 // `ctx`), cosi' l'icona e' letteralmente lo stesso disegno del gioco, solo
-// in miniatura.
+// in miniatura. Il parametro `key` qui puo' essere sia un tasto numerico
+// ("2".."9") sia una variante della catena del tasto 1 ("mine", "mortar",
+// "superbomb", "balloon", "blob", "blob_alive").
 function renderGadgetIcon(icx, key, color){
   const res = GADGET_ICON_RES;
   const cx = res / 2, cy = res / 2;
   icx.clearRect(0, 0, res, res);
   icx.save();
-  if (key === "1"){
+  if (key === "mine"){
     // Mina (vedi drawMines): quadrato pieno bordato di scuro, nucleo bianco.
     const s = res * 0.5;
     icx.globalAlpha = 0.95;
@@ -4507,6 +4525,83 @@ function renderGadgetIcon(icx, key, color){
     icx.fillStyle = "#fff";
     const c2 = res * 0.16;
     icx.fillRect(cx - c2 / 2, cy - c2 / 2, c2, c2);
+  } else if (key === "mortar"){
+    // Mortaio (vedi drawMortars): base di legno con fascia metallica nel
+    // colore del proprietario e bocca scura al centro.
+    const WOOD = "#8a5a34", WOOD_DARK = "#5e3b21", METAL = "#caa25a";
+    icx.fillStyle = WOOD;
+    icx.beginPath(); icx.arc(cx, cy, res * 0.34, 0, Math.PI * 2); icx.fill();
+    icx.strokeStyle = WOOD_DARK;
+    icx.lineWidth = res * 0.05;
+    icx.stroke();
+    icx.fillStyle = color;
+    icx.beginPath(); icx.arc(cx, cy, res * 0.22, 0, Math.PI * 2); icx.fill();
+    icx.fillStyle = METAL;
+    icx.beginPath(); icx.arc(cx, cy, res * 0.16, 0, Math.PI * 2); icx.fill();
+    icx.fillStyle = WOOD_DARK;
+    icx.beginPath(); icx.arc(cx, cy, res * 0.11, 0, Math.PI * 2); icx.fill();
+  } else if (key === "superbomb" || key === "balloon"){
+    // Bombolone / mongolfiera (vedi drawSuperbombs/drawBalloons): sfera
+    // scura con strisce nel colore del proprietario e teschio bianco; la
+    // mongolfiera aggiunge il cesto sotto per distinguerla dal bombolone.
+    const r = res * 0.34;
+    icx.fillStyle = "#2a2a2e";
+    icx.beginPath(); icx.arc(cx, cy, r, 0, Math.PI * 2); icx.fill();
+    icx.save();
+    icx.beginPath(); icx.arc(cx, cy, r, 0, Math.PI * 2); icx.clip();
+    icx.fillStyle = color;
+    for (let i = -2; i <= 2; i++){
+      icx.fillRect(cx + i * res * 0.11 - res * 0.02, cy - r, res * 0.05, r * 2);
+    }
+    icx.restore();
+    icx.strokeStyle = color;
+    icx.lineWidth = res * 0.05;
+    icx.stroke();
+    icx.fillStyle = "#f2f2f0";
+    icx.beginPath(); icx.arc(cx, cy - r * 0.26, r * 0.42, 0, Math.PI * 2); icx.fill();
+    icx.fillStyle = "#1a1a1a";
+    icx.beginPath(); icx.arc(cx - r * 0.16, cy - r * 0.3, r * 0.09, 0, Math.PI * 2); icx.fill();
+    icx.beginPath(); icx.arc(cx + r * 0.16, cy - r * 0.3, r * 0.09, 0, Math.PI * 2); icx.fill();
+    if (key === "balloon"){
+      icx.strokeStyle = "#5e3b21";
+      icx.lineWidth = res * 0.025;
+      icx.beginPath();
+      icx.moveTo(cx - res * 0.11, cy + r * 0.75); icx.lineTo(cx - res * 0.15, cy + r * 1.15);
+      icx.moveTo(cx + res * 0.11, cy + r * 0.75); icx.lineTo(cx + res * 0.15, cy + r * 1.15);
+      icx.stroke();
+      icx.fillStyle = "#8a5a34";
+      icx.fillRect(cx - res * 0.15, cy + r * 1.15, res * 0.3, res * 0.13);
+    }
+  } else if (key === "blob" || key === "blob_alive"){
+    // Blob di melma (vedi drawBlobs): massa grumosa viola con contorno nel
+    // colore del proprietario; la versione risvegliata (blob_alive) ha in
+    // piu' un alone rosso pulsante, per segnalare che ora vaga da sola.
+    const R = res * 0.36;
+    const lumps = [
+      { dx: 0,     dy: 0.30, r: 0.95 },
+      { dx: -0.55, dy: 0.02, r: 0.62 },
+      { dx: 0.58,  dy: 0.05, r: 0.58 },
+      { dx: -0.10, dy: -0.40, r: 0.60 },
+    ];
+    icx.fillStyle = "#5b2f86";
+    lumps.forEach(function(l){
+      icx.beginPath();
+      icx.arc(cx + l.dx * R, cy + l.dy * R, l.r * R * 0.62, 0, Math.PI * 2);
+      icx.fill();
+    });
+    icx.strokeStyle = color;
+    icx.lineWidth = res * 0.045;
+    lumps.forEach(function(l){
+      icx.beginPath();
+      icx.arc(cx + l.dx * R, cy + l.dy * R, l.r * R * 0.62, 0, Math.PI * 2);
+      icx.stroke();
+    });
+    if (key === "blob_alive"){
+      icx.globalAlpha = 0.55;
+      icx.strokeStyle = "#ff5b5b";
+      icx.lineWidth = res * 0.04;
+      icx.beginPath(); icx.arc(cx, cy, res * 0.46, 0, Math.PI * 2); icx.stroke();
+    }
   } else if (key === "2" || key === "8"){
     // Ninja/pet (vedi drawPacmanVariant): stesso mini Pac-Man del gioco.
     // Il ninja e' semitrasparente con alone rosso pulsante (come si vede
@@ -4610,7 +4705,7 @@ function updateGadgetRail(msg){
       iconEl.className = "gadget-icon";
       iconEl.width = GADGET_ICON_RES;
       iconEl.height = GADGET_ICON_RES;
-      renderGadgetIcon(iconEl.getContext("2d"), g.key, ownColor);
+      renderGadgetIcon(iconEl.getContext("2d"), g.variant ? g.variant(me) : g.key, ownColor);
       item.appendChild(keyEl);
       item.appendChild(iconEl);
       rail.appendChild(item);
