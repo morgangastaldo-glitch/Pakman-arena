@@ -214,63 +214,41 @@
   .hud .timer.urgent{ color:var(--danger); text-shadow:0 0 8px var(--danger); }
   .hud .roomtag{ color:var(--phosphor-dim); font-size:11px; }
 
-  /* ---- contatore punti: prima era "nascosto" dentro la stringa lunga del
-     timer (che cambia ogni tick ed e' facile perdere in mezzo al resto del
-     testo). Ora e' un blocco proprio, sempre visibile, in alto a sinistra
-     sul canvas: mostra i TUOI punti in evidenza e sotto una mini-classifica
-     con i punti di tutti gli altri giocatori. ---- */
-  .score-counter{
-    position:absolute; top:8px; left:8px; z-index:6;
-    background:linear-gradient(180deg, rgba(6,12,7,0.88), rgba(2,6,3,0.78));
-    border:1px solid var(--panel-edge);
-    border-radius:10px; padding:7px 11px; backdrop-filter: blur(3px);
-    letter-spacing:0.5px; min-width:150px;
-    box-shadow:0 0 14px rgba(255,212,0,0.10), 0 2px 8px rgba(0,0,0,0.45);
-    pointer-events:none;
-  }
-  .score-counter .my-score{
-    font-size:17px; font-weight:bold; white-space:nowrap;
-    color:var(--marquee-yellow); text-shadow:0 0 10px rgba(255,212,0,0.45);
-  }
-  .score-counter .next-bonus{
-    display:block; margin-top:2px; font-size:10px; font-weight:normal;
-    letter-spacing:0.5px; color:var(--phosphor-dim);
-  }
-  .score-counter .next-bonus .bar{
-    display:block; height:3px; margin-top:3px; border-radius:2px;
-    background:rgba(255,255,255,0.08); overflow:hidden;
-  }
-  .score-counter .next-bonus .bar i{
-    display:block; height:100%; border-radius:2px;
-    background:linear-gradient(90deg, var(--marquee-yellow), #ffef9e);
-    box-shadow:0 0 6px rgba(255,212,0,0.6);
-    transition:width 0.25s ease;
-  }
-  .score-counter .score-others{
-    margin-top:6px; padding-top:5px; border-top:1px solid var(--panel-edge);
-    display:flex; flex-direction:column; gap:0;
-  }
-  .score-counter .score-row{
-    display:flex; align-items:center; gap:6px; font-size:10.5px;
-    color:var(--phosphor-dim); white-space:nowrap;
-    padding:2px 4px; border-radius:5px;
-  }
-  .score-counter .score-row:nth-child(odd){ background:rgba(255,255,255,0.035); }
-  .score-counter .score-row.leader{ color:var(--phosphor); }
-  .score-counter .score-row.leader .pt{ color:var(--marquee-yellow); text-shadow:0 0 6px rgba(255,212,0,0.4); }
-  .score-counter .score-row .rk{ flex:0 0 auto; width:12px; text-align:right; opacity:0.8; }
-  .score-counter .score-row .sw{
-    width:8px; height:8px; border-radius:50%; flex:0 0 auto;
-    box-shadow:0 0 5px currentColor;
-  }
-  .score-counter .score-row .nm{ overflow:hidden; text-overflow:ellipsis; max-width:80px; }
-  .score-counter .score-row .pt{ margin-left:auto; font-weight:bold; }
-  .score-counter .score-row .lv{ flex:0 0 auto; opacity:0.85; }
+  /* ---- HUD di gioco: nomi/punti e gadget NON stanno piu' sovrapposti
+     alla mappa (coprivano gli angoli e rendevano illeggibile il labirinto
+     li' sotto). Ora la mappa ha intorno a se' tre zone dedicate, tutte
+     fuori dall'area di gioco vera e propria:
+       1) .score-strip: striscia sotto la mappa (~1.5cm) con le tabelle
+          nome+punti di tutti i giocatori, io per primo poi gli altri in
+          ordine di punteggio decrescente, spaziate in modo uniforme;
+       2) .gadget-rail: colonna stretta (~0.5cm) tra il bordo sinistro
+          dello schermo e la mappa, con i tasti numerici (in giallo) dei
+          gadget ancora da usare;
+       3) .center-countdown: overlay DENTRO la mappa (quello resta, ma e'
+          un semplice numero al centro, non copre nulla di importante),
+          grande quanto una casella, visibile solo mentre scudo/corazza o
+          invisibilita'/ninja sono attivi. ---- */
 
+  .game-area{ display:flex; min-width:0; min-height:0; gap:0; }
 
-  .game-area{ display:flex; min-width:0; min-height:0; }
+  /* colonna dei tasti gadget non ancora usati, a sinistra della mappa */
+  .gadget-rail{
+    flex:0 0 0.5cm; width:0.5cm;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:10px; padding:4px 0;
+    font-size:15px; font-weight:bold; color:var(--marquee-yellow);
+    text-shadow:0 0 6px rgba(255,212,0,0.65), 0 0 14px rgba(255,212,0,0.35);
+    letter-spacing:0;
+  }
+  .gadget-rail span{ line-height:1; }
+
+  /* colonna centrale: mappa sopra, striscia punteggi sotto */
+  .canvas-col{
+    flex:1 1 auto; min-width:0; min-height:0;
+    display:flex; flex-direction:column; gap:6px;
+  }
   .canvas-wrap{
-    position:relative; flex:1 1 auto; min-width:0;
+    position:relative; flex:1 1 auto; min-width:0; min-height:0;
     display:flex; align-items:center; justify-content:center;
     border-radius:8px; overflow:hidden;
     border:1px solid var(--wall-edge);
@@ -279,17 +257,66 @@
   }
   canvas{ display:block; max-width:100%; max-height:100%; height:auto; }
 
-  /* La sidebar giocatori e' un pannello sovrapposto alla mappa (non ruba
-     piu' spazio orizzontale al canvas): cosi' la mappa puo' occupare
-     davvero tutto lo schermo, in verticale come in orizzontale. */
-  .sidebar{
-    position:absolute; top:8px; right:8px; z-index:6;
-    display:flex; flex-direction:column; gap:4px;
-    max-width:38%; max-height:70%; overflow-y:auto;
-    background:rgba(2,6,3,0.62); border:1px solid var(--panel-edge);
-    border-radius:8px; padding:6px; backdrop-filter: blur(2px);
+  /* countdown al centro della mappa: stesso giallo dei tasti gadget,
+     grande quanto una casella (--cell-px e' calcolato in JS ad ogni
+     resize, vedi setupCanvas). Appare SOLO mentre scudo (corazza) o
+     invisibilita' (ninja) sono attivi. */
+  .center-countdown{
+    position:absolute; top:50%; left:50%; z-index:6;
+    width:var(--cell-px, 24px); height:var(--cell-px, 24px);
+    transform:translate(-50%,-50%);
+    display:flex; align-items:center; justify-content:center;
+    border-radius:50%;
+    background:rgba(3,5,3,0.55);
+    color:var(--marquee-yellow);
+    font-weight:bold; line-height:1;
+    text-shadow:0 0 6px rgba(255,212,0,0.75), 0 0 14px rgba(255,212,0,0.4);
+    box-shadow:0 0 10px rgba(255,212,0,0.35);
+    pointer-events:none;
+    opacity:0; transition:opacity 0.15s ease;
   }
-  .sidebar .player-row{ font-size:10.5px; padding:4px 6px; white-space:nowrap; }
+  .center-countdown.show{ opacity:1; }
+
+  /* striscia sotto la mappa con le tabelle nome+punti di tutti i
+     giocatori: fino a 5, spaziate sempre in modo uniforme qualunque sia
+     il numero di giocatori (2-5), io per primo poi gli altri in ordine
+     di punteggio decrescente. */
+  .score-strip{
+    flex:0 0 1.5cm; height:1.5cm;
+    display:flex; flex-direction:row; align-items:stretch; justify-content:space-evenly;
+    gap:6px; padding:4px 6px;
+    background:linear-gradient(180deg, rgba(6,12,7,0.90), rgba(2,6,3,0.82));
+    border:1px solid var(--panel-edge); border-radius:8px;
+    box-shadow:0 0 14px rgba(255,212,0,0.08), 0 2px 8px rgba(0,0,0,0.45);
+  }
+  .score-strip .score-card{
+    flex:1 1 0; min-width:0;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:2px; padding:4px 3px; border-radius:6px;
+    background:rgba(255,255,255,0.035);
+    border:1px solid var(--panel-edge);
+  }
+  .score-strip .score-card.me{
+    background:rgba(255,212,0,0.08); border-color:var(--marquee-yellow);
+    box-shadow:0 0 10px rgba(255,212,0,0.25);
+  }
+  .score-strip .score-card .sc-name{
+    width:100%; text-align:center; font-size:12px; font-weight:bold;
+    color:var(--phosphor); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    display:flex; align-items:center; justify-content:center; gap:4px;
+  }
+  .score-strip .score-card.me .sc-name{ color:var(--marquee-yellow); text-shadow:0 0 6px rgba(255,212,0,0.4); }
+  .score-strip .score-card .sc-sw{
+    width:8px; height:8px; border-radius:50%; flex:0 0 auto;
+    box-shadow:0 0 5px currentColor;
+  }
+  .score-strip .score-card .sc-points{
+    font-size:15px; font-weight:bold; color:var(--phosphor);
+    text-shadow:0 0 6px rgba(53,255,141,0.35);
+  }
+  .score-strip .score-card.me .sc-points{ color:var(--marquee-yellow); text-shadow:0 0 8px rgba(255,212,0,0.5); }
+  .score-strip .score-card.dead{ opacity:0.45; }
+  .score-strip .score-card.leader:not(.me) .sc-points{ color:#fff4b8; }
 
   .bonus-banner{
     position:absolute; top:38%; left:50%; transform:translate(-50%,-50%) scale(0.72);
@@ -389,7 +416,9 @@
 
   @media (max-width:480px){
     .cabinet{ padding:12px; }
-    .sidebar{ max-width:56%; font-size:10px; }
+    .score-strip .score-card .sc-name{ font-size:10.5px; }
+    .score-strip .score-card .sc-points{ font-size:13px; }
+    .gadget-rail{ font-size:13px; gap:8px; }
   }
 </style>
 </head>
@@ -468,24 +497,23 @@
     </div>
 
     <div class="game-area">
-      <div class="canvas-wrap" id="canvasWrap">
-        <canvas id="gameCanvas"></canvas>
-        <ul class="sidebar player-list" id="gamePlayers"></ul>
-        <div class="score-counter" id="scoreCounter">
-          <span class="my-score" id="myScoreLine">PUNTI 0</span>
-          <span class="next-bonus" id="scoreNextBonus"></span>
-          <div class="score-others" id="scoreOthers"></div>
-        </div>
-        <div class="bonus-banner" id="bonusBanner"></div>
-        <div class="toast" id="toast"></div>
-        <div class="lightning-flash" id="lightningFlash"></div>
+      <div class="gadget-rail" id="gadgetRail" aria-hidden="true"></div>
+      <div class="canvas-col">
+        <div class="canvas-wrap" id="canvasWrap">
+          <canvas id="gameCanvas"></canvas>
+          <div class="center-countdown" id="centerCountdown">0</div>
+          <div class="bonus-banner" id="bonusBanner"></div>
+          <div class="toast" id="toast"></div>
+          <div class="lightning-flash" id="lightningFlash"></div>
 
-        <div class="end-overlay hidden" id="endOverlay">
-          <h2 id="endTitle">FINE ROUND</h2>
-          <div class="winners" id="endWinners"></div>
-          <div class="end-scores" id="endScores"></div>
-          <div class="note">si torna in lobby tra pochi secondi&hellip;</div>
+          <div class="end-overlay hidden" id="endOverlay">
+            <h2 id="endTitle">FINE ROUND</h2>
+            <div class="winners" id="endWinners"></div>
+            <div class="end-scores" id="endScores"></div>
+            <div class="note">si torna in lobby tra pochi secondi&hellip;</div>
+          </div>
         </div>
+        <div class="score-strip" id="scoreStrip"></div>
       </div>
     </div>
 
@@ -1416,6 +1444,11 @@ function setupCanvas(){
   canvas.height = Math.round(mazeH * BASE_CELL * canvasScale);
   canvas.style.width = Math.round(cssW) + "px";
   canvas.style.height = Math.round(cssH) + "px";
+  // Espone la dimensione (in px CSS) di UNA casella della mappa cosi' come
+  // viene effettivamente disegnata a schermo: serve al countdown al centro
+  // della mappa (scudo/invisibilita'), che deve essere grande esattamente
+  // quanto una casella qualunque sia la risoluzione/zoom del dispositivo.
+  wrap.style.setProperty("--cell-px", (cssW / mazeW) + "px");
   if (!ctx){
     // alpha:false - lo sfondo del canvas e' sempre completamente opaco
     // (drawMaze ridisegna l'intero rettangolo ad ogni frame), quindi il
@@ -3544,7 +3577,6 @@ function onState(msg){
   snapshotTime = now;
 
   updateHud(msg);
-  updateGameSidebar(msg);
 }
 
 // Eventi puntuali dal server (autorita' unica): pallini, bonus, uccisioni,
@@ -4006,225 +4038,112 @@ function updateHud(msg){
     timerEl.textContent = "TEMPO: " + Math.ceil(msg.timer) + "s";
     timerEl.classList.toggle("urgent", msg.timer <= 10);
   }
-  updateScoreCounter(msg);
+  updateScoreStrip(msg);
+  updateGadgetRail(msg);
+  updateCenterCountdown(msg);
 }
 
-// Contatore punti dedicato (vedi .score-counter in alto a sinistra):
-// prima il punteggio era scritto in coda alla stringa del timer, che cambia
-// ogni tick ed e' lunga (fase, secondi...): il numero dei
-// punti finiva "perso" in mezzo al testo e passava inosservato. Ora ha un
-// box tutto suo, sempre nello stesso posto: i TUOI punti in evidenza sopra,
-// e sotto una mini-classifica con i punti di TUTTI gli altri giocatori.
-let scoreOthersSig = "";
-function updateScoreCounter(msg){
-  const myLine = document.getElementById("myScoreLine");
-  const nextEl = document.getElementById("scoreNextBonus");
-  const othersEl = document.getElementById("scoreOthers");
-  if (!myLine || !nextEl || !othersEl) return;
+/* ---- tabelle nome+punti sotto la mappa (vedi .score-strip): sempre il
+   mio nome per primo, poi tutti gli altri in ordine di punteggio
+   decrescente. Le card sono flex:1 (vedi CSS), quindi occupano SEMPRE
+   tutta la larghezza disponibile in modo uniforme, da 2 a 5 giocatori,
+   senza lasciare spazio vuoto da nessuna parte. Il rebuild e' completo
+   ad ogni chiamata (sono al massimo 5 elementi: costo trascurabile), cosi'
+   l'ordine si aggiorna subito quando cambia la classifica. ---- */
+function updateScoreStrip(msg){
+  const strip = document.getElementById("scoreStrip");
+  if (!strip || !msg.players) return;
 
   const me = findPlayer(msg, myId);
-  const pts = me ? (me.points || 0) : 0;
-  const lives = me ? (me.lives || 1) : 1;
-  const kills = me ? (me.kills || 0) : 0;
-  myLine.textContent = "PUNTI " + pts + " · \u2665" + lives +
-    (kills ? " · \u2694" + kills : "") +
-    (me && me.assassin ? " · ASSASSINO" : "");
-  // Prossimo bonus con barra di avanzamento: si vede a colpo d'occhio
-  // quanto manca alla prossima soglia.
-  const next = BONUS_STEPS.find(function(s){ return pts < s.at; });
-  if (next){
-    const prevAt = BONUS_STEPS.filter(function(s){ return s.at <= pts; })
-                              .reduce(function(m, s){ return Math.max(m, s.at); }, 0);
-    const frac = Math.max(0, Math.min(1, (pts - prevAt) / (next.at - prevAt)));
-    nextEl.innerHTML = "";
-    nextEl.appendChild(document.createTextNode(
-      "prossimo: " + next.label + " a " + next.at + " pt (mancano " + (next.at - pts) + ")"));
-    const bar = document.createElement("span"); bar.className = "bar";
-    const fill = document.createElement("i"); fill.style.width = Math.round(frac * 100) + "%";
-    bar.appendChild(fill); nextEl.appendChild(bar);
-  } else {
-    nextEl.textContent = "tutti i bonus sbloccati";
-  }
-
-  // Classifica degli altri giocatori, ordinata per punti decrescenti.
-  const others = (msg.players || [])
+  const others = msg.players
     .filter(function(p){ return p.id !== myId; })
     .sort(function(a, b){ return (b.points || 0) - (a.points || 0); });
+  const ordered = me ? [me].concat(others) : others;
+  const leaderId = others.length ? others[0].id : null;
 
-  const sig = others.map(function(p){ return p.id + ":" + p.name + ":" + (p.colors||[]).join(","); }).join("|");
-  if (sig !== scoreOthersSig){
-    scoreOthersSig = sig;
-    othersEl.innerHTML = "";
-    others.forEach(function(p, idx){
-      const row = document.createElement("div");
-      row.className = "score-row";
-      const rk = document.createElement("span");
-      rk.className = "rk";
-      rk.textContent = (idx + 1) + ".";
-      row.appendChild(rk);
-      const sw = document.createElement("span");
-      sw.className = "sw";
-      const c = COLOR_HEX[(p.colors || [])[0]] || "#888";
-      sw.style.background = c; sw.style.color = c;
-      row.appendChild(sw);
-      const nm = document.createElement("span");
-      nm.className = "nm";
-      nm.textContent = p.name;
-      row.appendChild(nm);
-      const lv = document.createElement("span");
-      lv.className = "lv";
-      row.appendChild(lv);
-      const pt = document.createElement("span");
-      pt.className = "pt";
-      row.appendChild(pt);
-      othersEl.appendChild(row);
-      row._ptEl = pt;
-      row._lvEl = lv;
-      row._id = p.id;
-    });
-  }
-  // Il capolista va calcolato sui punti ATTUALI: le righe DOM vengono
-  // ricostruite solo quando cambia la composizione (signature), non
-  // quando cambiano i punteggi.
-  const leaderId = others.length && (others[0].points || 0) > 0 ? others[0].id : null;
-  Array.from(othersEl.children).forEach(function(row){
-    const p = others.find(function(o){ return o.id === row._id; });
-    if (!p) return;
-    if (row._ptEl) row._ptEl.textContent = (p.points || 0) + "p";
-    if (row._lvEl) row._lvEl.textContent = "\u2665" + (p.lives || 1);
-    row.classList.toggle("leader", p.id === leaderId);
+  strip.innerHTML = "";
+  ordered.forEach(function(p){
+    const card = document.createElement("div");
+    card.className = "score-card" +
+      (p.id === myId ? " me" : "") +
+      (!p.alive ? " dead" : "") +
+      (p.id === leaderId && p.id !== myId ? " leader" : "");
+
+    const nameEl = document.createElement("div");
+    nameEl.className = "sc-name";
+    const sw = document.createElement("span");
+    sw.className = "sc-sw";
+    const c = (p.assassin && p.id === myId) ? ASSASSIN_COLOR : (COLOR_HEX[(p.colors || [])[0]] || "#888");
+    sw.style.background = c; sw.style.color = c;
+    nameEl.appendChild(sw);
+    const nmTxt = document.createElement("span");
+    nmTxt.textContent = p.name;
+    nmTxt.style.overflow = "hidden";
+    nmTxt.style.textOverflow = "ellipsis";
+    nameEl.appendChild(nmTxt);
+    card.appendChild(nameEl);
+
+    const ptsEl = document.createElement("div");
+    ptsEl.className = "sc-points";
+    ptsEl.textContent = (p.points || 0) + " pt";
+    card.appendChild(ptsEl);
+
+    strip.appendChild(card);
   });
 }
 
-let lastSidebarSig = "";
-let sidebarRefs = {};   // id -> {score, tags} per aggiornare punti/vite senza rebuild
-function updateGameSidebar(msg){
-  // La struttura della lista (chi c'e', vivo/morto, fantasma, laser) cambia
-  // di rado: si ricostruisce il DOM solo su questi cambi (signature). Punti
-  // e vite invece cambiano spesso: si aggiornano scrivendo direttamente
-  // nello <span> gia' esistente, senza ricostruire nulla (perf).
-  const sig = myId + "|" + msg.players.map(function(p){
-    return p.id + ":" + p.alive + ":" + p.name +
-           ":" + (p.colors || []).join(",") + ":" + (p.laser ? "l" : "") +
-           (p.bounce ? "b" : "") + (p.mines ? ("m" + p.mines_left) : "") +
-           (p.missile ? ("r" + p.missiles_left) : "") +
-           (p.ninja && p.id === myId ? ("N" + (p.ninja_used ? "1" : "0")) : "") +
-           (p.trapped ? "t" : "") +
-           (p.trap && p.id === myId ? ("u" + p.trap_uses_left) : "") +
-           (p.turret && p.id === myId ? ("g" + (p.turret_placed ? "1" : "0")) : "") +
-           ((p.assassin && p.id === myId) ? "A" : "") +
-           (p.armor && p.id === myId ? ("C" + (p.armor_used ? "1" : "0")) : "") +
-           (p.armor_on ? "O" : "") +
-           (p.lightning && p.id === myId ? ("F" + (p.lightning_used ? "1" : "0")) : "") +
-           (p.pet && p.id === myId ? ("P" + (p.pet_summoned ? "1" : "0")) : "") +
-           (p.robot && p.id === myId ? ("R" + (p.robot_used ? "1" : "0")) : "") +
-           (p.mortar && p.id === myId ? ("M" + (p.mortar_placed ? "1" : "0")) : "") +
-           (p.superbomb && p.id === myId ? ("B" + (p.superbomb_placed ? "1" : "0")) : "") +
-           (p.balloon && p.id === myId ? ("L" + (p.balloon_launched ? "1" : "0")) : "") +
-           (p.blob && p.id === myId ? ("G" + (p.blob_placed ? "1" : "0")) : "");
-  }).join("|");
-
-  if (sig !== lastSidebarSig){
-    lastSidebarSig = sig;
-    sidebarRefs = {};
-    const list = document.getElementById("gamePlayers");
-    list.innerHTML = "";
-    msg.players.forEach(function(p){
-      const li = document.createElement("li");
-      const iAmAssassinRow = p.assassin && p.id === myId;
-      li.className = "player-row" + (!p.alive ? " dead" : "");
-      const sw = document.createElement("span");
-      sw.className = "swatch";
-      const colors = p.colors || [];
-      const c = iAmAssassinRow ? ASSASSIN_COLOR : (COLOR_HEX[colors[0]] || "#888");
-      sw.style.background = c; sw.style.color = c;
-      if (!iAmAssassinRow && colors[1]){
-        sw.style.boxShadow = "0 0 0 2px " + COLOR_HEX[colors[1]] + ", 0 0 6px currentColor";
-      }
-      li.appendChild(sw);
-      const nameSpan = document.createElement("span");
-      nameSpan.textContent = p.name;
-      li.appendChild(nameSpan);
-      if (p.id === myId){ const t = document.createElement("span"); t.className="tag you"; t.textContent="TU"; li.appendChild(t); }
-      if (p.laser){ const t = document.createElement("span"); t.className="tag alert"; t.textContent="LASER"; li.appendChild(t); }
-      if (p.bounce){ const t = document.createElement("span"); t.className="tag alert"; t.textContent="RIMBALZO"; li.appendChild(t); }
-      if (p.mines){ const t = document.createElement("span"); t.className="tag alert"; t.textContent="MINE " + p.mines_left; li.appendChild(t); }
-      if (p.missile){ const t = document.createElement("span"); t.className="tag alert"; t.textContent="MISSILI " + p.missiles_left; li.appendChild(t); }
-      if (p.ninja && p.id === myId && !iAmAssassinRow){
-        const t = document.createElement("span"); t.className="tag alert";
-        t.textContent = p.ninja_used ? "NINJA USATO" : "NINJA (2)";
-        li.appendChild(t);
-      }
-      if (p.trapped){ const t = document.createElement("span"); t.className="tag alert"; t.textContent="INTRAPPOLATO"; li.appendChild(t); }
-      if (p.trap && p.id === myId && p.trap_uses_left > 0){ const t = document.createElement("span"); t.className="tag alert"; t.textContent="TRAPPOLA " + p.trap_uses_left; li.appendChild(t); }
-      if (p.turret && p.id === myId){ const t = document.createElement("span"); t.className="tag alert"; t.textContent = p.turret_placed ? "TORRETTA ATTIVA" : "TORRETTA (tasto 5)"; li.appendChild(t); }
-      if (iAmAssassinRow){ const t = document.createElement("span"); t.className="tag alert"; t.textContent="ASSASSINO"; li.appendChild(t); }
-      if (p.armor && p.id === myId && !p.armor_on){
-        const t = document.createElement("span"); t.className="tag alert";
-        t.textContent = p.armor_used ? "CORAZZA USATA" : "CORAZZA (6)";
-        li.appendChild(t);
-      }
-      if (p.armor_on){
-        // Visibile a TUTTI (a differenza del ninja, la corazza non da'
-        // invisibilita'): si vede chi e' scudato in questo momento.
-        const t = document.createElement("span"); t.className="tag alert"; t.textContent="CORAZZA ATTIVA"; li.appendChild(t);
-      }
-      if (p.lightning && p.id === myId){
-        const t = document.createElement("span"); t.className="tag alert";
-        t.textContent = p.lightning_used ? "FULMINE USATO" : "FULMINE (7)";
-        li.appendChild(t);
-      }
-      if (p.pet && p.id === myId){
-        const t = document.createElement("span"); t.className="tag alert";
-        t.textContent = p.pet_summoned ? "PET ATTIVO" : "PET (tasto 8)";
-        li.appendChild(t);
-      }
-      if (p.robot && p.id === myId){
-        const t = document.createElement("span"); t.className="tag alert";
-        t.textContent = p.robot_used ? "NAVICELLA ATTIVA" : "NAVICELLA (tasto 9)";
-        li.appendChild(t);
-      }
-      if (p.mortar && p.id === myId){
-        const t = document.createElement("span"); t.className="tag alert";
-        t.textContent = p.mortar_placed ? "MORTAIO ATTIVO" : "MORTAIO (tasto 1)";
-        li.appendChild(t);
-      }
-      if (p.superbomb && p.id === myId){
-        const t = document.createElement("span"); t.className="tag alert";
-        t.textContent = !p.mortar_placed
-          ? "BOMBOLONE (dopo il mortaio)"
-          : (p.superbomb_placed ? "BOMBOLONE ATTIVO" : "BOMBOLONE (tasto 1)");
-        li.appendChild(t);
-      }
-      if (p.balloon && p.id === myId){
-        const t = document.createElement("span"); t.className="tag alert";
-        t.textContent = !p.superbomb_placed
-          ? "MONGOLFIERA (dopo il bombolone)"
-          : (p.balloon_launched ? "MONGOLFIERA IN VOLO" : "MONGOLFIERA (tasto 1)");
-        li.appendChild(t);
-      }
-      if (p.blob && p.id === myId){
-        const t = document.createElement("span"); t.className="tag alert";
-        t.textContent = !p.balloon_launched
-          ? "BLOB (dopo la mongolfiera)"
-          : (p.blob_placed ? "BLOB PIAZZATO" : "BLOB (tasto 1)");
-        li.appendChild(t);
-      }
-      const spacer = document.createElement("span"); spacer.className = "spacer"; li.appendChild(spacer);
-      const score = document.createElement("span");
-      score.style.fontSize = "10px"; score.style.color = "var(--phosphor-dim)";
-      li.appendChild(score);
-      list.appendChild(li);
-      sidebarRefs[p.id] = score;
-    });
-  }
-
-  // aggiornamento leggero di punti/vite
-  msg.players.forEach(function(p){
-    const el = sidebarRefs[p.id];
-    if (el) el.textContent = (p.points || 0) + "p · \u2665" + (p.lives || 1) +
-                             ((p.kills || 0) > 0 ? " · \u2694" + p.kills : "");
+/* ---- colonna a sinistra della mappa (vedi .gadget-rail): elenca, in
+   giallo, SOLO i tasti dei gadget che ho gia' sbloccato ma non ho ancora
+   usato in questo round, in ordine crescente (es: "3 4 5 6 7"). Appena un
+   gadget viene usato il suo tasto sparisce dalla colonna. Il tasto "1"
+   (mine/mortaio/bombolone/mongolfiera/blob) non compare qui: e' un'arma
+   base riutilizzabile a piu' riprese, non un bonus "usa una volta sola"
+   come gli altri. ---- */
+const GADGET_RAIL_KEYS = [
+  { key: "2", unlocked: function(p){ return !!p.ninja; },     used: function(p){ return !!p.ninja_used; } },
+  { key: "3", unlocked: function(p){ return !!p.missile; },   used: function(p){ return !(p.missiles_left > 0); } },
+  { key: "4", unlocked: function(p){ return !!p.trap; },      used: function(p){ return !(p.trap_uses_left > 0); } },
+  { key: "5", unlocked: function(p){ return !!p.turret; },    used: function(p){ return !!p.turret_placed; } },
+  { key: "6", unlocked: function(p){ return !!p.armor; },     used: function(p){ return !!p.armor_used; } },
+  { key: "7", unlocked: function(p){ return !!p.lightning; }, used: function(p){ return !!p.lightning_used; } },
+  { key: "8", unlocked: function(p){ return !!p.pet; },       used: function(p){ return !!p.pet_summoned; } },
+  { key: "9", unlocked: function(p){ return !!p.robot; },     used: function(p){ return !!p.robot_used; } },
+];
+function updateGadgetRail(msg){
+  const rail = document.getElementById("gadgetRail");
+  if (!rail) return;
+  const me = findPlayer(msg, myId);
+  rail.innerHTML = "";
+  if (!me) return;
+  GADGET_RAIL_KEYS.forEach(function(g){
+    if (g.unlocked(me) && !g.used(me)){
+      const span = document.createElement("span");
+      span.textContent = g.key;
+      rail.appendChild(span);
+    }
   });
+}
+
+/* ---- countdown al centro della mappa (vedi .center-countdown): grande
+   quanto una casella, stesso giallo dei tasti gadget. Parte SOLO quando
+   e' attiva la corazza (scudo) o la modalita' ninja (invisibilita'), e
+   mostra i secondi rimanenti presi dal server (assassin_left/armor_left,
+   autorita' sul tempo reale rimasto). ---- */
+function updateCenterCountdown(msg){
+  const el = document.getElementById("centerCountdown");
+  if (!el) return;
+  const me = findPlayer(msg, myId);
+  let secs = 0;
+  if (me){
+    if (me.assassin && me.assassin_left > 0) secs = me.assassin_left;
+    else if (me.armor_on && me.armor_left > 0) secs = me.armor_left;
+  }
+  if (secs > 0){
+    el.textContent = Math.ceil(secs);
+    el.classList.add("show");
+  } else {
+    el.classList.remove("show");
+  }
 }
 
 function onRoundEnd(msg){
