@@ -487,30 +487,23 @@ class Room:
 
     # ---------- round setup ----------
 
-    def corner_spawns(self):
-        """Solo gli spawn d'angolo (esclude il punto centrale, se presente:
-        e' sempre l'ultimo della lista definita in common.py)."""
-        pts = self.spawn_points
-        return pts[:4] if len(pts) > 4 else pts[:]
-
     def get_free_spawn(self, exclude_player=None):
-        """Sceglie un angolo casuale della mappa che non sia gia' occupato
-        da un altro giocatore vivo, cosi' non spawnano mai due giocatori
-        sulla stessa casella. Se (raro: 5 giocatori vivi) tutti gli angoli
-        sono occupati, ripiega su un qualunque spawn libero rimasto."""
+        """Sceglie una cella libera CASUALE di TUTTA la mappa (non piu' solo
+        i 4 angoli + centro) che non sia gia' occupata da un altro
+        giocatore vivo, cosi' non spawnano mai due giocatori sulla stessa
+        casella. self.free_cells contiene gia' tutte le celle non-muro
+        della mappa corrente (calcolato una sola volta in pick_new_map)."""
         occupied = {
             (q.x, q.y)
             for q in self.players.values()
             if q.alive and q is not exclude_player
         }
-        corners = self.corner_spawns()
-        free = [s for s in corners if tuple(s) not in occupied]
+        free = [c for c in self.free_cells if c not in occupied]
         if free:
             return random.choice(free)
-        free_any = [s for s in self.spawn_points if tuple(s) not in occupied]
-        if free_any:
-            return random.choice(free_any)
-        return random.choice(corners)
+        # Caso limite, non dovrebbe mai capitare (max 5 giocatori su
+        # centinaia di celle libere): ripiega su una cella qualsiasi.
+        return random.choice(self.free_cells)
 
     def assign_spawns(self):
         # Ogni giocatore riceve un angolo libero e diverso dagli altri
@@ -1145,8 +1138,9 @@ class Room:
 
     def respawn_player(self, p):
         """Rimette in gioco chi aveva una vita extra: se un super assassino
-        e' attivo, nell'angolo libero piu' lontano da lui, con qualche
-        secondo di protezione; altrimenti in un angolo libero casuale.
+        e' attivo, nella cella libera piu' lontana da lui su tutta la
+        mappa, con qualche secondo di protezione; altrimenti in una cella
+        libera casuale, ovunque sulla mappa (non piu' solo negli angoli).
         In ogni caso mai su una casella gia' occupata da un altro
         giocatore vivo (mai due giocatori sullo stesso spawn)."""
         assassins = [q for q in self.players.values() if q.alive and q.is_assassin]
@@ -1155,14 +1149,12 @@ class Room:
             for q in self.players.values()
             if q.alive and q is not p
         }
-        corners = self.corner_spawns()
-        free_corners = [s for s in corners if tuple(s) not in occupied]
         if assassins:
-            candidates = free_corners if free_corners else corners
+            free = [c for c in self.free_cells if c not in occupied]
+            candidates = free if free else self.free_cells
             def min_dist(s):
                 return min(abs(s[0] - a.x) + abs(s[1] - a.y) for a in assassins)
-            candidates = sorted(candidates, key=lambda s: -min_dist(s))
-            x, y = candidates[0]
+            x, y = max(candidates, key=min_dist)
         else:
             x, y = self.get_free_spawn(exclude_player=p)
         p.x, p.y = x, y
