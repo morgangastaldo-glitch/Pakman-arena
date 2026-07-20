@@ -2785,16 +2785,26 @@ class Room:
                 pet["path"] = []
 
     def check_win(self):
-        """Il round finisce quando resta UN SOLO giocatore vivo: quello e'
-        il vincitore. Con le vite extra e i bonus (laser, mine, super
-        assassino) chiunque puo' essere eliminato, quindi il conteggio
-        giusto e' sui vivi totali."""
+        """Il round finisce quando resta UN SOLO giocatore vivo (tra
+        ALMENO due in stanza): quello e' il vincitore. Con le vite extra e
+        i bonus (laser, mine, super assassino) chiunque puo' essere
+        eliminato, quindi il conteggio giusto e' sui vivi totali.
+
+        ECCEZIONE per la partita in solitaria (utile per provare il gioco
+        senza dover accendere un secondo dispositivo): con un solo
+        giocatore in stanza non ha senso dichiararlo subito "ultimo
+        sopravvissuto" appena parte il round (sarebbe l'unico vivo fin dal
+        primo istante), quindi quel caso viene escluso qui sotto e il round
+        prosegue normalmente. Se pero' quell'unico giocatore esaurisce
+        tutte le vite ed elimina anche se stesso, il round finisce
+        comunque regolarmente (nessun sopravvissuto)."""
         alive = [p for p in self.players.values() if p.alive]
         if len(alive) == 0:
-            # Puo' capitare solo in casi limite (es. disconnessioni):
-            # si chiude il round senza vincitori "veri".
+            # Puo' capitare sia in solitaria (l'unico giocatore ha esaurito
+            # le vite) sia in casi limite come disconnessioni multiple: si
+            # chiude il round senza vincitori "veri".
             return [], "no_survivors"
-        if len(alive) == 1:
+        if len(alive) == 1 and len(self.players) > 1:
             return [alive[0].id], "last_survivor"
         return None, None
 

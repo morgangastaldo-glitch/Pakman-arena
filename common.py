@@ -27,7 +27,7 @@ TICK_DT = 1.0 / TICK_HZ
 COUNTDOWN_SECONDS = 15
 ROUND_SECONDS = 600  # durata di un round: 10 minuti
 MAX_PLAYERS = 5
-MIN_PLAYERS = 2
+MIN_PLAYERS = 1
 
 NORMAL_SPEED = 4.5          # celle al secondo
 ASSASSIN_SPEED_MULT = 1.1   # il super assassino (bonus 300 punti) e' 1.1x rispetto a 1.0 dei giocatori normali

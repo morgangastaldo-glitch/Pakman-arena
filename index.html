@@ -221,9 +221,10 @@
        1) .score-strip: striscia sotto la mappa (~1.5cm) con le tabelle
           nome+punti di tutti i giocatori, io per primo poi gli altri in
           ordine di punteggio decrescente, spaziate in modo uniforme;
-       2) .gadget-rail: colonna stretta (~0.5cm) tra il bordo sinistro
-          dello schermo e la mappa, con i tasti numerici (in giallo) dei
-          gadget ancora da usare;
+       2) .gadget-rail: colonna stretta (~0.5cm, INVARIATA) tra il bordo
+          sinistro dello schermo e la mappa, con i tasti numerici (in
+          giallo chiaro, grandi quanto lo spazio verticale disponibile,
+          allineati in alto a sinistra) dei gadget ancora da usare;
        3) .center-countdown: overlay DENTRO la mappa (quello resta, ma e'
           un semplice numero al centro, non copre nulla di importante),
           grande quanto una casella, visibile solo mentre scudo/corazza o
@@ -231,16 +232,26 @@
 
   .game-area{ display:flex; min-width:0; min-height:0; gap:0; }
 
-  /* colonna dei tasti gadget non ancora usati, a sinistra della mappa */
+  /* colonna dei tasti gadget non ancora usati, a sinistra della mappa: la
+     larghezza della colonna resta quella originale (0.5cm), a cambiare e'
+     SOLO la dimensione del numero, che riempie tutta l'altezza che ha a
+     disposizione (flex:1 sugli span, vedi sotto), allineato in alto a
+     sinistra, in giallo chiaro ben visibile. Il testo puo' debordare
+     leggermente in larghezza rispetto alla colonna stretta (overflow
+     visibile, non tagliato): e' normale per una singola cifra grande. */
   .gadget-rail{
     flex:0 0 0.5cm; width:0.5cm;
-    display:flex; flex-direction:column; align-items:center; justify-content:center;
-    gap:10px; padding:4px 0;
-    font-size:15px; font-weight:bold; color:var(--marquee-yellow);
-    text-shadow:0 0 6px rgba(255,212,0,0.65), 0 0 14px rgba(255,212,0,0.35);
+    display:flex; flex-direction:column; align-items:flex-start; justify-content:flex-start;
+    gap:4px; padding:2px 0 2px 2px; overflow:visible;
+    font-weight:bold; color:var(--marquee-yellow-glow);
+    text-shadow:0 0 8px rgba(255,212,0,0.85), 0 0 18px rgba(255,212,0,0.45);
     letter-spacing:0;
   }
-  .gadget-rail span{ line-height:1; }
+  .gadget-rail span{
+    flex:1 1 0; min-height:0; width:100%;
+    display:flex; align-items:center; justify-content:flex-start;
+    line-height:1; font-size:clamp(24px, 7vh, 72px);
+  }
 
   /* colonna centrale: mappa sopra, striscia punteggi sotto */
   .canvas-col{
@@ -301,7 +312,7 @@
     box-shadow:0 0 10px rgba(255,212,0,0.25);
   }
   .score-strip .score-card .sc-name{
-    width:100%; text-align:center; font-size:12px; font-weight:bold;
+    width:100%; text-align:center; font-size:13.5px; font-weight:bold;
     color:var(--phosphor); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
     display:flex; align-items:center; justify-content:center; gap:4px;
   }
@@ -310,11 +321,22 @@
     width:8px; height:8px; border-radius:50%; flex:0 0 auto;
     box-shadow:0 0 5px currentColor;
   }
+  /* riga inferiore della card: punti e vite affiancati, stesso spazio della
+     tabella di prima (nessuna riga in piu' aggiunta, solo affiancata). */
+  .score-strip .score-card .sc-bottom{
+    display:flex; align-items:center; justify-content:center; gap:8px;
+  }
   .score-strip .score-card .sc-points{
-    font-size:15px; font-weight:bold; color:var(--phosphor);
+    font-size:17px; font-weight:bold; color:var(--phosphor);
     text-shadow:0 0 6px rgba(53,255,141,0.35);
   }
   .score-strip .score-card.me .sc-points{ color:var(--marquee-yellow); text-shadow:0 0 8px rgba(255,212,0,0.5); }
+  .score-strip .score-card .sc-lives{
+    display:flex; align-items:center; gap:2px;
+    font-size:17px; font-weight:bold; color:#ff5d7a;
+    text-shadow:0 0 6px rgba(255,93,122,0.45);
+  }
+  .score-strip .score-card .sc-lives .sc-heart{ font-size:13px; line-height:1; }
   .score-strip .score-card.dead{ opacity:0.45; }
   .score-strip .score-card.leader:not(.me) .sc-points{ color:#fff4b8; }
 
@@ -416,9 +438,12 @@
 
   @media (max-width:480px){
     .cabinet{ padding:12px; }
-    .score-strip .score-card .sc-name{ font-size:10.5px; }
-    .score-strip .score-card .sc-points{ font-size:13px; }
-    .gadget-rail{ font-size:13px; gap:8px; }
+    .score-strip .score-card .sc-name{ font-size:11.5px; }
+    .score-strip .score-card .sc-points{ font-size:15px; }
+    .score-strip .score-card .sc-lives{ font-size:15px; }
+    .score-strip .score-card .sc-lives .sc-heart{ font-size:11.5px; }
+    .gadget-rail{ gap:3px; }
+    .gadget-rail span{ font-size:clamp(18px, 6vh, 44px); }
   }
 </style>
 </head>
@@ -4083,10 +4108,26 @@ function updateScoreStrip(msg){
     nameEl.appendChild(nmTxt);
     card.appendChild(nameEl);
 
+    const bottomRow = document.createElement("div");
+    bottomRow.className = "sc-bottom";
+
     const ptsEl = document.createElement("div");
     ptsEl.className = "sc-points";
     ptsEl.textContent = (p.points || 0) + " pt";
-    card.appendChild(ptsEl);
+    bottomRow.appendChild(ptsEl);
+
+    const livesEl = document.createElement("div");
+    livesEl.className = "sc-lives";
+    const heartEl = document.createElement("span");
+    heartEl.className = "sc-heart";
+    heartEl.textContent = "\u2665";
+    livesEl.appendChild(heartEl);
+    const livesTxt = document.createElement("span");
+    livesTxt.textContent = "x" + Math.max(p.lives || 0, 0);
+    livesEl.appendChild(livesTxt);
+    bottomRow.appendChild(livesEl);
+
+    card.appendChild(bottomRow);
 
     strip.appendChild(card);
   });
