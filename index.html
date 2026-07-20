@@ -1576,8 +1576,200 @@ function paintMaze(targetCtx){
       roundRectPath(targetCtx, px + m, py + m, BASE_CELL - 2 * m, BASE_CELL - 2 * m, r);
       targetCtx.stroke();
       targetCtx.restore();
+
+      // Dettaglio a tema cotto SOLO sui muri (mai sul pavimento, per non
+      // disturbare la vista dei personaggi che ci si muovono sopra): vedi
+      // drawWallDecor piu' sotto. Applicato solo a una cella su ~4
+      // (scelta deterministica in base alla posizione, cosi' resta
+      // identica ad ogni ricostruzione del layer) per restare leggero e
+      // non trasformare i muri in un tappeto ripetitivo.
+      const decorKind = mazeTheme.decor;
+      if (decorKind){
+        const dr = cellPseudoRandom(x, y);
+        if (dr < 0.24){
+          drawWallDecor(targetCtx, px, py, decorKind, wc, dr);
+        }
+      }
     }
   }
+}
+
+// Numero pseudo-casuale deterministico 0..1 in base alle coordinate-cella:
+// stessa cella => sempre lo stesso valore, cosi' le decorazioni sui muri
+// non "saltano" se il layer viene ricostruito (es. al resize).
+function cellPseudoRandom(x, y){
+  const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+  return s - Math.floor(s);
+}
+
+// Punto 6 (dettagli a tema sui muri): ogni mappa ha un piccolo ornamento
+// diverso incastonato nei blocchi-muro (mai sul pavimento) - fiori di
+// ciliegio, conchiglie, venature di lava, ecc. - disegnato una sola volta
+// nel layer offscreen (buildMazeLayer/paintMaze), quindi a costo zero a
+// runtime. wc = { wall, edge, glow } della variante di quel muro.
+function drawWallDecor(targetCtx, px, py, kind, wc, seed){
+  const cx = px + BASE_CELL / 2, cy = py + BASE_CELL / 2;
+  const rot = seed * Math.PI * 2;
+  targetCtx.save();
+  targetCtx.translate(cx, cy);
+  targetCtx.rotate(rot * 0.35); // leggera variazione di orientamento, non casuale ogni frame
+  switch (kind){
+    case "blossom": { // Rosa Arcade: fiori di ciliegio sparsi sui muri
+      targetCtx.globalAlpha = 0.55;
+      for (let i = 0; i < 5; i++){
+        const a = (Math.PI * 2 / 5) * i;
+        const px2 = Math.cos(a) * 3.6, py2 = Math.sin(a) * 3.6;
+        targetCtx.fillStyle = "#ffd6ec";
+        targetCtx.beginPath();
+        targetCtx.ellipse(px2, py2, 2.6, 1.6, a, 0, Math.PI * 2);
+        targetCtx.fill();
+      }
+      targetCtx.fillStyle = "#ffe27a";
+      targetCtx.beginPath(); targetCtx.arc(0, 0, 1.6, 0, Math.PI * 2); targetCtx.fill();
+      break;
+    }
+    case "shells": { // Neon Blu: conchiglie incastonate nei muri
+      targetCtx.globalAlpha = 0.5;
+      targetCtx.fillStyle = "#dff0ff";
+      targetCtx.strokeStyle = wc.glow;
+      targetCtx.lineWidth = 0.6;
+      targetCtx.beginPath();
+      targetCtx.moveTo(0, 5);
+      for (let i = -3; i <= 3; i++){
+        targetCtx.lineTo(i * 1.5, -Math.abs(i) * 1.5 + 1);
+      }
+      targetCtx.closePath();
+      targetCtx.fill();
+      targetCtx.stroke();
+      for (let i = -2; i <= 2; i++){
+        targetCtx.beginPath();
+        targetCtx.moveTo(0, 4);
+        targetCtx.lineTo(i * 1.4, -Math.abs(i) * 1.3 + 1);
+        targetCtx.stroke();
+      }
+      break;
+    }
+    case "lava": { // Lava Cremisi: venature incandescenti sui muri
+      targetCtx.globalAlpha = 0.75;
+      targetCtx.strokeStyle = "#ffb347";
+      targetCtx.shadowColor = "#ff5a1f";
+      targetCtx.shadowBlur = 4;
+      targetCtx.lineWidth = 1.3;
+      targetCtx.beginPath();
+      targetCtx.moveTo(-6, -5);
+      targetCtx.lineTo(-1, -1);
+      targetCtx.lineTo(-3, 2);
+      targetCtx.lineTo(1, 3);
+      targetCtx.lineTo(6, 6);
+      targetCtx.stroke();
+      targetCtx.shadowBlur = 0;
+      targetCtx.fillStyle = "#ffe27a";
+      targetCtx.beginPath(); targetCtx.arc(1, 3, 0.9, 0, Math.PI * 2); targetCtx.fill();
+      break;
+    }
+    case "vines": { // Giungla Smeraldo: rampicanti/foglie sui muri
+      targetCtx.globalAlpha = 0.6;
+      targetCtx.strokeStyle = "#1f7a3d";
+      targetCtx.lineWidth = 1.2;
+      targetCtx.beginPath();
+      targetCtx.moveTo(-6, 6);
+      targetCtx.quadraticCurveTo(-2, -6, 6, -5);
+      targetCtx.stroke();
+      targetCtx.fillStyle = "#5dffb0";
+      for (const t of [0.2, 0.55, 0.85]){
+        const lx = -6 + (12) * t, ly = 6 + (-11) * t + (t*t*2);
+        targetCtx.beginPath();
+        targetCtx.ellipse(lx, ly, 1.8, 1, 0.6, 0, Math.PI * 2);
+        targetCtx.fill();
+      }
+      break;
+    }
+    case "gems": { // Violetto Regale: gemme incastonate
+      targetCtx.globalAlpha = 0.65;
+      targetCtx.fillStyle = "#e6c6ff";
+      targetCtx.strokeStyle = "#ffffff";
+      targetCtx.lineWidth = 0.5;
+      targetCtx.beginPath();
+      targetCtx.moveTo(0, -5); targetCtx.lineTo(3.5, 0);
+      targetCtx.lineTo(0, 5); targetCtx.lineTo(-3.5, 0);
+      targetCtx.closePath();
+      targetCtx.fill(); targetCtx.stroke();
+      targetCtx.strokeStyle = "rgba(255,255,255,0.8)";
+      targetCtx.beginPath(); targetCtx.moveTo(0, -5); targetCtx.lineTo(0, 5); targetCtx.stroke();
+      break;
+    }
+    case "hieroglyph": { // Sabbia Ambra: glifi incisi nella pietra
+      targetCtx.globalAlpha = 0.55;
+      targetCtx.strokeStyle = "#ffdca0";
+      targetCtx.lineWidth = 1;
+      targetCtx.beginPath();
+      targetCtx.moveTo(-4, -5); targetCtx.lineTo(-4, 5);
+      targetCtx.moveTo(-4, -2); targetCtx.lineTo(2, -5);
+      targetCtx.moveTo(-4, 1); targetCtx.lineTo(3, 4);
+      targetCtx.stroke();
+      targetCtx.fillStyle = "#ffdca0";
+      targetCtx.beginPath(); targetCtx.arc(4, -3, 1.1, 0, Math.PI * 2); targetCtx.fill();
+      break;
+    }
+    case "crystal": { // Ghiaccio Ciano: facce di cristallo di ghiaccio
+      targetCtx.globalAlpha = 0.6;
+      targetCtx.fillStyle = "rgba(157,246,255,0.55)";
+      targetCtx.strokeStyle = "#ffffff";
+      targetCtx.lineWidth = 0.6;
+      targetCtx.beginPath();
+      targetCtx.moveTo(0, -6); targetCtx.lineTo(3, -1); targetCtx.lineTo(1.5, 6);
+      targetCtx.lineTo(-1.5, 6); targetCtx.lineTo(-3, -1);
+      targetCtx.closePath();
+      targetCtx.fill(); targetCtx.stroke();
+      targetCtx.beginPath(); targetCtx.moveTo(0, -6); targetCtx.lineTo(0, 6); targetCtx.stroke();
+      break;
+    }
+    case "moss": { // Foresta Notte: chiazze di muschio e funghetti
+      targetCtx.globalAlpha = 0.55;
+      targetCtx.fillStyle = "#3ddc4a";
+      for (const [ox, oy, rr] of [[-3,2,2.4],[2,3,1.8],[0,-2,1.6]]){
+        targetCtx.beginPath(); targetCtx.arc(ox, oy, rr, 0, Math.PI * 2); targetCtx.fill();
+      }
+      targetCtx.globalAlpha = 0.7;
+      targetCtx.fillStyle = "#ffb37a";
+      targetCtx.beginPath(); targetCtx.arc(3, -3, 1.3, 0, Math.PI * 2); targetCtx.fill();
+      targetCtx.fillStyle = "#f4ffb8";
+      targetCtx.fillRect(2.6, -2, 0.8, 2);
+      break;
+    }
+    case "coral": { // Corallo Tramonto: rami di corallo sui muri
+      targetCtx.globalAlpha = 0.65;
+      targetCtx.strokeStyle = "#ff8a5c";
+      targetCtx.lineWidth = 1.3;
+      targetCtx.lineCap = "round";
+      targetCtx.beginPath();
+      targetCtx.moveTo(0, 6); targetCtx.lineTo(0, -1);
+      targetCtx.moveTo(0, 1); targetCtx.lineTo(-4, -4);
+      targetCtx.moveTo(0, 0); targetCtx.lineTo(4, -5);
+      targetCtx.moveTo(0, -1); targetCtx.lineTo(1, -6);
+      targetCtx.stroke();
+      break;
+    }
+    case "stardust": { // Indaco Profondo: rune stellari incise
+      targetCtx.globalAlpha = 0.6;
+      targetCtx.fillStyle = "#e6e9ff";
+      for (let i = 0; i < 4; i++){
+        const a = (Math.PI / 2) * i + rot;
+        const sx = Math.cos(a) * 4, sy = Math.sin(a) * 4;
+        targetCtx.save();
+        targetCtx.translate(sx, sy);
+        targetCtx.rotate(a);
+        targetCtx.beginPath();
+        targetCtx.moveTo(0, -1.6); targetCtx.lineTo(0.5, 0); targetCtx.lineTo(0, 1.6); targetCtx.lineTo(-0.5, 0);
+        targetCtx.closePath();
+        targetCtx.fill();
+        targetCtx.restore();
+      }
+      targetCtx.beginPath(); targetCtx.arc(0, 0, 1, 0, Math.PI * 2); targetCtx.fill();
+      break;
+    }
+  }
+  targetCtx.restore();
 }
 
 // Schiarisce un colore esadecimale di una frazione 0-1 (usato per i
