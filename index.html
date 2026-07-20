@@ -2068,14 +2068,18 @@ function drawSingleEye(radius, secondary, angry){
   }
 }
 
-// ---- maschera da teschio: stesso taglio "a Pac-Man" degli altri
-// personaggi, ma il colore primario funge da MASCHERA rigida (non da
-// pelle): sopra viene applicato un rilievo chiaro/scuro (stesso trucco di
-// bevel usato per i muri della mappa e per il muro di spunzoni, cosi' la
-// maschera sembra davvero "in rilievo" e non un cerchio piatto) e infine
-// viene disegnato un teschio bianco al centro, sullo stesso modello di
-// bombolone/mongolfiera/muro di spunzoni. Il bordo della maschera prende il
-// colore di dettaglio scelto dal giocatore (o un grigio osso di default).
+// ---- maschera da teschio VISTA DI PROFILO: stesso taglio "a Pac-Man"
+// (la bocca e' la mascella che si apre/chiude masticando, sempre rivolta
+// nella direzione di marcia), ma il colore primario funge da OSSO della
+// maschera indossata, non da pelle. Sopra viene applicato lo stesso rilievo
+// chiaro/scuro usato per i muri della mappa (per un effetto "in rilievo",
+// non un cerchio piatto) e poi i tratti tipici di un teschio visto DI
+// PROFILO: una sola cavita' orbitale (in un vero profilo se ne vede una
+// sola), una cavita' nasale, una cresta sopraccigliare che separa fronte e
+// orbita, uno zigomo che scende verso la mascella, e denti aguzzi sui bordi
+// della bocca al posto della semplice bocca vuota di Pac-Man. Cosi' sembra
+// che il "vero" Pac-Man (la sagoma tonda che morde) stia dentro questa
+// maschera a forma di teschio, vista di lato.
 function drawSkullMaskBody(radius, m, primary, secondary, glowExtra){
   const maskPath = function(){
     ctx.beginPath();
@@ -2091,12 +2095,11 @@ function drawSkullMaskBody(radius, m, primary, secondary, glowExtra){
   ctx.fill();
   ctx.shadowBlur = 0;
 
+  // Rilievo "in rilievo": bevel chiaro in alto a sinistra, ombra scura in
+  // basso a destra, ritagliato sulla sagoma della maschera.
   ctx.save();
   maskPath();
   ctx.clip();
-
-  // Rilievo "in rilievo": bevel chiaro in alto a sinistra, ombra scura in
-  // basso a destra, ritagliato sulla sagoma della maschera.
   const bevel = ctx.createLinearGradient(-radius, -radius, radius, radius);
   bevel.addColorStop(0, "rgba(255,255,255,0.40)");
   bevel.addColorStop(0.35, "rgba(255,255,255,0)");
@@ -2104,33 +2107,60 @@ function drawSkullMaskBody(radius, m, primary, secondary, glowExtra){
   bevel.addColorStop(1, "rgba(0,0,0,0.38)");
   ctx.fillStyle = bevel;
   ctx.fillRect(-radius, -radius, radius * 2, radius * 2);
+  ctx.restore();
 
-  // Teschio al centro della maschera (cranio, mascella, occhi, naso,
-  // denti): stesso disegno di bombolone/mongolfiera/muro di spunzoni,
-  // scalato al raggio del personaggio.
-  const s = radius / 17;
-  ctx.fillStyle = "#f2f2f0";
-  ctx.beginPath(); ctx.arc(0, -4 * s, 6.2 * s, 0, Math.PI * 2); ctx.fill();
+  // Denti aguzzi sui due bordi della mascella (bocca aperta = mascella
+  // aperta, stesso trucco della bocca "a squalo"): al posto del semplice
+  // spicchio vuoto di Pac-Man, danno l'idea di una vera mandibola ossea.
+  const arcStart = [Math.cos(m) * radius, Math.sin(m) * radius];   // angolo superiore della bocca
+  const arcEnd = [Math.cos(-m) * radius, Math.sin(-m) * radius];   // angolo inferiore della bocca (mascella)
+  drawTeethRow(0, 0, arcStart[0], arcStart[1], "#f2f2f0", radius * 0.22);
+  drawTeethRow(0, 0, arcEnd[0], arcEnd[1], "#f2f2f0", radius * 0.22);
+
+  // Tratti del profilo (occhio, naso, cresta, zigomo): ritagliati sulla
+  // sagoma della maschera, cosi' non sconfinano mai fuori dal contorno.
+  ctx.save();
+  maskPath();
+  ctx.clip();
+
+  // Cavita' orbitale: UN SOLO occhio incavato, in alto verso il lato della
+  // bocca (esattamente come si vede in un vero profilo di teschio).
+  const ex = radius * 0.10, ey = -radius * 0.42;
+  const eyeRx = radius * 0.30, eyeRy = radius * 0.24;
+  ctx.fillStyle = "#12100e";
   ctx.beginPath();
-  ctx.moveTo(-4.6 * s, -2.5 * s);
-  ctx.lineTo(-4.2 * s, 2.5 * s);
-  ctx.lineTo(4.2 * s, 2.5 * s);
-  ctx.lineTo(4.6 * s, -2.5 * s);
-  ctx.closePath(); ctx.fill();
-  ctx.fillStyle = "#1a1a1a";
-  ctx.beginPath(); ctx.arc(-2.3 * s, -4.5 * s, 1.5 * s, 0, Math.PI * 2); ctx.fill();
-  ctx.beginPath(); ctx.arc(2.3 * s, -4.5 * s, 1.5 * s, 0, Math.PI * 2); ctx.fill();
+  ctx.ellipse(ex, ey, eyeRx, eyeRy, -0.2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "rgba(0,0,0,0.55)";
+  ctx.lineWidth = Math.max(1, radius * 0.06);
+  ctx.stroke();
+
+  // Cavita' nasale: piccola tacca scura sotto l'occhio, verso il centro.
+  const nx = radius * 0.30, ny = -radius * 0.02;
+  ctx.fillStyle = "#12100e";
   ctx.beginPath();
-  ctx.moveTo(-0.9 * s, -2.5 * s); ctx.lineTo(0, -0.3 * s); ctx.lineTo(0.9 * s, -2.5 * s);
-  ctx.closePath(); ctx.fill();
-  ctx.strokeStyle = "#1a1a1a";
-  ctx.lineWidth = 1 * s;
-  for (let i = -1; i <= 1; i++){
-    ctx.beginPath();
-    ctx.moveTo(i * 1.6 * s - 0.5 * s, 2.1 * s);
-    ctx.lineTo(i * 1.6 * s + 0.5 * s, 3.4 * s);
-    ctx.stroke();
-  }
+  ctx.moveTo(nx, ny - radius * 0.10);
+  ctx.lineTo(nx + radius * 0.16, ny + radius * 0.05);
+  ctx.lineTo(nx, ny + radius * 0.14);
+  ctx.closePath();
+  ctx.fill();
+
+  // Cresta sopraccigliare: dalla nuca arriva fin sopra l'orbita, a marcare
+  // il confine fronte/orbita tipico del profilo.
+  ctx.strokeStyle = "rgba(0,0,0,0.45)";
+  ctx.lineWidth = Math.max(1, radius * 0.07);
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(-radius * 0.75, -radius * 0.45);
+  ctx.quadraticCurveTo(-radius * 0.15, -radius * 0.80, ex + eyeRx * 0.55, ey - eyeRy * 0.7);
+  ctx.stroke();
+
+  // Zigomo: dall'orbita scende verso l'angolo della mascella.
+  ctx.beginPath();
+  ctx.moveTo(ex - eyeRx * 0.15, ey + eyeRy * 0.9);
+  ctx.quadraticCurveTo(radius * 0.05, radius * 0.32, arcEnd[0] * 0.72, arcEnd[1] * 0.72);
+  ctx.stroke();
+
   ctx.restore();
 
   // Bordo rigido della maschera, nel colore di dettaglio se scelto,
