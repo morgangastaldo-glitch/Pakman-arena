@@ -52,7 +52,7 @@ from common import (
     SPAWN_PROTECT_SECONDS, MIN_SPAWN_DISTANCE, LASER_INTERVAL_SECONDS, LASER_FIRST_DELAY_SECONDS,
     LASER_PROJECTILE_SPEED, LASER_BOUNCE_DISTANCE, MINES_COUNT,
     PORTAL_COOLDOWN_SECONDS, PORTAL_ON_SECONDS, PORTAL_OFF_SECONDS,
-    MISSILE_SPEED_MULT, MISSILES_COUNT, MISSILE_RETARGET_SECONDS,
+    MISSILE_SPEED_MULT, MISSILES_COUNT, MISSILE_RETARGET_SECONDS, MISSILE_LOCK_DISTANCE,
     TRAP_THRESHOLD, TRAP_DURATION_SECONDS, TRAP_RANGE, TRAP_MAX_USES,
     TURRET_THRESHOLD, TURRET_FIRE_INTERVAL_SECONDS,
     TURRET_RANGE_CELLS, KILL_STEAL_FRACTION,
@@ -69,6 +69,8 @@ from common import (
     BALLOON_THRESHOLD, BALLOON_SPEED, BALLOON_BOMB_INTERVAL_SECONDS,
     BALLOON_BOMB_RADIUS_CELLS, BALLOON_RETARGET_EPSILON,
     BLOB_THRESHOLD,
+    BLOB_ALIVE_THRESHOLD, BLOB_ALIVE_SPEED_MULT,
+    BLOB_POISON_DURATION_SECONDS, BLOB_EAT_RANGE_CELLS,
     RTT_PING_INTERVAL_SECONDS, RTT_DEFAULT_SECONDS,
     REWIND_MAX_SECONDS, REWIND_HISTORY_SECONDS,
 )
@@ -238,6 +240,17 @@ class Player:
         # ---- bonus 1800 punti: blob gelatinoso (tasto "1", DOPO la mongolfiera) ----
         self.has_blob = False          # bonus sbloccato (una volta per round)
         self.blob_placed = False       # True dopo il piazzamento: il tasto "1" (dopo mortaio+bombolone+mongolfiera) e' utilizzabile una sola volta
+
+        # ---- bonus 2000 punti: blob VIVO/vagante (tasto "1", DOPO il blob fermo) ----
+        # Allo sblocco NON scatta nulla in automatico: si risveglia a comando
+        # riusando ancora il tasto "1" (vedi try_animate_blob), UNA SOLA
+        # VOLTA per round, ma solo DOPO che il blob (bonus 1800 punti) e'
+        # gia' stato piazzato. Lo stato vero e proprio del movimento (alive/
+        # wander_path/...) vive dentro il dict del blob in self.blobs, non
+        # qui: qui si tiene solo lo stato dello sblocco/utilizzo, come per
+        # gli altri bonus a comando.
+        self.has_blob_alive = False    # bonus sbloccato (una volta per round)
+        self.blob_alive_used = False   # True dopo il risveglio: il tasto "1" (dopo mortaio+bombolone+mongolfiera+blob) e' utilizzabile una sola volta
         # Uccisioni fatte in questo round: ogni 2 kill si guadagna una vita extra.
         self.kills = 0
 
@@ -298,6 +311,8 @@ class Player:
             "balloon_launched": self.balloon_launched,
             "blob": self.has_blob,
             "blob_placed": self.blob_placed,
+            "blob_alive_bonus": self.has_blob_alive,
+            "blob_alive_used": self.blob_alive_used,
         }
 
 
@@ -636,6 +651,8 @@ class Room:
             p.balloon_launched = False
             p.has_blob = False
             p.blob_placed = False
+            p.has_blob_alive = False
+            p.blob_alive_used = False
             p.kills = 0
         self.lasers = []
         self.mines = []
@@ -1171,6 +1188,25 @@ class Room:
                 "bonus": "blob", "points": BLOB_THRESHOLD,
             })
 
+        # Bonus 2000 punti: sblocca il risveglio del blob, ma NON lo anima
+        # subito. Si risveglia a comando RIUSANDO ancora il tasto "1" (vedi
+        # try_animate_blob), UNA SOLA VOLTA per giocatore per round, ma solo
+        # DOPO aver gia' piazzato mortaio (1200), bombolone (1400),
+        # mongolfiera (1600) e blob (1800): finche' non sono stati piazzati
+        # tutti e quattro, il tasto "1" resta dedicato a quelli (vedi il
+        # dispatch del messaggio "place_mortar").
+        if (
+            p.alive
+            and p.points >= BLOB_ALIVE_THRESHOLD
+            and BLOB_ALIVE_THRESHOLD not in p.claimed
+        ):
+            p.claimed.add(BLOB_ALIVE_THRESHOLD)
+            p.has_blob_alive = True
+            self.push_event({
+                "kind": "bonus", "player": p.id,
+                "bonus": "blob_alive", "points": BLOB_ALIVE_THRESHOLD,
+            })
+
     def try_portal(self, p):
         """Se il giocatore e' su un portale (e non e' appena arrivato da un
         teletrasporto), lo sposta al portale opposto mantenendo la direzione.
@@ -1602,10 +1638,13 @@ class Room:
         missile si disegna in modo fluido come un giocatore/pet invece di
         scattare da una cella intera alla successiva ad ogni tick."""
         dx = dy = 0
-        path = mz.get("path")
-        if path:
-            nx, ny = path[0]
-            dx, dy = nx - mz["x"], ny - mz["y"]
+        if mz.get("locked"):
+            dx, dy = mz.get("dir", (0, 0))
+        else:
+            path = mz.get("path")
+            if path:
+                nx, ny = path[0]
+                dx, dy = nx - mz["x"], ny - mz["y"]
         accum = mz.get("move_accum", 0.0)
         fx = mz["x"] + dx * accum
         fy = mz["y"] + dy * accum
@@ -1712,7 +1751,13 @@ class Room:
             q for q in self.players.values()
             if q.alive and q.id != player.id
         ]
-        victim = random.choice(candidates) if candidates else None
+        # NERF: il fulmine ora ha solo 1 possibilita' su 3 di colpire
+        # davvero qualcuno (in precedenza colpiva sempre, all'attivazione,
+        # un avversario a caso). Se il tiro casuale fallisce, l'uso del
+        # bonus viene comunque consumato (lightning_used resta True: e'
+        # UTILIZZABILE UNA SOLA VOLTA per round anche in caso di "cilecca"),
+        # ma nessuno viene colpito.
+        victim = random.choice(candidates) if candidates and random.random() < (1 / 3) else None
         self.push_event({
             "kind": "lightning_on", "player": player.id,
             "bonus": "lightning", "points": LIGHTNING_THRESHOLD,
@@ -1767,7 +1812,21 @@ class Room:
         muove) e procede una cella alla volta lungo quel percorso, quindi non
         si schianta mai contro un muro. Al contatto col bersaglio (o con
         chiunque altro capiti sulla sua strada, escluso lo sparatore),
-        quella vittima perde una vita."""
+        quella vittima perde una vita.
+
+        NERF: il missile a ricerca ora e' SCHIVABILE. Appena la distanza
+        (Manhattan) dal bersaglio agganciato scende a MISSILE_LOCK_DISTANCE
+        (2) caselle o meno, il missile smette per sempre di ricalcolare la
+        rotta e prosegue SOLO in linea retta nell'ultima direzione che stava
+        percorrendo in quel momento (mz['locked'] = True, direzione
+        congelata in mz['dir']): da quel punto in poi non insegue piu' le
+        svolte del bersaglio, quindi un giocatore abbastanza lesto a
+        cambiare direzione all'ultimo istante puo' schivarlo. Se in quella
+        direzione trova un muro, il missile si schianta e si estingue (non
+        gira mai attorno all'ostacolo una volta agganciata la rotta finale).
+        Il "lock" si azzera solo se il missile perde il bersaglio e si
+        riaggancia a uno nuovo (torna a inseguire normalmente finche' non
+        rientra di nuovo entro le 2 caselle)."""
         if not self.missiles:
             return
         survivors = []
@@ -1788,22 +1847,53 @@ class Room:
                     mz["target"] = target.id
                     mz["path"] = []
                     mz["retarget_cd"] = 0.0
+                    mz["locked"] = False  # nuovo bersaglio: torna a inseguire normalmente
 
             if not destroyed:
-                mz["retarget_cd"] -= TICK_DT
-                if mz["retarget_cd"] <= 0 or not mz["path"]:
-                    mz["retarget_cd"] = MISSILE_RETARGET_SECONDS
-                    path = bfs_path(
-                        self.maze, self.maze_w, self.maze_h,
-                        (mz["x"], mz["y"]), (target.x, target.y),
-                    )
-                    mz["path"] = path or []
+                # Appena entra entro MISSILE_LOCK_DISTANCE caselle dal
+                # bersaglio, congela la rotta una volta per tutte nell'ultima
+                # direzione nota, invece di continuare a ricalcolarla.
+                if not mz.get("locked") and target is not None \
+                        and abs(target.x - mz["x"]) + abs(target.y - mz["y"]) <= MISSILE_LOCK_DISTANCE:
+                    mz["locked"] = True
+                    if mz.get("path"):
+                        lx, ly = mz["path"][0]
+                        mz["dir"] = (lx - mz["x"], ly - mz["y"])
+                    elif not mz.get("dir"):
+                        mz["dir"] = (0, 0)
+                    mz["path"] = []
+
+                if mz.get("locked"):
+                    dx, dy = mz.get("dir", (0, 0))
+                else:
+                    mz["retarget_cd"] -= TICK_DT
+                    if mz["retarget_cd"] <= 0 or not mz["path"]:
+                        mz["retarget_cd"] = MISSILE_RETARGET_SECONDS
+                        path = bfs_path(
+                            self.maze, self.maze_w, self.maze_h,
+                            (mz["x"], mz["y"]), (target.x, target.y),
+                        )
+                        mz["path"] = path or []
 
                 speed = NORMAL_SPEED * MISSILE_SPEED_MULT
                 mz["move_accum"] += speed * TICK_DT
-                while mz["move_accum"] >= 1.0 and mz["path"] and not destroyed:
+                while mz["move_accum"] >= 1.0 and not destroyed:
+                    if mz.get("locked"):
+                        dx, dy = mz.get("dir", (0, 0))
+                        if (dx, dy) == (0, 0):
+                            destroyed = True
+                            break
+                        nx, ny = mz["x"] + dx, mz["y"] + dy
+                        if is_wall(self.maze, self.maze_w, self.maze_h, nx, ny):
+                            # Rotta congelata: niente svolte, si schianta
+                            # dritto contro l'ostacolo invece di aggirarlo.
+                            destroyed = True
+                            break
+                    else:
+                        if not mz["path"]:
+                            break
+                        nx, ny = mz["path"].pop(0)
                     mz["move_accum"] -= 1.0
-                    nx, ny = mz["path"].pop(0)
                     mz["x"], mz["y"] = nx, ny
                     # Un ninja e' immune: il missile lo attraversa senza
                     # detonare, invece di colpirlo (coerente col riaggancio
@@ -2526,22 +2616,40 @@ class Room:
         })
 
     def blob_public(self, b):
+        # Come turret_public/pet_public: se il blob e' "vivo" (bonus 2000
+        # punti) e si sta muovendo lungo il proprio percorso di
+        # vagabondaggio, manda anche l'avanzamento reale dentro la cella
+        # corrente (move_accum), cosi' il client lo disegna scivolare in
+        # modo fluido invece di scattare da una cella intera alla
+        # successiva. Un blob non ancora risvegliato resta fermo (dx=dy=0),
+        # esattamente come prima.
+        dx = dy = 0
+        if b.get("alive") and b.get("wander_path"):
+            nx, ny = b["wander_path"][0]
+            dx, dy = nx - b["x"], ny - b["y"]
+        accum = b.get("move_accum", 0.0)
+        fx = b["x"] + dx * accum
+        fy = b["y"] + dy * accum
         return {
-            "id": b["id"], "x": b["x"], "y": b["y"],
+            "id": b["id"], "x": round(fx, 4), "y": round(fy, 4),
             "owner": b["owner"],
+            "alive": b.get("alive", False),
         }
 
     def check_blobs(self):
-        """Fa "mangiare" al blob chiunque si trovi sulla sua cella: elimina
-        chiunque la calpesti (proprietario escluso), ignorando protezioni,
-        come una mina. A differenza della mina pero' il blob NON si consuma
-        mangiando: resta sulla mappa a bloccare la strada per il prossimo
-        che ci passa. Se sulla stessa cella c'e' il pet (bonus 900 punti) di
-        un altro giocatore, il blob mangia anche lui (ma il pet, a
-        differenza del giocatore, sparisce per sempre).
+        """Fa "mangiare" al blob chiunque si trovi sulla sua cella o su una
+        cella adiacente (entro BLOB_EAT_RANGE_CELLS caselle, stile
+        scacchi/Chebyshev): elimina chiunque sia abbastanza vicino
+        (proprietario escluso), ignorando protezioni, come una mina. A
+        differenza della mina pero' il blob NON si consuma mangiando: resta
+        sulla mappa (fermo, o vagante se risvegliato dal bonus 2000 punti,
+        vedi update_blobs_wander) pronto a mangiare il prossimo che gli
+        capita vicino. Se una cella adiacente ospita il pet (bonus 900
+        punti) di un altro giocatore, il blob mangia anche lui (ma il pet,
+        a differenza del giocatore, sparisce per sempre).
 
         Eccezione: la modalita' ninja (300 punti) rende immuni al blob,
-        esattamente come alle mine - camminarci sopra da ninja non attiva
+        esattamente come alle mine - stare vicino da ninja non attiva
         nulla.
 
         Eccezione 2: chi ha la corazza laser ATTIVA (bonus 700 punti) e'
@@ -2555,16 +2663,102 @@ class Room:
             victims = [
                 q for q in self.players.values()
                 if q.alive and not q.is_assassin and not q.armor_active and q.id != b["owner"]
-                and q.x == b["x"] and q.y == b["y"]
+                and abs(q.x - b["x"]) <= BLOB_EAT_RANGE_CELLS
+                and abs(q.y - b["y"]) <= BLOB_EAT_RANGE_CELLS
             ]
             pet_victims = [
                 pet for pet in self.pets
-                if pet["owner"] != b["owner"] and pet["x"] == b["x"] and pet["y"] == b["y"]
+                if pet["owner"] != b["owner"]
+                and abs(pet["x"] - b["x"]) <= BLOB_EAT_RANGE_CELLS
+                and abs(pet["y"] - b["y"]) <= BLOB_EAT_RANGE_CELLS
             ]
             for v in victims:
                 self.kill_player(v, "blob", b["owner"])
             for pet in pet_victims:
                 self.destroy_pet(pet, "blob", b["owner"])
+
+    # ---- bonus 2000 punti: blob VIVO/vagante (tasto "1", DOPO il blob fermo) ----
+
+    def try_animate_blob(self, player):
+        """Tasto '1', RIUSATO una quinta volta: viene chiamato dal dispatch
+        del messaggio "place_mortar" solo quando player.mortar_placed,
+        player.superbomb_placed, player.balloon_launched e
+        player.blob_placed sono gia' tutti e quattro True (finche' non lo
+        sono, quella stessa pressione richiama invece
+        try_place_mortar/try_place_superbomb/try_launch_balloon/
+        try_place_blob). Risveglia, UNA SOLA VOLTA per round, il blob gia'
+        piazzato da questo giocatore - a patto che sia ancora vivo sulla
+        mappa (non distrutto nel frattempo da un laser/missile avversario,
+        vedi destroy_blob). Da quel momento il blob smette di restare
+        fermo: vaga a caso per tutta la mappa (vedi update_blobs_wander)
+        alla stessa velocita' della torretta evoluta, lasciando una scia di
+        gas velenoso su ogni casella che calpesta camminando.
+
+        Se il giocatore e' intrappolato dalla trappola di un avversario,
+        NON puo' usare alcun bonus finche' non torna libero di muoversi."""
+        if not player.alive or player.trapped_left > 0 or not player.has_blob_alive or player.blob_alive_used or player.is_assassin or player.armor_active:
+            return
+        blob = next((b for b in self.blobs if b["owner"] == player.id), None)
+        if blob is None:
+            # Il blob non e' mai stato piazzato, oppure e' gia' stato
+            # distrutto da un laser/missile avversario: niente da risvegliare.
+            return
+        player.blob_alive_used = True
+        blob["alive"] = True
+        blob["wander_path"] = []
+        blob["wander_cd"] = 0.0
+        blob["move_accum"] = 0.0
+        self.push_event({
+            "kind": "blob_animate", "id": blob["id"], "player": player.id,
+            "x": blob["x"], "y": blob["y"],
+        })
+
+    def update_blob_wander(self, b):
+        """Bonus 2000 punti: un blob risvegliato (vedi try_animate_blob) non
+        pattuglia verso un bersaglio come il robot: vaga DAVVERO a caso su
+        tutta la mappa, scegliendo ogni volta una cella libera a caso tra
+        self.free_cells come nuova meta' e raggiungendola via bfs_path (mai
+        attraverso i muri), alla velocita' NORMAL_SPEED * BLOB_ALIVE_SPEED_MULT
+        (identica alla torretta evoluta). Ogni volta che entra in una nuova
+        casella vi lascia a terra una nuvola di gas velenoso larga UNA SOLA
+        casella (raggio 0, a differenza di quella - piu' larga - lasciata
+        dagli impatti del mortaio) che dura BLOB_POISON_DURATION_SECONDS
+        (vedi update_poison_zones, che gestisce entrambe le nuvole allo
+        stesso modo)."""
+        if not b.get("wander_path"):
+            target = random.choice(self.free_cells)
+            path = bfs_path(self.maze, self.maze_w, self.maze_h, (b["x"], b["y"]), target)
+            b["wander_path"] = path or []
+        speed = NORMAL_SPEED * BLOB_ALIVE_SPEED_MULT
+        b["move_accum"] = b.get("move_accum", 0.0) + speed * TICK_DT
+        while b["move_accum"] >= 1.0 and b["wander_path"]:
+            b["move_accum"] -= 1.0
+            nx, ny = b["wander_path"].pop(0)
+            b["x"], b["y"] = nx, ny
+            poison = {
+                "id": uuid.uuid4().hex[:8],
+                "owner": b["owner"],
+                "x": nx, "y": ny,
+                "left": BLOB_POISON_DURATION_SECONDS,
+                "tick_cd": POISON_TICK_SECONDS,
+                "radius": 0,  # solo la casella calpestata, non un'area come l'impatto del mortaio
+            }
+            self.poison_zones.append(poison)
+            self.push_event({
+                "kind": "poison_spawn", "id": poison["id"],
+                "x": nx, "y": ny,
+                "duration": BLOB_POISON_DURATION_SECONDS, "radius": 0,
+            })
+
+    def update_blobs_wander(self):
+        """Fa avanzare, ogni tick, tutti i blob "vivi" (bonus 2000 punti,
+        vedi update_blob_wander). I blob non ancora risvegliati restano
+        fermi come prima: non vengono toccati qui."""
+        if not self.blobs:
+            return
+        for b in self.blobs:
+            if b.get("alive"):
+                self.update_blob_wander(b)
 
     def destroy_blob(self, blob, cause, by=None):
         """Unica via per rimuovere un blob dalla mappa: colpito da un laser
@@ -2679,12 +2873,21 @@ class Room:
         for victim in victims:
             self.kill_player(victim, "mortar", shooter_id=bomb["owner"])
 
+        # NERF pet: l'impatto del mortaio distrugge anche il pet AVVERSARIO
+        # (non il proprio) che si trova nel raggio dello scoppio, come gia'
+        # succede con mine/missili/torrette.
+        for pet in list(self.pets):
+            if pet["owner"] != bomb["owner"] \
+                    and abs(pet["x"] - bomb["x1"]) + abs(pet["y"] - bomb["y1"]) <= MORTAR_BLAST_RADIUS_CELLS:
+                self.destroy_pet(pet, "mortar", bomb["owner"])
+
         poison = {
             "id": uuid.uuid4().hex[:8],
             "owner": bomb["owner"],
             "x": bomb["x1"], "y": bomb["y1"],
             "left": POISON_DURATION_SECONDS,
             "tick_cd": POISON_TICK_SECONDS,
+            "radius": POISON_RADIUS_CELLS,
         }
         self.poison_zones.append(poison)
         self.push_event({
@@ -2694,12 +2897,15 @@ class Room:
         })
 
     def update_poison_zones(self):
-        """Avanza ogni nuvola velenosa lasciata a terra dagli impatti del
-        mortaio: ogni POISON_TICK_SECONDS toglie una vita a chiunque
-        (avversario del proprietario) si trovi ancora entro
-        POISON_RADIUS_CELLS caselle dal centro, esattamente come il colpo
-        diretto (stessa immunita' di ghost/protezione post-respawn). La
-        nuvola svanisce da sola dopo POISON_DURATION_SECONDS."""
+        """Avanza ogni nuvola velenosa lasciata a terra: dagli impatti del
+        mortaio (raggio POISON_RADIUS_CELLS, dura POISON_DURATION_SECONDS)
+        o dalla scia del blob vivo (bonus 2000 punti: raggio 0, una sola
+        casella, dura BLOB_POISON_DURATION_SECONDS, vedi
+        update_blob_wander). Ogni POISON_TICK_SECONDS toglie una vita a
+        chiunque (avversario del proprietario) si trovi ancora entro il
+        raggio proprio di QUELLA nuvola dal centro, esattamente come il
+        colpo diretto (stessa immunita' di ghost/protezione post-respawn).
+        Ciascuna nuvola svanisce da sola scaduto il proprio tempo."""
         if not self.poison_zones:
             return
         remaining = []
@@ -2708,11 +2914,12 @@ class Room:
             pz["tick_cd"] -= TICK_DT
             if pz["tick_cd"] <= 0:
                 pz["tick_cd"] += POISON_TICK_SECONDS
+                radius = pz.get("radius", POISON_RADIUS_CELLS)
                 victims = [
                     p for p in self.players.values()
                     if p.alive and p.id != pz["owner"]
                     and p.ghost_left <= 0 and p.prot_left <= 0
-                    and abs(p.x - pz["x"]) + abs(p.y - pz["y"]) <= POISON_RADIUS_CELLS
+                    and abs(p.x - pz["x"]) + abs(p.y - pz["y"]) <= radius
                 ]
                 for victim in victims:
                     self.kill_player(victim, "poison", shooter_id=pz["owner"])
@@ -2733,10 +2940,16 @@ class Room:
         if self.turrets:
             remaining = []
             for t in self.turrets:
-                destroyer = next(
-                    (a for a in armored if a.id != t["owner"] and a.x == t["x"] and a.y == t["y"]),
-                    None,
-                )
+                # NERF: la corazza laser distrugge SOLO la torretta nella sua
+                # versione normale, non piu' quella evoluta (robot mobile,
+                # bonus 1000 punti): il resto della logica (mine/mortai/pet)
+                # resta invariato.
+                destroyer = None
+                if not t.get("evolved", False):
+                    destroyer = next(
+                        (a for a in armored if a.id != t["owner"] and a.x == t["x"] and a.y == t["y"]),
+                        None,
+                    )
                 if destroyer is not None:
                     self.push_event({
                         "kind": "turret_destroyed", "id": t["id"],
@@ -2828,15 +3041,24 @@ class Room:
         })
 
     def update_pets(self):
-        """Il pet NON spara piu' alcun proiettile. Finche' non ha agganciato
-        nessuno insegue il proprietario (come prima, fermandosi entro
-        PET_STAY_RANGE caselle). Ad ogni tick, se non ha gia' un bersaglio,
-        cerca il nemico vivo piu' vicino entro PET_RANGE_CELLS (6) caselle:
-        appena lo trova lo aggancia e da quel momento lo insegue ATTIVAMENTE
-        (bfs_path, mai attraverso i muri, esattamente come il missile
-        guidato) ovunque vada, finche' non lo raggiunge o il bersaglio non
-        muore/si disconnette. Al contatto (stessa cella) gli fa perdere una
-        vita con il tocco, come il ninja o la corazza laser."""
+        """NERF: il pet non uccide piu' al contatto. Ora spara come una
+        piccola torretta mobile (riusa esattamente la meccanica dei
+        proiettili laser di self.lasers, stessa di torretta/laser
+        principale) contro il nemico vivo piu' vicino entro PET_RANGE_CELLS
+        (6) caselle, con la stessa cadenza della torretta - e puo' farlo in
+        QUALSIASI direzione lo separi dal bersaglio, anche mentre si sta
+        muovendo nello stesso istante.
+
+        NERF: il pet NON si allontana piu' dal proprietario per inseguire un
+        nemico: il suo movimento segue SEMPRE e SOLO il proprietario
+        (fermandosi entro PET_STAY_RANGE caselle da lui), esattamente come
+        quando non aveva alcun bersaglio agganciato. Il fuoco e' del tutto
+        indipendente dal movimento.
+
+        Il pet resta vulnerabile come prima a mine/missili
+        guidati/torrette/mortai/fulmine/corazza/bombolone/mongolfiera/blob
+        (vedi check_mines/move_missiles/move_lasers/land_bomb/
+        try_activate_lightning/check_armor_effects/explode_superbomb/...)."""
         if not self.pets:
             return
         for pet in list(self.pets):
@@ -2844,7 +3066,7 @@ class Room:
             if owner is None:
                 continue
 
-            # ---- mantenimento/selezione del bersaglio agganciato ----
+            # ---- mantenimento/selezione del bersaglio da COLPIRE (non da inseguire) ----
             target = self.players.get(pet.get("target_id"))
             if target is not None and not target.alive:
                 target = None
@@ -2855,16 +3077,11 @@ class Room:
                         abs(candidate.x - pet["x"]) + abs(candidate.y - pet["y"]) <= PET_RANGE_CELLS:
                     target = candidate
                     pet["target_id"] = candidate.id
-                    pet["path"] = []  # forza un ricalcolo immediato del percorso verso il nuovo bersaglio
             pet["aim"] = [target.x, target.y] if target is not None else None
 
-            # ---- movimento: insegue il bersaglio agganciato, altrimenti il proprietario ----
-            if target is not None:
-                chase_x, chase_y = target.x, target.y
-                stay_range = 0  # nessuna distanza di sicurezza: deve arrivare a contatto
-            else:
-                chase_x, chase_y = owner.x, owner.y
-                stay_range = PET_STAY_RANGE
+            # ---- movimento: segue SEMPRE e SOLO il proprietario, mai un nemico ----
+            chase_x, chase_y = owner.x, owner.y
+            stay_range = PET_STAY_RANGE
             dist = abs(chase_x - pet["x"]) + abs(chase_y - pet["y"])
             if dist > stay_range:
                 pet["retarget_cd"] -= TICK_DT
@@ -2882,8 +3099,8 @@ class Room:
                     nx, ny = pet["path"].pop(0)
                     pet["x"], pet["y"] = nx, ny
                     # Appena e' arrivato abbastanza vicino si ferma subito,
-                    # invece di continuare a scavalcare il bersaglio/il
-                    # proprietario ad ogni tick.
+                    # invece di continuare a scavalcare il proprietario ad
+                    # ogni tick.
                     if abs(chase_x - pet["x"]) + abs(chase_y - pet["y"]) <= stay_range:
                         pet["path"] = []
                         break
@@ -2891,14 +3108,34 @@ class Room:
                 pet["path"] = []
                 pet["move_accum"] = 0.0
 
-            # ---- attacco al contatto (nessun proiettile, come il ninja/la corazza) ----
-            if target is not None and target.alive \
-                    and target.ghost_left <= 0 and target.prot_left <= 0 \
-                    and pet["x"] == target.x and pet["y"] == target.y:
-                self.kill_player(target, "pet", shooter_id=pet["owner"])
-                pet["target_id"] = None
-                pet["aim"] = None
-                pet["path"] = []
+            # ---- fuoco: spara verso il bersaglio agganciato, indipendentemente dal movimento ----
+            pet["fire_cd"] = pet.get("fire_cd", 0.0) - TICK_DT
+            if target is not None and pet["fire_cd"] <= 0:
+                pet["fire_cd"] = TURRET_FIRE_INTERVAL_SECONDS
+                ddx, ddy = target.x - pet["x"], target.y - pet["y"]
+                horiz = (1, 0) if ddx >= 0 else (-1, 0)
+                vert = (0, 1) if ddy >= 0 else (0, -1)
+                cand = [horiz, vert] if abs(ddx) >= abs(ddy) else [vert, horiz]
+                dx, dy = cand[0]
+                if is_wall(self.maze, self.maze_w, self.maze_h, pet["x"] + dx, pet["y"] + dy) \
+                        and not is_wall(self.maze, self.maze_w, self.maze_h,
+                                        pet["x"] + cand[1][0], pet["y"] + cand[1][1]):
+                    dx, dy = cand[1]
+                if not is_wall(self.maze, self.maze_w, self.maze_h, pet["x"] + dx, pet["y"] + dy):
+                    dir_name = next((k for k, v in DIRECTIONS.items() if v == (dx, dy)), "right")
+                    laser = {
+                        "id": uuid.uuid4().hex[:8],
+                        "owner": pet["owner"],
+                        "x": pet["x"], "y": pet["y"],
+                        "dx": dx, "dy": dy,
+                        "move_accum": 0.0,
+                        "bounce_left": None,
+                    }
+                    self.lasers.append(laser)
+                    self.push_event({
+                        "kind": "laser_fire", "id": laser["id"], "shooter": pet["owner"],
+                        "x": pet["x"], "y": pet["y"], "dir": dir_name, "pet": True,
+                    })
 
     def check_win(self):
         """Il round finisce quando resta UN SOLO giocatore vivo (tra
@@ -2940,7 +3177,11 @@ class Room:
             "pets": [self.pet_public(pt) for pt in self.pets],
             "mortars": [self.mortar_public(mt) for mt in self.mortars],
             "poison_zones": [
-                {"id": pz["id"], "x": pz["x"], "y": pz["y"], "left": round(pz["left"], 2)}
+                {
+                    "id": pz["id"], "x": pz["x"], "y": pz["y"],
+                    "left": round(pz["left"], 2),
+                    "radius": pz.get("radius", POISON_RADIUS_CELLS),
+                }
                 for pz in self.poison_zones
             ],
             "bombs": [self.bomb_public(bomb) for bomb in self.bombs],
@@ -3015,6 +3256,8 @@ class Room:
             p.balloon_launched = False
             p.has_blob = False
             p.blob_placed = False
+            p.has_blob_alive = False
+            p.blob_alive_used = False
             p.kills = 0
 
     # ---------- main loop ----------
@@ -3057,7 +3300,8 @@ class Room:
                 self.update_mortars() # bonus 1200 punti: il mortaio spara bombe ad arco contro il nemico piu' vicino entro 15 caselle
                 self.move_lasers()    # avanza i proiettili laser in volo (con eventuale rimbalzo)
                 self.check_mines()    # bonus 200 punti: fa esplodere le mine calpestate
-                self.check_blobs()    # bonus 1800 punti: fa mangiare al blob chiunque gli passi sopra (non si consuma)
+                self.update_blobs_wander()  # bonus 2000 punti: fa vagare i blob "vivi" lasciando la scia velenosa
+                self.check_blobs()    # bonus 1800/2000 punti: fa mangiare al blob (fermo o vivo) chiunque tocchi o gli sia adiacente
                 self.move_missiles()  # bonus 400 punti: avanza i missili guidati verso il bersaglio
                 self.update_bombs()   # bonus 1200 punti: avanza le bombe di mortaio in volo e le fa esplodere all'impatto
                 self.update_poison_zones()  # bonus 1200 punti: le nuvole velenose lasciate dagli impatti continuano a fare danno nel tempo
@@ -3329,14 +3573,19 @@ async def handle_client(ws):
                 # la stessa pressione fa librare in aria la mongolfiera
                 # (bonus 1600 punti, vedi try_launch_balloon). Una volta che
                 # ANCHE la mongolfiera e' gia' stata lanciata, la stessa
-                # pressione piazza infine il blob gelatinoso (bonus 1800
-                # punti, vedi try_place_blob). Utilizzabile una sola volta
-                # ciascuno per giocatore (vedi try_place_mortar/
-                # try_place_superbomb/try_launch_balloon/try_place_blob): il
+                # pressione piazza il blob gelatinoso (bonus 1800 punti,
+                # vedi try_place_blob). Una volta che ANCHE il blob e' gia'
+                # stato piazzato, la stessa pressione lo risveglia infine
+                # facendolo vagare per la mappa (bonus 2000 punti, vedi
+                # try_animate_blob). Utilizzabile una sola volta ciascuno
+                # per giocatore (vedi try_place_mortar/try_place_superbomb/
+                # try_launch_balloon/try_place_blob/try_animate_blob): il
                 # server resta l'autorita'.
                 if not room or not player:
                     continue
-                if player.mortar_placed and player.superbomb_placed and player.balloon_launched:
+                if player.mortar_placed and player.superbomb_placed and player.balloon_launched and player.blob_placed:
+                    room.try_animate_blob(player)
+                elif player.mortar_placed and player.superbomb_placed and player.balloon_launched:
                     room.try_place_blob(player)
                 elif player.mortar_placed and player.superbomb_placed:
                     room.try_launch_balloon(player)

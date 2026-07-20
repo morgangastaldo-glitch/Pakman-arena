@@ -587,6 +587,8 @@ const BONUS_STEPS = [
   { at: 1200, label: "MORTAIO (tasto 0)" },
   { at: 1400, label: "BOMBOLONE: dopo il mortaio (tasto 0)" },
   { at: 1600, label: "MONGOLFIERA: dopo il bombolone (tasto 0)" },
+  { at: 1800, label: "BLOB: dopo la mongolfiera (tasto 1)" },
+  { at: 2000, label: "BLOB VIVO: risveglialo dopo averlo piazzato (tasto 1)" },
 ];
 const MISSILE_SPEED_MULT = 1.1; // deve restare identica a MISSILE_SPEED_MULT in common.py
 const TRAP_DURATION_SECONDS = 3; // deve restare identica a TRAP_DURATION_SECONDS in common.py
@@ -989,6 +991,15 @@ function playBlobDestroyed(){
   noiseBurst(0.16, 0.14);
   sweep(500, 140, 0.18, "sawtooth", 0.1);
   tone(90, 0.12, "sine", 0.08, 0.02);
+}
+// Risveglio del blob (bonus 2000 punti, tasto 1 dopo il blob fermo): un
+// "risucchio" viscido e crescente seguito da un ringhio basso, come se la
+// massa gelatinosa si staccasse da terra e si animasse per mettersi in
+// moto - distinto dal "plop" secco del semplice piazzamento.
+function playBlobAnimate(){
+  sweep(90, 260, 0.28, "sine", 0.13);
+  tone(70, 0.3, "sawtooth", 0.12, 0.08);
+  noiseBurst(0.12, 0.08);
 }
 // Colpo di laser: sweep acuto e secco verso il basso.
 function playLaser(){
@@ -1579,6 +1590,18 @@ function lightenHex(hex, amt){
   const lg = Math.min(255, Math.round(g + (255 - g) * amt));
   const lb = Math.min(255, Math.round(b + (255 - b) * amt));
   return "rgb(" + lr + "," + lg + "," + lb + ")";
+}
+
+// Come lightenHex ma verso il nero: usata per il bordo scuro delle mine,
+// derivato dal colore del proprietario invece di un rosso/verde fisso.
+function darkenHex(hex, amt){
+  const h = hex.replace("#", "");
+  if (h.length !== 6) return hex;
+  const r = parseInt(h.slice(0,2), 16), g = parseInt(h.slice(2,4), 16), b = parseInt(h.slice(4,6), 16);
+  const dr = Math.max(0, Math.round(r * (1 - amt)));
+  const dg = Math.max(0, Math.round(g * (1 - amt)));
+  const db = Math.max(0, Math.round(b * (1 - amt)));
+  return "rgb(" + dr + "," + dg + "," + db + ")";
 }
 
 function buildMazeLayer(){
@@ -2241,12 +2264,12 @@ function drawSparks(now){
 }
 
 // Mine posate sulla mappa (bonus 200 punti): un rettangolo pulsante, ben
-// visibile. Colore diverso a seconda del proprietario, cosi' si riconosce a
-// colpo d'occhio se e' "sicura" o no: VERDE le proprie, ROSSE quelle
-// altrui. Sempre visibili a chi le ha posate. Le mine ALTRUI restano
-// nascoste finche' non ci si avvicina entro MINE_VISIBILITY_RANGE caselle
-// (distanza a scacchi/Chebyshev) dal proprio personaggio, poi diventano
-// visibili anche loro (si nascondono di nuovo se ci si allontana).
+// visibile, nello STESSO colore del giocatore che l'ha piazzata (cosi' si
+// riconosce sempre di chi e', propria o altrui). Sempre visibili a chi le
+// ha posate. Le mine ALTRUI restano nascoste finche' non ci si avvicina
+// entro MINE_VISIBILITY_RANGE caselle (distanza a scacchi/Chebyshev) dal
+// proprio personaggio, poi diventano visibili anche loro (si nascondono di
+// nuovo se ci si allontana).
 function drawMines(now){
   const all = (currSnapshot && currSnapshot.mines) || [];
   const me = findPlayer(currSnapshot, myId);
@@ -2263,8 +2286,9 @@ function drawMines(now){
     const cy = m.y * BASE_CELL + BASE_CELL / 2;
     const pulse = 0.6 + 0.4 * Math.abs(Math.sin(now / 200));
     const size = 10;   // lato del rettangolo esterno (ingrandito rispetto al vecchio disco da 4px di raggio)
-    const mine = m.owner === myId ? "#2bff5c" : "#ff2b2b";
-    const mineDark = m.owner === myId ? "#004d17" : "#5c0000";
+    const mineOwner = findPlayer(currSnapshot, m.owner);
+    const mine = (mineOwner && COLOR_HEX[(mineOwner.colors || [])[0]]) || (m.owner === myId ? "#2bff5c" : "#ff2b2b");
+    const mineDark = darkenHex(mine, 0.7);
     // Alone morbido attorno al rettangolo, pulsa insieme al resto.
     ctx.globalAlpha = 0.25 * pulse;
     ctx.fillStyle = mine;
@@ -2418,13 +2442,15 @@ function drawMissiles(now){
     const pos = getRenderedMissilePos(mz, now);
     const cx = pos.x * BASE_CELL + BASE_CELL / 2;
     const cy = pos.y * BASE_CELL + BASE_CELL / 2;
+    const owner = findPlayer(currSnapshot, mz.owner);
+    const col = (owner && COLOR_HEX[(owner.colors || [])[0]]) || "#5ab8ff";
     ctx.globalAlpha = 0.3;
-    ctx.fillStyle = "#8fd3ff";
+    ctx.fillStyle = col;
     ctx.beginPath(); ctx.arc(cx, cy, 7, 0, Math.PI * 2); ctx.fill();
     ctx.globalAlpha = 0.95;
     ctx.fillStyle = "#e8f7ff";
     ctx.beginPath(); ctx.arc(cx, cy, 3, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = "#5ab8ff";
+    ctx.strokeStyle = col;
     ctx.lineWidth = 1.4;
     ctx.beginPath(); ctx.arc(cx, cy, 5, 0, Math.PI * 2); ctx.stroke();
   });
@@ -2761,17 +2787,26 @@ function drawBalloons(now){
 }
 
 // Blob di melma (bonus 1800 punti, tasto 1 dopo la mongolfiera): una massa
-// grumosa e colante, immobile, piazzata in mezzo alla strada
-// (server-authoritative, vedi try_place_blob/blob_public in main.py).
-// Blocca la casella e mangia chiunque non sia il proprietario ci passi
-// sopra. Disegnata come un cumulo di melma irregolare (corpo largo alla
-// base, come una pozza, con bozzi asimmetrici sopra e gocce che colano ai
-// bordi), interamente contenuta in una singola casella. NIENTE occhi: il
-// volto e' solo una bocca spalancata e arrabbiata (zanne + sopracciglia
-// aggrottate), per rendere subito chiaro che e' un ostacolo aggressivo che
-// morde chi si avvicina, non un personaggio "carino". Colore base viola
-// melma scuro, con un anello sottile nel colore del proprietario cosi'
-// resta chiaro chi l'ha piazzato.
+// grumosa e colante, piazzata in mezzo alla strada (server-authoritative,
+// vedi try_place_blob/blob_public in main.py). Blocca la casella e mangia
+// chiunque non sia il proprietario le sia vicino (anche solo adiacente, non
+// piu' solo chi ci passa esattamente sopra). Disegnata come un cumulo di
+// melma irregolare (corpo largo alla base, come una pozza, con bozzi
+// asimmetrici sopra e gocce che colano ai bordi), interamente contenuta in
+// una singola casella. NIENTE occhi: il volto e' solo una bocca spalancata
+// e arrabbiata (zanne + sopracciglia aggrottate), per rendere subito chiaro
+// che e' un ostacolo aggressivo che morde chi si avvicina, non un
+// personaggio "carino". Colore base viola melma scuro, con un anello
+// sottile nel colore del proprietario cosi' resta chiaro chi l'ha piazzato.
+//
+// Se risvegliato (b.alive, bonus 2000 punti) il blob non resta piu' fermo:
+// vaga sulla mappa (vedi update_blob_wander in main.py). Per renderlo
+// leggibile come "vivo" a colpo d'occhio, quando si muove respira piu'
+// vistosamente e lascia dietro di se', nella direzione di marcia, un paio
+// di gocce di melma che sfumano subito: un piccolo "strascico" oltre alla
+// vera scia velenosa (quella e' server-authoritative, vedi
+// poison_zones/drawPoisonZones), puramente decorativo.
+const blobLastPos = {};
 function drawBlobs(now){
   const list = (currSnapshot && currSnapshot.blobs) || [];
   if (!list.length) return;
@@ -2781,7 +2816,17 @@ function drawBlobs(now){
     const cy = b.y * BASE_CELL + BASE_CELL / 2;
     const owner = findPlayer(currSnapshot, b.owner);
     const col = (owner && COLOR_HEX[(owner.colors || [])[0]]) || "#8a4fc9";
-    const wob = Math.sin(now / 260) * 1.4;   // leggero "respiro" gelatinoso
+    // Confronto con la posizione dell'ultimo frame disegnato: serve solo a
+    // capire SE e IN CHE DIREZIONE il blob si sta muovendo in questo
+    // istante, per il piccolo "strascico" decorativo qui sotto e per un
+    // respiro piu' vistoso mentre vaga. Puramente client-side/estetico: la
+    // posizione vera resta sempre quella autoritativa del server.
+    const last = blobLastPos[b.id];
+    let mx = 0, my = 0;
+    if (last){ mx = b.x - last.x; my = b.y - last.y; }
+    blobLastPos[b.id] = { x: b.x, y: b.y };
+    const moving = !!b.alive && (Math.abs(mx) > 0.0006 || Math.abs(my) > 0.0006);
+    const wob = Math.sin(now / (moving ? 150 : 260)) * (moving ? 2.2 : 1.4);   // "respiro" gelatinoso, piu' vistoso quando si muove
     const R = BASE_CELL * 0.47;              // resta SEMPRE dentro la casella
 
     // Alone morbido, nel colore del proprietario.
@@ -2874,14 +2919,34 @@ function drawBlobs(now){
       ctx.lineTo(cx + i * R * 0.22, cy + R * 0.27 + wob);
       ctx.closePath(); ctx.fill();
     }
+
+    // Strascico decorativo: solo mentre il blob e' vivo E si sta
+    // effettivamente muovendo, un paio di gocce che sfumano subito dietro
+    // di lui, nella direzione OPPOSTA al moto. Puramente estetico: la scia
+    // velenosa vera (quella che fa danno) e' disegnata da drawPoisonZones.
+    if (moving){
+      const len = Math.hypot(mx, my) || 1;
+      const bx = -mx / len, by = -my / len;
+      ctx.fillStyle = col;
+      for (let i = 1; i <= 2; i++){
+        ctx.globalAlpha = 0.32 / i;
+        ctx.beginPath();
+        ctx.arc(cx + bx * R * (0.85 + i * 0.55), cy + by * R * (0.85 + i * 0.55), R * (0.15 / i), 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
   });
   ctx.restore();
 }
 
-// Nuvola velenosa lasciata a terra dall'impatto del mortaio (bonus 1200
-// punti): un'area verde tossica che pulsa e "ribolle" finche' non svanisce
-// (server-authoritative, vedi poison_zones/pz.left in main.py). Il raggio
-// disegnato coincide con POISON_RADIUS_CELLS lato server.
+// Nuvola velenosa lasciata a terra: dall'impatto del mortaio (bonus 1200
+// punti, raggio POISON_RADIUS_CELLS) o dalla scia del blob vivo (bonus 2000
+// punti, larga una sola casella: raggio 0) - un'area verde tossica che
+// pulsa e "ribolle" finche' non svanisce (server-authoritative, vedi
+// poison_zones/pz.left/pz.radius in main.py). Il raggio disegnato dipende
+// da pz.radius: piccolo per l'impronta del blob, piu' ampio per lo scoppio
+// del mortaio.
 const poisonBubbleSeeds = {};
 function drawPoisonZones(now){
   const list = (currSnapshot && currSnapshot.poison_zones) || [];
@@ -2890,7 +2955,8 @@ function drawPoisonZones(now){
   list.forEach(function(pz){
     const cx = pz.x * BASE_CELL + BASE_CELL / 2;
     const cy = pz.y * BASE_CELL + BASE_CELL / 2;
-    const r = BASE_CELL * 1.55;
+    const rad = (typeof pz.radius === "number") ? pz.radius : 1;
+    const r = BASE_CELL * (0.55 + rad * 1.0);
     // Sfuma dolcemente negli ultimi istanti prima di svanire.
     const fade = Math.min(1, pz.left / 0.6);
     const pulse = 0.75 + 0.25 * Math.sin(now / 220);
@@ -3673,19 +3739,20 @@ function onGameEvent(msg){
         extra_life:   ["VITA EXTRA! \u2665", ""],
         extra_life_3: ["3 VITE EXTRA! \u2665\u2665\u2665", ""],
         laser:        ["LASER SBLOCCATO!", "spara da solo quando un nemico e' entro 12 caselle"],
-        mines:        ["MINE SBLOCCATE!", "2 mine \u00b7 premi 1 per posarle (poi mortaio/bombolone/mongolfiera/blob)"],
+        mines:        ["MINE SBLOCCATE!", "2 mine \u00b7 premi 1 per posarle (poi mortaio/bombolone/mongolfiera/blob/risveglio blob)"],
         ninja:        ["NINJA SBLOCCATO!", "invisibilit\u00e0 \u00b7 premi 2 per attivarla"],
         missile:      ["MISSILE GUIDATO!", "premi 3 per lanciarlo"],
         trap:         ["TRAPPOLA SBLOCCATA!", "3 secondi \u00b7 3 usi \u00b7 premi 4"],
         turret:       ["TORRETTA SBLOCCATA!", "raggio 10 caselle \u00b7 premi 5 per piazzarla"],
         armor:        ["CORAZZA LASER SBLOCCATA!", "20 secondi \u00b7 premi 6 per attivarla"],
         lightning:    ["FULMINE SBLOCCATO!", "colpisce un avversario a caso \u00b7 premi 7 per scatenarlo"],
-        pet:          ["PET FEDELE SBLOCCATO!", "premi 8 per evocarlo \u00b7 aggancia e insegue chi si avvicina entro 6 caselle"],
+        pet:          ["PET FEDELE SBLOCCATO!", "premi 8 per evocarlo \u00b7 resta sempre vicino a te e spara a chi entra entro 6 caselle"],
         robot:        ["EVOLUZIONE NAVICELLA SBLOCCATA!", "premi 9 per evolvere la torretta, se e' ancora viva"],
         mortar:       ["MORTAIO SBLOCCATO!", "raggio 15 caselle \u00b7 premi 1 per schierarlo \u00b7 scavalca i muri"],
         superbomb:    ["BOMBOLONE SBLOCCATO!", "esplosione raggio 8 caselle \u00b7 premi 1 (dopo il mortaio) per piazzarlo"],
         balloon:      ["MONGOLFIERA SBLOCCATA!", "vaga sulla mappa e sgancia bombe \u00b7 premi 1 (dopo il bombolone) per farla librare"],
         blob:         ["BLOB SBLOCCATO!", "blocca la strada e mangia chi passa \u00b7 premi 1 (dopo la mongolfiera) per piazzarlo \u00b7 si rimuove solo sparandogli"],
+        blob_alive:   ["BLOB VIVO SBLOCCATO!", "premi 1 (dopo averlo piazzato) per risvegliarlo \u00b7 vaga sulla mappa lasciando una scia velenosa e mangia chi gli e' vicino"],
       };
       const lb = labels[msg.bonus] || ["BONUS!", ""];
       const txt = lb[0] + (lb[1] ? " \u00b7 " + lb[1] : "");
@@ -3834,6 +3901,14 @@ function onGameEvent(msg){
       playBlobPlace();
       break;
     }
+    case "blob_animate": {
+      // Il blob si e' risvegliato (bonus 2000 punti): da ora vaga sulla
+      // mappa lasciando una scia velenosa (vedi poison_spawn) e mangia
+      // anche chi gli e' solo adiacente, non piu' solo chi ci passa sopra.
+      if (msg.player === myId) showToast("Blob risvegliato! Ora vaga sulla mappa lasciando una scia velenosa.");
+      playBlobAnimate();
+      break;
+    }
     case "blob_destroyed": {
       // Il blob (bonus 1800 punti) e' stato distrutto da un laser o da un
       // missile guidato: l'unico modo per rimuoverlo dalla strada (vedi
@@ -3866,7 +3941,7 @@ function onGameEvent(msg){
     }
     case "pet_destroyed": {
       const causeTxt = { mine: "una mina", missile: "un missile guidato", laser: "un colpo laser",
-                          armor: "la corazza laser", lightning: "un fulmine",
+                          armor: "la corazza laser", lightning: "un fulmine", mortar: "un colpo di mortaio",
                           superbomb: "un bombolone", balloon: "una bomba di mongolfiera", blob: "un blob gelatinoso" }[msg.cause] || "un nemico";
       explosions.push({ x: msg.x, y: msg.y, color: (findPlayer(currSnapshot, msg.owner) &&
         COLOR_HEX[(findPlayer(currSnapshot, msg.owner).colors || [])[0]]) || "#fff", start: now });
@@ -4306,14 +4381,14 @@ document.addEventListener("keydown", function(ev){
   // Tasto "1": mette in coda TUTTI i gadget "da piazzare" - prima le mine
   // (bonus 200 punti), poi, solo quando le mine sono finite (o non sono mai
   // state sbloccate), il mortaio (1200) / bombolone (1400) / mongolfiera
-  // (1600) / blob gelatinoso (1800), nell'ordine in cui si sbloccano.
-  // Finche' restano mine disponibili il tasto "1" continua a sganciare
-  // quelle; il resto resta "in coda" e diventa raggiungibile solo dopo. Il
-  // client sceglie solo QUALE messaggio inviare in base al proprio stato
-  // noto (mines_left): il server resta comunque l'autorita' su cosa e'
-  // davvero disponibile, esattamente come gia' faceva per il vecchio tasto
-  // "0" fra mortaio/bombolone/mongolfiera (vedi dispatch di "place_mortar"
-  // in main.py).
+  // (1600) / blob gelatinoso (1800) / risveglio del blob (2000), nell'ordine
+  // in cui si sbloccano. Finche' restano mine disponibili il tasto "1"
+  // continua a sganciare quelle; il resto resta "in coda" e diventa
+  // raggiungibile solo dopo. Il client sceglie solo QUALE messaggio inviare
+  // in base al proprio stato noto (mines_left): il server resta comunque
+  // l'autorita' su cosa e' davvero disponibile, esattamente come gia'
+  // faceva per il vecchio tasto "0" fra mortaio/bombolone/mongolfiera (vedi
+  // dispatch di "place_mortar" in main.py).
   if (ev.key === "1" && !ev.repeat){
     const me = findPlayer(currSnapshot, myId);
     if (me && me.mines && me.mines_left > 0){

@@ -98,6 +98,7 @@ PORTAL_OFF_SECONDS = 30.0
 MISSILE_SPEED_MULT = 1.1        # velocita' del missile = NORMAL_SPEED * 1.1 (di poco piu' veloce di un giocatore normale)
 MISSILES_COUNT = 1              # missili disponibili una volta sbloccato il bonus 400 punti (solo 1)
 MISSILE_RETARGET_SECONDS = 0.15  # ogni quanto il missile ricalcola il percorso verso il bersaglio (che si muove)
+MISSILE_LOCK_DISTANCE = 2        # NERF: entro questa distanza (caselle, Manhattan) dal bersaglio il missile smette di correggere la rotta e prosegue dritto (schivabile)
 
 # ---- bonus 500 punti: trappola (tasto "4") ----
 # Allo sblocco NON scatta nulla in automatico: premendo il tasto "4" il
@@ -257,6 +258,27 @@ BALLOON_RETARGET_EPSILON = 0.15           # sotto questa distanza dalla meta' ne
 # move_lasers/move_missiles in main.py); niente altro lo scalfisce (non le
 # esplosioni di bombolone/mongolfiera, non la corazza laser).
 BLOB_THRESHOLD = 1800
+
+# ---- bonus 2000 punti: blob VIVO/vagante (tasto "1", DOPO il blob fermo) ----
+# Il tasto "1" e' lo STESSO usato per mortaio (1200), bombolone (1400),
+# mongolfiera (1600) e blob (1800): una volta che TUTTI E QUATTRO sono gia'
+# stati piazzati/usati, la pressione SUCCESSIVA del tasto "1" risveglia,
+# UNA SOLA VOLTA per round, il blob gia' piazzato dal giocatore (vedi
+# try_animate_blob in main.py) - a patto che sia ancora vivo sulla mappa
+# (non distrutto da un laser/missile nemico, vedi destroy_blob). Da quel
+# momento il blob smette di restare fermo: vaga a caso per tutta la mappa
+# (via bfs_path, come il robot: mai attraverso i muri) alla stessa velocita'
+# della torretta evoluta (NORMAL_SPEED * ROBOT_SPEED_MULT), lasciando dietro
+# di se' una nuvola di gas velenoso su OGNI singola casella che calpesta
+# camminando (a differenza di quella lasciata dagli impatti del mortaio,
+# larga MORTAR_BLAST_RADIUS_CELLS caselle, questa e' larga una sola casella:
+# raggio 0), che resta attiva BLOB_POISON_DURATION_SECONDS. E' permanente
+# per il resto del round, come tutti gli altri bonus "a comando" da 600
+# punti in su.
+BLOB_ALIVE_THRESHOLD = 2000
+BLOB_ALIVE_SPEED_MULT = ROBOT_SPEED_MULT          # stessa velocita' della torretta evoluta (bonus 1000 punti)
+BLOB_POISON_DURATION_SECONDS = 4.0                # quanto resta a terra ciascuna nuvola della scia del blob vivo
+BLOB_EAT_RANGE_CELLS = 1                          # distanza (caselle, stile scacchi/Chebyshev): il blob mangia anche chi non e' esattamente sopra di lui, ma solo adiacente
 
 # All'impatto, oltre al colpo diretto, la bomba lascia a terra una nuvola di
 # gas velenoso (stile "pozione veleno" di Clash Royale) che resta attiva per
