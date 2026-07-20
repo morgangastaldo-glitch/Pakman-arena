@@ -43,14 +43,14 @@ from websockets.http11 import Response
 from common import (
     TICK_DT, COUNTDOWN_SECONDS, ROUND_SECONDS,
     MAX_PLAYERS, MIN_PLAYERS, NORMAL_SPEED, ASSASSIN_SPEED_MULT,
-    COLORS, CHARACTERS, DIRECTIONS, is_wall, ROOM_CODE_CHARS,
+    COLORS, CHARACTERS, DIRECTIONS, is_wall, ROOM_CODE_CHARS, SECONDARY_ONLY_COLORS,
     pick_random_maze, choose_power_pellet_cells, bfs_path,
     BONUS_THRESHOLDS, GHOST_SECONDS,
     PELLET_POINTS, POWER_PELLET_POINTS, POWER_PELLET_COUNT,
     PELLET_RESPAWN_SECONDS, SUPER_ASSASSIN_THRESHOLD,
     SUPER_ASSASSIN_DURATION_SECONDS, LASER_RANGE_CELLS,
     SPAWN_PROTECT_SECONDS, MIN_SPAWN_DISTANCE, LASER_INTERVAL_SECONDS, LASER_FIRST_DELAY_SECONDS,
-    LASER_PROJECTILE_SPEED, LASER_BOUNCE_DISTANCE, MINES_COUNT,
+    LASER_PROJECTILE_SPEED, LASER_BOUNCE_DISTANCE, MINES_COUNT, SUPERBOMB_COUNT,
     PORTAL_COOLDOWN_SECONDS, PORTAL_ON_SECONDS, PORTAL_OFF_SECONDS,
     MISSILE_SPEED_MULT, MISSILES_COUNT, MISSILE_RETARGET_SECONDS, MISSILE_LOCK_DISTANCE,
     TRAP_THRESHOLD, TRAP_DURATION_SECONDS, TRAP_RANGE, TRAP_MAX_USES,
@@ -232,7 +232,7 @@ class Player:
         # self.superbombs (lista della Room), non qui: qui si tiene solo lo
         # stato dello sblocco/utilizzo, come per gli altri bonus a comando.
         self.has_superbomb = False     # bonus sbloccato (una volta per round)
-        self.superbomb_placed = False  # True dopo il piazzamento: il tasto "1" (dopo il mortaio) e' utilizzabile una sola volta
+        self.superbomb_left = 0        # bomboloni ancora disponibili in questo round (SUPERBOMB_COUNT allo sblocco)
 
         # ---- bonus 1600 punti: mongolfiera vagante (tasto "1", DOPO il bombolone) ----
         self.has_balloon = False       # bonus sbloccato (una volta per round)
@@ -316,7 +316,8 @@ class Player:
             "mortar": self.has_mortar,
             "mortar_placed": self.mortar_placed,
             "superbomb": self.has_superbomb,
-            "superbomb_placed": self.superbomb_placed,
+            "superbomb_left": self.superbomb_left,
+            "superbomb_placed": self.superbomb_left <= 0 and self.has_superbomb,
             "balloon": self.has_balloon,
             "balloon_launched": self.balloon_launched,
             "blob": self.has_blob,
@@ -663,7 +664,7 @@ class Room:
             p.has_mortar = False
             p.mortar_placed = False
             p.has_superbomb = False
-            p.superbomb_placed = False
+            p.superbomb_left = 0
             p.has_balloon = False
             p.balloon_launched = False
             p.has_blob = False
@@ -1167,6 +1168,7 @@ class Room:
         ):
             p.claimed.add(SUPERBOMB_THRESHOLD)
             p.has_superbomb = True
+            p.superbomb_left = SUPERBOMB_COUNT
             self.push_event({
                 "kind": "bonus", "player": p.id,
                 "bonus": "superbomb", "points": SUPERBOMB_THRESHOLD,
@@ -2241,19 +2243,24 @@ class Room:
         """Tasto '0', RIUSATO: viene chiamato dal dispatch del messaggio
         "place_mortar" solo quando player.mortar_placed e' gia' True (finche'
         il mortaio non e' stato piazzato, quella stessa pressione richiama
-        invece try_place_mortar). Piazza UNA SOLA VOLTA (per tutto il round)
-        un bombolone nella cella corrente del giocatore: un ordigno rotondo,
-        grande quanto una casella, dello stesso colore del proprietario e
-        visibile a TUTTI. Resta a terra per SUPERBOMB_FUSE_SECONDS, poi
-        esplode (vedi update_superbombs/explode_superbomb) con un'onda
-        concentrica che distrugge/neutralizza tutto cio' che si trova entro
-        SUPERBOMB_RADIUS_CELLS caselle.
+        invece try_place_mortar). Piazza un bombolone nella cella corrente
+        del giocatore: un ordigno rotondo, grande quanto una casella, dello
+        stesso colore del proprietario e visibile a TUTTI. Disponibili
+        SUPERBOMB_COUNT bomboloni per round (come le mine): finche'
+        player.superbomb_left non arriva a zero, ogni nuova pressione del
+        tasto piazza un altro bombolone nella cella corrente. Ognuno resta
+        a terra per SUPERBOMB_FUSE_SECONDS, poi esplode (vedi
+        update_superbombs/explode_superbomb) con un'onda concentrica che
+        distrugge/neutralizza tutto cio' che si trova entro
+        SUPERBOMB_RADIUS_CELLS caselle. Solo quando ENTRAMBI i bomboloni
+        sono stati piazzati (superbomb_left arriva a 0) la stessa pressione
+        del tasto passa allo step successivo della catena (mongolfiera).
 
         Se il giocatore e' intrappolato dalla trappola di un avversario,
         NON puo' usare alcun bonus finche' non torna libero di muoversi."""
-        if not player.alive or player.trapped_left > 0 or not player.has_superbomb or player.superbomb_placed or player.is_assassin or player.armor_active:
+        if not player.alive or player.trapped_left > 0 or not player.has_superbomb or player.superbomb_left <= 0 or player.is_assassin or player.armor_active:
             return
-        player.superbomb_placed = True
+        player.superbomb_left -= 1
         bomb = {
             "id": uuid.uuid4().hex[:8],
             "owner": player.id,
@@ -2413,7 +2420,7 @@ class Room:
     def try_launch_balloon(self, player):
         """Tasto '0', RIUSATO una terza volta: viene chiamato dal dispatch
         del messaggio "place_mortar" solo quando sia player.mortar_placed
-        sia player.superbomb_placed sono gia' True (finche' non lo sono
+        sia player.superbomb_left <= 0 (bomboloni entrambi piazzati, finche' non lo sono
         entrambi, quella stessa pressione richiama invece
         try_place_mortar/try_place_superbomb). Fa librare in aria, UNA SOLA
         VOLTA per round, DUE mongolfiere (con teschio disegnato sul pallone,
@@ -2626,7 +2633,7 @@ class Room:
     def try_place_blob(self, player):
         """Tasto '1', RIUSATO una quarta volta: viene chiamato dal dispatch
         del messaggio "place_mortar" solo quando player.mortar_placed,
-        player.superbomb_placed e player.balloon_launched sono gia' tutti e
+        player.superbomb_left <= 0 e player.balloon_launched sono gia' tutti e
         tre True (finche' non lo sono tutti, quella stessa pressione
         richiama invece try_place_mortar/try_place_superbomb/
         try_launch_balloon). Piazza UNA SOLA VOLTA (per tutto il round) un
@@ -2722,7 +2729,7 @@ class Room:
     def try_animate_blob(self, player):
         """Tasto '1', RIUSATO una quinta volta: viene chiamato dal dispatch
         del messaggio "place_mortar" solo quando player.mortar_placed,
-        player.superbomb_placed, player.balloon_launched e
+        player.superbomb_left <= 0, player.balloon_launched e
         player.blob_placed sono gia' tutti e quattro True (finche' non lo
         sono, quella stessa pressione richiama invece
         try_place_mortar/try_place_superbomb/try_launch_balloon/
@@ -3411,7 +3418,7 @@ class Room:
             p.has_mortar = False
             p.mortar_placed = False
             p.has_superbomb = False
-            p.superbomb_placed = False
+            p.superbomb_left = 0
             p.has_balloon = False
             p.balloon_launched = False
             p.has_blob = False
@@ -3591,11 +3598,17 @@ async def handle_client(ws):
                 if not isinstance(raw, list):
                     continue
                 # Dedup mantenendo l'ordine (colors[0] = primario), max 2,
-                # solo nomi validi.
+                # solo nomi validi. I colori in SECONDARY_ONLY_COLORS (il
+                # nero) non possono MAI finire in posizione primaria: da
+                # soli, su sfondo quasi nero, sarebbero pressoche' invisibili
+                # (vedi anche il blocco lato client in toggleMyColor).
                 seen = []
                 for c in raw:
-                    if c in COLORS and c not in seen:
-                        seen.append(c)
+                    if c not in COLORS or c in seen:
+                        continue
+                    if c in SECONDARY_ONLY_COLORS and len(seen) == 0:
+                        continue
+                    seen.append(c)
                     if len(seen) >= MAX_PLAYER_COLORS:
                         break
                 if not seen:
@@ -3731,22 +3744,26 @@ async def handle_client(ws):
                 # Tasto "1" lato client: la PRIMA pressione schiera il
                 # mortaio (bonus 1200 punti). Una volta che il mortaio e'
                 # gia' stato piazzato, la stessa pressione innesca invece il
-                # bombolone (bonus 1400 punti, vedi try_place_superbomb).
-                # Una volta che ANCHE il bombolone e' gia' stato piazzato,
-                # la stessa pressione fa librare in aria la mongolfiera
-                # (bonus 1600 punti, vedi try_launch_balloon). Una volta che
-                # ANCHE la mongolfiera e' gia' stata lanciata, la stessa
-                # pressione piazza il blob gelatinoso (bonus 1800 punti,
-                # vedi try_place_blob). Una volta che ANCHE il blob e' gia'
-                # stato piazzato, la stessa pressione lo risveglia infine
+                # bombolone (bonus 1400 punti, vedi try_place_superbomb):
+                # ce ne sono DUE disponibili (SUPERBOMB_COUNT), quindi le
+                # DUE pressioni successive ne piazzano uno ciascuna. Solo
+                # una volta che ENTRAMBI i bomboloni sono stati piazzati la
+                # stessa pressione fa librare in aria la mongolfiera (bonus
+                # 1600 punti, vedi try_launch_balloon). Una volta che ANCHE
+                # la mongolfiera e' gia' stata lanciata, la stessa pressione
+                # piazza il blob gelatinoso (bonus 1800 punti, vedi
+                # try_place_blob). Una volta che ANCHE il blob e' gia' stato
+                # piazzato, la stessa pressione lo risveglia infine
                 # facendolo vagare per la mappa (bonus 2000 punti, vedi
-                # try_animate_blob). Utilizzabile una sola volta ciascuno
-                # per giocatore (vedi try_place_mortar/try_place_superbomb/
+                # try_animate_blob). Ogni step e' utilizzabile una sola
+                # volta per giocatore (i due bomboloni fanno eccezione, ne
+                # hanno due) (vedi try_place_mortar/try_place_superbomb/
                 # try_launch_balloon/try_place_blob/try_animate_blob): il
                 # server resta l'autorita'.
                 if not room or not player:
                     continue
-                if player.mortar_placed and player.superbomb_placed and player.balloon_launched and player.blob_placed:
+                superbomb_done = player.has_superbomb and player.superbomb_left <= 0
+                if player.mortar_placed and superbomb_done and player.balloon_launched and player.blob_placed:
                     # Fine catena: se il risveglio del blob e' gia' stato
                     # usato - oppure e' diventato IMPOSSIBILE per sempre
                     # (blob distrutto da un bombolone avversario prima del
@@ -3760,9 +3777,9 @@ async def handle_client(ws):
                         room.try_place_spike_wall(player)
                     else:
                         room.try_animate_blob(player)
-                elif player.mortar_placed and player.superbomb_placed and player.balloon_launched:
+                elif player.mortar_placed and superbomb_done and player.balloon_launched:
                     room.try_place_blob(player)
-                elif player.mortar_placed and player.superbomb_placed:
+                elif player.mortar_placed and superbomb_done:
                     room.try_launch_balloon(player)
                 elif player.mortar_placed:
                     room.try_place_superbomb(player)

@@ -220,6 +220,7 @@ MORTAR_BLAST_RADIUS_CELLS = 1              # raggio dell'esplosione (caselle, di
 # robot, pet e mortai avversari trovati nel raggio (vedi explode_superbomb
 # in main.py). Le cose del proprietario stesso restano illese.
 SUPERBOMB_THRESHOLD = 1400
+SUPERBOMB_COUNT = 2                 # numero di bomboloni disponibili una volta sbloccato il bonus 1400 punti (come per le mine)
 SUPERBOMB_FUSE_SECONDS = 2.0        # tempo (secondi) prima che il bombolone esploda dopo il piazzamento
 SUPERBOMB_RADIUS_CELLS = 8          # raggio dell'esplosione concentrica (caselle, distanza Manhattan)
 
@@ -322,12 +323,20 @@ COLORS = [
     "azzurro", "giallo", "verde", "bianco", "rosa",
     "arancione", "rosso", "viola", "lime", "oro",
     "ciano", "magenta", "grigio", "marrone", "blu_notte", "corallo",
+    "nero",
 ]
+
+# Il nero e' selezionabile SOLO come colore secondario (dettaglio/contorno,
+# vedi Player.colors[1]): come colore primario (corpo) sarebbe pressoche'
+# invisibile sullo sfondo quasi nero dell'arena. Deve restare in sincronia
+# con SECONDARY_ONLY_COLORS in index.html (client). Applicato server-side
+# in modo autoritativo nell'handler "select_color" di main.py.
+SECONDARY_ONLY_COLORS = {"nero"}
 
 # Personaggi selezionabili in lobby. La forma/dettagli di ciascuno sono
 # disegnati lato client (index.html); qui serve solo l'elenco degli id
 # validi per la validazione server-side.
-CHARACTERS = ["classic", "shark", "hex", "cyclops", "angry"]
+CHARACTERS = ["classic", "shark", "hex", "cyclops", "angry", "skull_mask"]
 
 DIRECTIONS = {
     "up": (0, -1),

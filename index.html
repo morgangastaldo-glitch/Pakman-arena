@@ -196,6 +196,9 @@
   }
   .color-swatch-btn[data-taken="1"]{ opacity:0.25; cursor:not-allowed; }
   .color-swatch-btn[data-mine="1"]{ border-color:#fff; box-shadow:0 0 12px currentColor; }
+  .color-swatch-btn[data-cname="nero"]{ box-shadow:inset 0 0 0 2px rgba(255,255,255,0.35); }
+  .color-swatch-btn[data-cname="nero"][data-mine="1"]{ box-shadow:inset 0 0 0 2px rgba(255,255,255,0.35), 0 0 12px currentColor; }
+  .color-swatch-btn[data-cname="nero"]:disabled{ box-shadow:inset 0 0 0 2px rgba(255,255,255,0.15); }
 
   .char-grid{ display:flex; gap:8px; flex-wrap:wrap; margin:12px 0; }
   .char-btn{
@@ -629,7 +632,13 @@ const COLOR_HEX = {
   marrone:    "#b5651d",
   blu_notte:  "#5b6bff",
   corallo:    "#ff5a36",
+  nero:       "#000000",
 };
+// Il nero e' selezionabile SOLO come colore secondario (dettaglio/contorno):
+// come colore primario (corpo) sarebbe pressoche' invisibile sullo sfondo
+// quasi nero dell'arena (vedi bgBase in buildMazeLayer). Deve restare in
+// sincronia con SECONDARY_ONLY_COLORS in common.py (validazione server).
+const SECONDARY_ONLY_COLORS = ["nero"];
 const ASSASSIN_COLOR = "#ff2b4e";
 const ARMOR_COLOR = "#4dffe8";
 const LIGHTNING_COLOR = "#ffe14d";
@@ -653,6 +662,7 @@ const CHARACTERS = [
   { id: "hex",     label: "Esagonale" },
   { id: "cyclops", label: "Occhio ciclope" },
   { id: "angry",   label: "Occhio arrabbiato" },
+  { id: "skull_mask", label: "Maschera teschio" },
 ];
 
 // Tema visivo della mappa corrente (muri/pellet/sfondo): il server ne sceglie
@@ -1359,10 +1369,25 @@ function onLobbyState(msg){
 // seconda del personaggio). Ricliccare un colore gia' scelto lo rimuove.
 // Solo il colore primario deve restare univoco tra i giocatori (vedi
 // taken_primary_colors lato server); il dettaglio si puo' condividere.
+// Il nero (SECONDARY_ONLY_COLORS) e' un caso speciale: essendo quasi
+// invisibile sullo sfondo dell'arena, puo' essere scelto SOLO come colore
+// di dettaglio, mai come primario (vedi anche la validazione lato server in
+// "select_color").
 function toggleMyColor(cname){
   const idx = myColors.indexOf(cname);
   if (idx !== -1){
     myColors.splice(idx, 1);
+    // Se rimuovendo il primario resta il nero come unico colore, non puo'
+    // scivolare in posizione primaria (diventerebbe invisibile): si toglie
+    // anche lui, cosi' il giocatore riparte senza colori invece di ritrovarsi
+    // un corpo nero sullo sfondo nero.
+    if (myColors.length === 1 && SECONDARY_ONLY_COLORS.indexOf(myColors[0]) !== -1){
+      myColors = [];
+    }
+  } else if (SECONDARY_ONLY_COLORS.indexOf(cname) !== -1 && myColors.length === 0){
+    // Il nero non puo' essere il primo colore scelto (sarebbe il primario).
+    showToast("Il nero e' selezionabile solo come colore di dettaglio: scegli prima un colore primario.");
+    return;
   } else if (myColors.length < 2){
     myColors.push(cname);
   } else {
@@ -1383,16 +1408,22 @@ function renderColorGrid(players){
     btn.className = "color-swatch-btn";
     btn.style.background = COLOR_HEX[cname];
     btn.style.color = COLOR_HEX[cname];
+    btn.dataset.cname = cname;
     const myIdx = myColors.indexOf(cname);
     const takenByOther = takenPrimaryBy[cname] && takenPrimaryBy[cname] !== myId && myIdx === -1;
+    // Il nero non e' selezionabile finche' non e' gia' stato scelto un
+    // colore primario: da solo diventerebbe primario e sarebbe invisibile
+    // sullo sfondo dell'arena (vedi toggleMyColor).
+    const blockedAsPrimary = SECONDARY_ONLY_COLORS.indexOf(cname) !== -1 && myIdx === -1 && myColors.length === 0;
     btn.dataset.taken = takenByOther ? "1" : "0";
     btn.dataset.mine = myIdx === 0 ? "1" : "0";
     if (myIdx === 1){
       btn.style.outline = "2px dashed #fff";
       btn.style.outlineOffset = "2px";
     }
-    btn.title = cname + (myIdx === 0 ? " (primario)" : myIdx === 1 ? " (dettaglio)" : "");
-    btn.disabled = !!takenByOther;
+    const onlyDetailNote = SECONDARY_ONLY_COLORS.indexOf(cname) !== -1 ? " (solo dettaglio)" : "";
+    btn.title = cname + onlyDetailNote + (myIdx === 0 ? " (primario)" : myIdx === 1 ? " (dettaglio)" : "");
+    btn.disabled = !!takenByOther || blockedAsPrimary;
     btn.addEventListener("click", function(){ toggleMyColor(cname); });
     grid.appendChild(btn);
   });
@@ -1439,6 +1470,7 @@ function drawCharacterPreview(pctx, charId){
     case "shark": drawSharkBody(16, m, primary, secondary, 0); break;
     case "cyclops": drawRoundBody(16, m, primary, secondary, 0); drawSingleEye(16, secondary, false); break;
     case "angry": drawRoundBody(16, m, primary, secondary, 0); drawSingleEye(16, secondary, true); break;
+    case "skull_mask": drawSkullMaskBody(16, m, primary, secondary, 0); break;
     default: drawRoundBody(16, m, primary, secondary, 0); break;
   }
   ctx.restore();
@@ -2036,6 +2068,79 @@ function drawSingleEye(radius, secondary, angry){
   }
 }
 
+// ---- maschera da teschio: stesso taglio "a Pac-Man" degli altri
+// personaggi, ma il colore primario funge da MASCHERA rigida (non da
+// pelle): sopra viene applicato un rilievo chiaro/scuro (stesso trucco di
+// bevel usato per i muri della mappa e per il muro di spunzoni, cosi' la
+// maschera sembra davvero "in rilievo" e non un cerchio piatto) e infine
+// viene disegnato un teschio bianco al centro, sullo stesso modello di
+// bombolone/mongolfiera/muro di spunzoni. Il bordo della maschera prende il
+// colore di dettaglio scelto dal giocatore (o un grigio osso di default).
+function drawSkullMaskBody(radius, m, primary, secondary, glowExtra){
+  const maskPath = function(){
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.arc(0, 0, radius, m, Math.PI * 2 - m);
+    ctx.closePath();
+  };
+
+  maskPath();
+  ctx.fillStyle = primary;
+  ctx.shadowColor = primary;
+  ctx.shadowBlur = 8 + (glowExtra || 0);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  ctx.save();
+  maskPath();
+  ctx.clip();
+
+  // Rilievo "in rilievo": bevel chiaro in alto a sinistra, ombra scura in
+  // basso a destra, ritagliato sulla sagoma della maschera.
+  const bevel = ctx.createLinearGradient(-radius, -radius, radius, radius);
+  bevel.addColorStop(0, "rgba(255,255,255,0.40)");
+  bevel.addColorStop(0.35, "rgba(255,255,255,0)");
+  bevel.addColorStop(0.7, "rgba(0,0,0,0)");
+  bevel.addColorStop(1, "rgba(0,0,0,0.38)");
+  ctx.fillStyle = bevel;
+  ctx.fillRect(-radius, -radius, radius * 2, radius * 2);
+
+  // Teschio al centro della maschera (cranio, mascella, occhi, naso,
+  // denti): stesso disegno di bombolone/mongolfiera/muro di spunzoni,
+  // scalato al raggio del personaggio.
+  const s = radius / 17;
+  ctx.fillStyle = "#f2f2f0";
+  ctx.beginPath(); ctx.arc(0, -4 * s, 6.2 * s, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(-4.6 * s, -2.5 * s);
+  ctx.lineTo(-4.2 * s, 2.5 * s);
+  ctx.lineTo(4.2 * s, 2.5 * s);
+  ctx.lineTo(4.6 * s, -2.5 * s);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = "#1a1a1a";
+  ctx.beginPath(); ctx.arc(-2.3 * s, -4.5 * s, 1.5 * s, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(2.3 * s, -4.5 * s, 1.5 * s, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(-0.9 * s, -2.5 * s); ctx.lineTo(0, -0.3 * s); ctx.lineTo(0.9 * s, -2.5 * s);
+  ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = "#1a1a1a";
+  ctx.lineWidth = 1 * s;
+  for (let i = -1; i <= 1; i++){
+    ctx.beginPath();
+    ctx.moveTo(i * 1.6 * s - 0.5 * s, 2.1 * s);
+    ctx.lineTo(i * 1.6 * s + 0.5 * s, 3.4 * s);
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  // Bordo rigido della maschera, nel colore di dettaglio se scelto,
+  // altrimenti un grigio osso di default.
+  ctx.strokeStyle = secondary || "#cfcfd4";
+  ctx.lineWidth = Math.max(1.3, radius * 0.10);
+  maskPath();
+  ctx.stroke();
+}
+
 // Disegna il personaggio scelto dal giocatore: corpo (secondo il tipo) +
 // colore primario/dettaglio. rotationDeg orienta l'intero personaggio nella
 // direzione di marcia, esattamente come faceva il vecchio drawPacman.
@@ -2058,6 +2163,9 @@ function drawPacmanVariant(px, py, radius, mouthDeg, rotationDeg, primaryHex, se
     case "angry":
       drawRoundBody(radius, m, primaryHex, secondaryHex, glowExtra);
       drawSingleEye(radius, secondaryHex, true);
+      break;
+    case "skull_mask":
+      drawSkullMaskBody(radius, m, primaryHex, secondaryHex, glowExtra);
       break;
     default:
       drawRoundBody(radius, m, primaryHex, secondaryHex, glowExtra);
@@ -2945,12 +3053,14 @@ function drawSpikeWalls(now){
     const owner = findPlayer(currSnapshot, w.owner);
     const col = (owner && COLOR_HEX[(owner.colors || [])[0]]) || "#c9c9c9";
 
-    // Negli ultimi 5 secondi il muro lampeggia sbiadendo (sta per
-    // sgretolarsi); prima resta pieno e solido.
-    let alpha = 1;
+    // Il muro e' leggermente trasparente (non quanto un vetro colorato:
+    // resta ben solido e leggibile, solo un filo meno opaco di un muro
+    // normale della mappa). Negli ultimi 5 secondi lampeggia sbiadendo
+    // ulteriormente, per avvisare che sta per sgretolarsi.
+    let alpha = 0.86;
     if (w.left <= 5){
       const blink = Math.floor(now / 160) % 2 === 0;
-      alpha = blink ? 0.9 : 0.45;
+      alpha = blink ? 0.8 : 0.42;
     }
     ctx.globalAlpha = alpha;
 
@@ -2991,16 +3101,22 @@ function drawSpikeWalls(now){
       ctx.closePath(); ctx.fill(); ctx.stroke();
     }
 
-    // Corpo del blocco: quadrato pieno NEL COLORE DEL PROPRIETARIO, grande
-    // quanto la casella, con strisce verticali in una tonalita' piu' scura
+    // Corpo del blocco: NEL COLORE DEL PROPRIETARIO, grande quanto la
+    // casella ma con gli angoli smussati con lo STESSO margine/raggio dei
+    // muri normali della mappa (vedi roundRectPath in buildMazeLayer), cosi'
+    // si intona alla forma degli altri muri invece di spiccare come un
+    // quadrato spigoloso. Strisce verticali in una tonalita' piu' scura
     // dello stesso colore (il motivo a strisce+teschio resta quello di
     // bombolone/mongolfiera, ma qui e' il colore del giocatore a dominare,
     // cosi' si capisce a colpo d'occhio di chi e' il muro).
     const colDark = darkenHex(col, 0.5);
+    const wallM = 1.5, wallR = 5; // stessi valori usati per i muri normali della mappa
     ctx.fillStyle = col;
-    ctx.fillRect(x0, y0, BASE_CELL, BASE_CELL);
+    roundRectPath(ctx, x0 + wallM, y0 + wallM, BASE_CELL - 2 * wallM, BASE_CELL - 2 * wallM, wallR);
+    ctx.fill();
     ctx.save();
-    ctx.beginPath(); ctx.rect(x0, y0, BASE_CELL, BASE_CELL); ctx.clip();
+    roundRectPath(ctx, x0 + wallM, y0 + wallM, BASE_CELL - 2 * wallM, BASE_CELL - 2 * wallM, wallR);
+    ctx.clip();
     ctx.fillStyle = colDark;
     const s = (BASE_CELL * 0.46) / 17; // stesso fattore di scala del bombolone
     for (let i = -2; i <= 2; i++){
@@ -3009,7 +3125,8 @@ function drawSpikeWalls(now){
     ctx.restore();
     ctx.strokeStyle = colDark;
     ctx.lineWidth = 2;
-    ctx.strokeRect(x0 + 1, y0 + 1, BASE_CELL - 2, BASE_CELL - 2);
+    roundRectPath(ctx, x0 + wallM, y0 + wallM, BASE_CELL - 2 * wallM, BASE_CELL - 2 * wallM, wallR);
+    ctx.stroke();
 
     // Teschio bianco al centro del blocco (stesso disegno di
     // bombolone/mongolfiera: cranio, mascella, occhi, naso, denti).
@@ -4150,7 +4267,7 @@ function onGameEvent(msg){
         pet:          ["PET FEDELE SBLOCCATO!", "premi 8 per evocarlo \u00b7 resta sempre vicino a te e spara a chi entra entro 6 caselle"],
         robot:        ["EVOLUZIONE NAVICELLA SBLOCCATA!", "premi 9 per evolvere la torretta, se e' ancora viva"],
         mortar:       ["MORTAIO SBLOCCATO!", "raggio 15 caselle \u00b7 premi 1 per schierarlo \u00b7 scavalca i muri"],
-        superbomb:    ["BOMBOLONE SBLOCCATO!", "esplosione raggio 8 caselle \u00b7 premi 1 (dopo il mortaio) per piazzarlo"],
+        superbomb:    ["BOMBOLONE SBLOCCATO!", "2 bomboloni \u00b7 esplosione raggio 8 caselle \u00b7 premi 1 (dopo il mortaio) per piazzarli"],
         balloon:      ["MONGOLFIERA SBLOCCATA!", "vaga sulla mappa e sgancia bombe \u00b7 premi 1 (dopo il bombolone) per farla librare"],
         blob:         ["BLOB SBLOCCATO!", "blocca la strada e mangia chi passa \u00b7 premi 1 (dopo la mongolfiera) per piazzarlo \u00b7 si rimuove solo sparandogli"],
         blob_alive:   ["BLOB VIVO SBLOCCATO!", "premi 1 (dopo averlo piazzato) per risvegliarlo \u00b7 vaga sulla mappa lasciando una scia velenosa e mangia chi gli e' vicino"],
@@ -4681,7 +4798,7 @@ function updateScoreStrip(msg){
 function mineChainStep(p){
   if (p.mines && p.mines_left > 0) return "mine";
   if (p.mortar && !p.mortar_placed) return "mortar";
-  if (p.superbomb && !p.superbomb_placed) return "superbomb";
+  if (p.superbomb && (p.superbomb_left || 0) > 0) return "superbomb";
   if (p.balloon && !p.balloon_launched) return "balloon";
   if (p.blob && !p.blob_placed) return "blob";
   // Il risveglio (blob_alive) resta il passo attivo SOLO se il blob e'
