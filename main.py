@@ -487,23 +487,52 @@ class Room:
 
     # ---------- round setup ----------
 
+    def is_floor(self, x, y):
+        """Vero solo se (x,y) e' dentro i confini della mappa corrente ED
+        e' una cella di pavimento ('.'), mai un muro ('#'). Usata come rete
+        di sicurezza ESPLICITA ogni volta che si sceglie dove far comparire
+        un giocatore: non ci si fida ciecamente di self.free_cells (che pure
+        e' gia' costruita correttamente), la si ricontrolla cella per
+        cella."""
+        return (
+            0 <= y < len(self.maze)
+            and 0 <= x < len(self.maze[y])
+            and self.maze[y][x] != "#"
+        )
+
     def get_free_spawn(self, exclude_player=None):
         """Sceglie una cella libera CASUALE di TUTTA la mappa (non piu' solo
         i 4 angoli + centro) che non sia gia' occupata da un altro
         giocatore vivo, cosi' non spawnano mai due giocatori sulla stessa
         casella. self.free_cells contiene gia' tutte le celle non-muro
-        della mappa corrente (calcolato una sola volta in pick_new_map)."""
+        della mappa corrente (calcolato una sola volta in pick_new_map), ma
+        qui viene comunque ri-filtrata con is_floor: se per qualunque
+        motivo la cache fosse disallineata dalla mappa attuale, un
+        giocatore non spawnera' MAI su un muro."""
         occupied = {
             (q.x, q.y)
             for q in self.players.values()
             if q.alive and q is not exclude_player
         }
-        free = [c for c in self.free_cells if c not in occupied]
+        free = [c for c in self.free_cells if c not in occupied and self.is_floor(c[0], c[1])]
         if free:
             return random.choice(free)
-        # Caso limite, non dovrebbe mai capitare (max 5 giocatori su
-        # centinaia di celle libere): ripiega su una cella qualsiasi.
-        return random.choice(self.free_cells)
+        # Fallback 1: ignora l'occupazione altrui (capita solo con troppi
+        # giocatori vivi per le celle libere rimaste), ma resta SEMPRE su
+        # pavimento vero.
+        floor_only = [c for c in self.free_cells if self.is_floor(c[0], c[1])]
+        if floor_only:
+            return random.choice(floor_only)
+        # Fallback 2 (non dovrebbe mai capitare: significherebbe cache
+        # vuota/corrotta): riscansiona la mappa da zero, cella per cella.
+        scanned = [(x, y) for y, row in enumerate(self.maze) for x, ch in enumerate(row) if ch == "."]
+        if scanned:
+            return random.choice(scanned)
+        # Rete di sicurezza estrema: ogni mappa e' verificata a tempo di
+        # generazione per avere pavimento raggiungibile, quindi questo
+        # ramo e' teoricamente irraggiungibile; se mai capitasse, restiamo
+        # comunque espliciti invece di far esplodere il server.
+        raise RuntimeError("Nessuna cella di pavimento disponibile sulla mappa corrente")
 
     def assign_spawns(self):
         # Ogni giocatore riceve un angolo libero e diverso dagli altri
@@ -1150,11 +1179,16 @@ class Room:
             if q.alive and q is not p
         }
         if assassins:
-            free = [c for c in self.free_cells if c not in occupied]
-            candidates = free if free else self.free_cells
+            # Stessa rete di sicurezza di get_free_spawn: ri-filtriamo con
+            # is_floor invece di fidarci ciecamente di self.free_cells.
+            free = [c for c in self.free_cells if c not in occupied and self.is_floor(c[0], c[1])]
+            if not free:
+                free = [c for c in self.free_cells if self.is_floor(c[0], c[1])]
+            if not free:
+                free = [(x, y) for y, row in enumerate(self.maze) for x, ch in enumerate(row) if ch == "."]
             def min_dist(s):
                 return min(abs(s[0] - a.x) + abs(s[1] - a.y) for a in assassins)
-            x, y = max(candidates, key=min_dist)
+            x, y = max(free, key=min_dist)
         else:
             x, y = self.get_free_spawn(exclude_player=p)
         p.x, p.y = x, y
