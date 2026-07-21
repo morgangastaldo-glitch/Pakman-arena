@@ -47,7 +47,7 @@ from common import (
     pick_random_maze, choose_power_pellet_cells, bfs_path,
     BONUS_THRESHOLDS, GHOST_SECONDS,
     PELLET_POINTS, POWER_PELLET_POINTS, POWER_PELLET_COUNT,
-    PELLET_RESPAWN_SECONDS, SUPER_ASSASSIN_THRESHOLD,
+    PELLET_RESPAWN_SECONDS, MEGA_PELLET_POINTS, MEGA_PELLET_INTERVAL_SECONDS, SUPER_ASSASSIN_THRESHOLD,
     SUPER_ASSASSIN_DURATION_SECONDS, LASER_RANGE_CELLS,
     SPAWN_PROTECT_SECONDS, MIN_SPAWN_DISTANCE, LASER_INTERVAL_SECONDS, LASER_FIRST_DELAY_SECONDS,
     LASER_PROJECTILE_SPEED, LASER_BOUNCE_DISTANCE, MINES_COUNT, SUPERBOMB_COUNT,
@@ -73,6 +73,7 @@ from common import (
     BLOB_POISON_DURATION_SECONDS, BLOB_EAT_RANGE_CELLS,
     SPIKE_WALL_THRESHOLD, SPIKE_WALL_DURATION_SECONDS, SPIKE_WALL_HIT_RANGE,
     TESLA_THRESHOLD, TESLA_FIRE_INTERVAL_SECONDS, TESLA_RANGE_CELLS,
+    TERRITORY_TRAP_THRESHOLD, TERRITORY_TILES_REQUIRED,
     RTT_PING_INTERVAL_SECONDS, RTT_DEFAULT_SECONDS,
     REWIND_MAX_SECONDS, REWIND_HISTORY_SECONDS,
 )
@@ -274,6 +275,20 @@ class Player:
         # sblocco/utilizzo, come per gli altri bonus a comando.
         self.has_tesla = False         # bonus sbloccato (una volta per round)
         self.tesla_placed = False      # True dopo il piazzamento: il tasto "1" (dopo il muro di spunzoni) e' utilizzabile una sola volta
+
+        # ---- bonus 2600 punti: trappola territoriale a spunzoni (tasto "1", DOPO la Tesla) ----
+        # Nuovo ultimo gradino della catena del tasto "1". La PRIMA
+        # pressione (dopo la Tesla) avvia la selezione delle caselle
+        # (vedi try_use_territory_trap/update_territory_marking), la
+        # SECONDA le trasforma in spunzoni letali (vedi
+        # trigger_territory_trap). Le celle marcate (territory_tiles)
+        # NON vengono mai incluse nello stato pubblico: restano visibili
+        # SOLO al proprietario tramite eventi privati dedicati.
+        self.has_territory_trap = False  # bonus sbloccato
+        self.territory_marking = False   # True durante la fase di selezione
+        self.territory_ready = False     # True quando la selezione e' completa, in attesa della 2a pressione
+        self.territory_used = False      # True dopo l'attivazione: tasto "1" (a fine catena) esaurito per sempre
+        self.territory_tiles = set()     # celle (x, y) marcate finora, private
         # Uccisioni fatte in questo round: ogni 2 kill si guadagna una vita extra.
         self.kills = 0
 
@@ -341,6 +356,10 @@ class Player:
             "spike_wall_placed": self.spike_wall_placed,
             "tesla": self.has_tesla,
             "tesla_placed": self.tesla_placed,
+            "territory_trap": self.has_territory_trap,
+            "territory_marking": self.territory_marking,
+            "territory_ready": self.territory_ready,
+            "territory_used": self.territory_used,
         }
 
 
@@ -361,6 +380,11 @@ class Room:
         # cio' che permette al client effetti/suoni precisi senza dover
         # "indovinare" confrontando snapshot consecutivi.
         self.events = []
+        # Eventi privati (bonus 2600 punti, trappola territoriale): stessa
+        # idea di self.events ma recapitati SOLO al giocatore indicato,
+        # mai in broadcast (vedi push_private_event/drain_private_events).
+        # Lista di tuple (player_id, evento).
+        self.private_events = []
         # Proiettili laser in volo e mine posate sulla mappa: entrambi sono
         # liste di dict semplici (niente classi dedicate, sono pochi campi)
         # azzerate ad ogni nuovo round.
@@ -426,6 +450,13 @@ class Room:
         )
         self.reset_pellets()
         self.reset_pellets()
+        # Pallino mega (100 punti): spawna una volta al minuto, sempre
+        # nella stessa cella, la piu' vicina al centro esatto della mappa
+        # (vedi _nearest_open_cell/update_mega_pellet/eat_mega_pellet).
+        # Azzerato e ricalcolato ad ogni nuovo round/mappa.
+        self.mega_pellet_spot = self._nearest_open_cell(self.maze_w // 2, self.maze_h // 2)
+        self.mega_pellet_cell = None
+        self.mega_pellet_timer = MEGA_PELLET_INTERVAL_SECONDS
         # Tutte le celle libere (non muro) della mappa: servono al robot
         # (torretta evoluta, bonus 1000 punti) per scegliere a caso una
         # meta' da raggiungere mentre pattuglia (vedi update_robot_wander).
@@ -451,32 +482,36 @@ class Room:
         # Cella -> secondi residui prima che un pallino mangiato ricompaia.
         self.pellet_respawns = {}
 
+    def _nearest_open_cell(self, tx, ty):
+        """BFS che trova la cella libera raggiungibile piu' vicina a
+        (tx, ty): riutilizzata sia dai portali (compute_portals) sia dal
+        pallino mega (pick_new_map/mega_pellet_spot), per il caso in cui il
+        punto esatto cercato cada su un muro."""
+        if self.maze[ty][tx] == ".":
+            return (tx, ty)
+        seen = {(tx, ty)}
+        frontier = deque([(tx, ty)])
+        while frontier:
+            x, y = frontier.popleft()
+            for dx, dy in ((0, -1), (0, 1), (-1, 0), (1, 0)):
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < self.maze_w and 0 <= ny < self.maze_h and (nx, ny) not in seen:
+                    seen.add((nx, ny))
+                    if self.maze[ny][nx] == ".":
+                        return (nx, ny)
+                    frontier.append((nx, ny))
+        return (tx, ty)
+
     def compute_portals(self):
         """Due portali su una coppia di angoli diagonalmente opposti della
         mappa: in alto a sinistra e in basso a destra. Tutte le mappe
         standard (39x19) hanno quei due angoli esatti gia' aperti per
         costruzione (vedi commento sopra MAZES in common.py); per sicurezza,
         se un angolo fosse un muro, si cerca con una BFS la cella libera
-        raggiungibile piu' vicina all'angolo. Entrare in un portale
-        teletrasporta all'altro (vedi try_portal)."""
-        def nearest_open(tx, ty):
-            if self.maze[ty][tx] == ".":
-                return (tx, ty)
-            seen = {(tx, ty)}
-            frontier = deque([(tx, ty)])
-            while frontier:
-                x, y = frontier.popleft()
-                for dx, dy in ((0, -1), (0, 1), (-1, 0), (1, 0)):
-                    nx, ny = x + dx, y + dy
-                    if 0 <= nx < self.maze_w and 0 <= ny < self.maze_h and (nx, ny) not in seen:
-                        seen.add((nx, ny))
-                        if self.maze[ny][nx] == ".":
-                            return (nx, ny)
-                        frontier.append((nx, ny))
-            return (tx, ty)
-
-        top_left = nearest_open(1, 1)
-        bottom_right = nearest_open(self.maze_w - 2, self.maze_h - 2)
+        raggiungibile piu' vicina all'angolo (vedi _nearest_open_cell).
+        Entrare in un portale teletrasporta all'altro (vedi try_portal)."""
+        top_left = self._nearest_open_cell(1, 1)
+        bottom_right = self._nearest_open_cell(self.maze_w - 2, self.maze_h - 2)
         if top_left != bottom_right:
             self.portals = [top_left, bottom_right]
         else:
@@ -695,6 +730,11 @@ class Room:
             p.spike_wall_placed = False
             p.has_tesla = False
             p.tesla_placed = False
+            p.has_territory_trap = False
+            p.territory_marking = False
+            p.territory_ready = False
+            p.territory_used = False
+            p.territory_tiles = set()
             p.kills = 0
         self.lasers = []
         self.mines = []
@@ -723,6 +763,34 @@ class Room:
     def push_event(self, ev):
         """Accoda un evento una-tantum da trasmettere a fine tick."""
         self.events.append({"type": "event", **ev})
+
+    def push_private_event(self, player_id, ev):
+        """Come push_event, ma recapitato SOLO al giocatore indicato (mai
+        incluso nel broadcast pubblico): usato dalla trappola territoriale
+        (bonus 2600 punti) per far vedere al proprietario, e a lui solo,
+        quali caselle sta marcando durante la fase di selezione (vedi
+        update_territory_marking/try_use_territory_trap). Stesso identico
+        formato "type: event" degli eventi pubblici, cosi' il client lo
+        gestisce con lo stesso identico switch (onGameEvent), senza sapere
+        (ne doversi preoccupare) che stavolta e' arrivato privatamente."""
+        self.private_events.append((player_id, {"type": "event", **ev}))
+
+    async def drain_private_events(self):
+        """Invia (e svuota) la coda degli eventi privati accumulati nel
+        tick, uno per uno al SOLO destinatario indicato (vedi
+        push_private_event): a differenza di drain_events/broadcast, qui
+        ogni evento va a un singolo websocket, mai a tutti."""
+        if not self.private_events:
+            return
+        pending, self.private_events = self.private_events, []
+        for player_id, ev in pending:
+            player = self.players.get(player_id)
+            if not player or not player.connected:
+                continue
+            try:
+                await player.ws.send(encode_text(ev))
+            except websockets.exceptions.ConnectionClosed:
+                player.connected = False
 
     def update_movement(self):
         prev_positions = {p.id: (p.x, p.y) for p in self.players.values()}
@@ -822,6 +890,7 @@ class Room:
             # Pallini e portali si valutano sulla cella in cui ci si trova
             # ORA (anche da fermi: copre lo spawn su un pallino).
             self.eat_pellet(p)
+            self.eat_mega_pellet(p)
             self.try_portal(p)
         return prev_positions
 
@@ -1032,6 +1101,42 @@ class Room:
                 "kind": "pellet_respawn", "cells": [[cell[0], cell[1]]],
                 "power": cell in self.power_pellets,
             })
+
+    def update_mega_pellet(self):
+        """Ogni MEGA_PELLET_INTERVAL_SECONDS (un minuto) fa comparire il
+        pallino mega da MEGA_PELLET_POINTS punti nella cella fissa al
+        centro della mappa (self.mega_pellet_spot, calcolata in
+        pick_new_map), ma SOLO se non ce n'e' gia' uno in attesa di essere
+        mangiato: a differenza dei pallini normali, non ricompare da solo
+        subito dopo essere stato mangiato, bisogna aspettare il giro
+        successivo."""
+        self.mega_pellet_timer -= TICK_DT
+        if self.mega_pellet_timer > 0:
+            return
+        self.mega_pellet_timer = MEGA_PELLET_INTERVAL_SECONDS
+        if self.mega_pellet_cell is not None:
+            return
+        self.mega_pellet_cell = self.mega_pellet_spot
+        self.push_event({
+            "kind": "mega_pellet_spawn",
+            "x": self.mega_pellet_spot[0], "y": self.mega_pellet_spot[1],
+            "points": MEGA_PELLET_POINTS,
+        })
+
+    def eat_mega_pellet(self, p):
+        """Se il giocatore si trova sulla cella del pallino mega attivo, lo
+        mangia: guadagna MEGA_PELLET_POINTS punti in un colpo solo e il
+        pallino sparisce fino al prossimo giro di
+        MEGA_PELLET_INTERVAL_SECONDS (vedi update_mega_pellet)."""
+        if self.mega_pellet_cell is None or (p.x, p.y) != self.mega_pellet_cell:
+            return
+        self.mega_pellet_cell = None
+        p.points += MEGA_PELLET_POINTS
+        self.push_event({
+            "kind": "mega_pellet_eaten", "by": p.id,
+            "x": p.x, "y": p.y, "points": MEGA_PELLET_POINTS,
+        })
+        self.check_bonuses(p)
 
     def check_bonuses(self, p):
         """Riscatta i traguardi appena superati (una volta sola per round).
@@ -1291,6 +1396,26 @@ class Room:
                 "bonus": "tesla", "points": TESLA_THRESHOLD,
             })
 
+        # Bonus 2600 punti: sblocca la trappola territoriale a spunzoni, ma
+        # NON avvia subito la selezione. Si usa a comando RIUSANDO ancora
+        # il tasto "1" (vedi try_use_territory_trap), UNA SOLA VOLTA per
+        # giocatore per round, ma solo DOPO aver esaurito tutta la catena
+        # precedente del tasto "1" (mine, mortaio, bombolone, mongolfiera,
+        # blob, risveglio del blob, muro di spunzoni e Tesla): finche' la
+        # catena non e' esaurita, il tasto "1" resta dedicato a quella
+        # (vedi il dispatch del messaggio "place_mortar").
+        if (
+            p.alive
+            and p.points >= TERRITORY_TRAP_THRESHOLD
+            and TERRITORY_TRAP_THRESHOLD not in p.claimed
+        ):
+            p.claimed.add(TERRITORY_TRAP_THRESHOLD)
+            p.has_territory_trap = True
+            self.push_event({
+                "kind": "bonus", "player": p.id,
+                "bonus": "territory_trap", "points": TERRITORY_TRAP_THRESHOLD,
+            })
+
     def try_portal(self, p):
         """Se il giocatore e' su un portale (e non e' appena arrivato da un
         teletrasporto), lo sposta al portale opposto mantenendo la direzione.
@@ -1368,16 +1493,17 @@ class Room:
         assassino, dal laser e dalle mine. Con vite extra si respawna,
         altrimenti si e' fuori.
 
-        Chi uccide ruba il 20% dei punti della vittima (KILL_STEAL_FRACTION,
-        arrotondato per difetto): la vittima CONSERVA l'altra meta' delle
-        sue risorse - un'eliminazione fa male ma non azzera piu' tutto."""
+        Chi uccide GUADAGNA il 10% dei punti della vittima come bonus
+        (KILL_STEAL_FRACTION, arrotondato per difetto): la vittima
+        CONSERVA tutti i suoi punti, nessuno le viene piu' sottratto -
+        un'eliminazione fa guadagnare il killer ma non penalizza piu' chi
+        viene ucciso."""
         self.last_kill = {"cause": cause, "by": shooter_id}
         killer_player = self.players.get(shooter_id) if shooter_id else None
         stolen = 0
         if killer_player is not None and killer_player.id != victim.id:
             stolen = int(victim.points * KILL_STEAL_FRACTION)
             if stolen > 0:
-                victim.points -= stolen
                 killer_player.points += stolen
                 self.check_bonuses(killer_player)
             # Ogni 2 uccisioni fatte, il killer guadagna una vita extra
@@ -1475,9 +1601,12 @@ class Room:
         entra nel raggio, invece di sprecare colpi a vuoto o di accumulare
         colpi arretrati. Il super assassino (300 punti, invisibile agli
         altri) NON spara: il proiettile e' visibile a tutti e rivelerebbe
-        subito la sua posizione, vanificando l'invisibilita'."""
+        subito la sua posizione, vanificando l'invisibilita'. Allo stesso
+        modo, chi e' intrappolato dalla trappola di un avversario
+        (trapped_left > 0) non spara: e' completamente bloccato, laser
+        compreso, finche' non torna libero di muoversi."""
         for p in list(self.players.values()):
-            if not p.alive or not p.has_laser or p.is_assassin:
+            if not p.alive or not p.has_laser or p.is_assassin or p.trapped_left > 0:
                 continue
             nearest = self.nearest_alive(p.x, p.y, {p.id})
             in_range = (
@@ -1575,6 +1704,7 @@ class Room:
                 victims = [
                     q for q in self.players.values()
                     if q.alive and q.id != lz["owner"] and q.x == nx and q.y == ny
+                    and q.ghost_left <= 0 and q.prot_left <= 0
                 ]
                 if victims:
                     armored = [v for v in victims if v.armor_active]
@@ -1663,6 +1793,7 @@ class Room:
             victims = [
                 q for q in self.players.values()
                 if q.alive and not q.is_assassin and not q.armor_active and q.id != m["owner"]
+                and q.ghost_left <= 0 and q.prot_left <= 0
                 and q.x == m["x"] and q.y == m["y"]
             ]
             pet_victims = [
@@ -1738,10 +1869,13 @@ class Room:
 
     def nearest_alive(self, x, y, exclude_ids):
         """Giocatore vivo piu' vicino (distanza Manhattan) a (x, y), tra
-        quelli il cui id non e' in exclude_ids. None se nessuno qualifica."""
+        quelli il cui id non e' in exclude_ids. Esclude anche chi e'
+        attualmente immune (protezione post-respawn, prot_left > 0): un
+        bersaglio invulnerabile non va nemmeno inseguito o preso di mira.
+        None se nessuno qualifica."""
         candidates = [
             q for q in self.players.values()
-            if q.alive and q.id not in exclude_ids
+            if q.alive and q.id not in exclude_ids and q.prot_left <= 0
         ]
         if not candidates:
             return None
@@ -1753,7 +1887,7 @@ class Room:
         puo' agganciare un bersaglio che non vede."""
         candidates = [
             q for q in self.players.values()
-            if q.alive and not q.is_assassin and q.id not in exclude_ids
+            if q.alive and not q.is_assassin and q.id not in exclude_ids and q.prot_left <= 0
         ]
         if not candidates:
             return None
@@ -1820,7 +1954,8 @@ class Room:
         presenti sulla mappa, ovunque si trovi (nessun raggio d'azione, a
         differenza della torretta): perde una vita tramite kill_player (la
         stessa unica via usata da laser/mine/missili/trappola), con lo
-        stesso furto del 50% dei punti e lo stesso conteggio
+        stesso bonus del 10% dei punti guadagnato dal killer (la vittima
+        non perde nulla) e lo stesso conteggio
         kill/vita-extra-ogni-2-uccisioni del killer. UTILIZZABILE UNA SOLA
         VOLTA per round.
 
@@ -1832,6 +1967,7 @@ class Room:
         candidates = [
             q for q in self.players.values()
             if q.alive and q.id != player.id
+            and q.ghost_left <= 0 and q.prot_left <= 0
         ]
         # NERF: il fulmine ora ha solo 1 possibilita' su 3 di colpire
         # davvero qualcuno (in precedenza colpiva sempre, all'attivazione,
@@ -1991,6 +2127,7 @@ class Room:
                     victims = [
                         q for q in self.players.values()
                         if q.alive and not q.is_assassin
+                        and q.ghost_left <= 0 and q.prot_left <= 0
                         and q.id != mz["owner"] and q.x == nx and q.y == ny
                     ]
                     if victims:
@@ -2058,7 +2195,13 @@ class Room:
                 dist = max(abs(victim.x - player.x), abs(victim.y - player.y))
                 if dist <= TRAP_RANGE:
                     self.push_event({"kind": "trap_boom", "x": victim.x, "y": victim.y})
-                    self.kill_player(victim, "trap", player.id)
+                    # La protezione post-respawn (prot_left) rende immune
+                    # anche a una trappola gia' innescata: la vittima
+                    # scampa alla detonazione (nearest_alive non la
+                    # sceglierebbe piu' come nuovo bersaglio, ma potrebbe
+                    # essere respawnata proprio mentre era gia' intrappolata).
+                    if victim.prot_left <= 0:
+                        self.kill_player(victim, "trap", player.id)
                     player.trap_target = None
                     return
                 return
@@ -2366,7 +2509,12 @@ class Room:
           - distrugge anche il blob gelatinoso avversario nel raggio (vedi
             destroy_blob): l'UNICO ordigno del gioco capace di farlo. Il
             blob e' immune a qualsiasi altra arma, incluso il fuoco amico
-            (un bombolone non tocca mai il proprio blob)."""
+            (un bombolone non tocca mai il proprio blob);
+          - distrugge anche ogni Tesla laser avversaria nel raggio: l'UNICA
+            arma del gioco capace di abbattere una Tesla, che altrimenti
+            resterebbe indistruttibile fino a fine round (la Tesla, dal
+            canto suo, non e' invece in grado di fare nulla contro il
+            bombolone: vedi tesla_zap)."""
         ox, oy = bomb["x"], bomb["y"]
         owner = bomb["owner"]
         self.push_event({
@@ -2423,6 +2571,21 @@ class Room:
         for pet in list(self.pets):
             if pet["owner"] != owner and abs(pet["x"] - ox) + abs(pet["y"] - oy) <= SUPERBOMB_RADIUS_CELLS:
                 self.destroy_pet(pet, "superbomb", owner)
+
+        # Ogni Tesla laser avversaria nel raggio viene distrutta: e' l'UNICA
+        # arma del gioco capace di farlo (la Tesla, altrimenti, resterebbe
+        # sulla mappa fino a fine round, vedi try_place_tesla/tesla_zap).
+        if self.teslas:
+            remaining_teslas = []
+            for tesla in self.teslas:
+                if tesla["owner"] != owner and abs(tesla["x"] - ox) + abs(tesla["y"] - oy) <= SUPERBOMB_RADIUS_CELLS:
+                    self.push_event({
+                        "kind": "tesla_destroyed", "id": tesla["id"],
+                        "x": tesla["x"], "y": tesla["y"], "by": owner, "cause": "superbomb",
+                    })
+                else:
+                    remaining_teslas.append(tesla)
+            self.teslas = remaining_teslas
 
         # Ogni altro bombolone avversario ancora inesploso nel raggio NON
         # viene "annullato": esplode a sua volta (reazione a catena), con
@@ -2753,6 +2916,7 @@ class Room:
             victims = [
                 q for q in self.players.values()
                 if q.alive and not q.is_assassin and not q.armor_active and q.id != b["owner"]
+                and q.ghost_left <= 0 and q.prot_left <= 0
                 and abs(q.x - b["x"]) <= BLOB_EAT_RANGE_CELLS
                 and abs(q.y - b["y"]) <= BLOB_EAT_RANGE_CELLS
             ]
@@ -2985,12 +3149,16 @@ class Room:
         UNA SOLA VOLTA (per tutto il round) una Tesla laser nella cella
         corrente del giocatore: una torre fissa in stile "Tesla" di Clash
         Royale, grande quanto una sola casella ma visivamente PIU' ALTA di
-        un muro normale. Da quel momento e' permanente (resta sulla mappa
-        fino a fine round, anche se il proprietario muore o si disconnette,
-        esattamente come torretta/mortaio/pet) e fulmina da sola, ogni
-        TESLA_FIRE_INTERVAL_SECONDS, TUTTO cio' che appartiene alla
-        squadra avversaria entro TESLA_RANGE_CELLS caselle, IGNORANDO i
-        muri della mappa (vedi update_teslas/tesla_zap).
+        un muro normale. Da quel momento resta sulla mappa fino a fine
+        round (anche se il proprietario muore o si disconnette, esattamente
+        come torretta/mortaio/pet) - A MENO CHE un bombolone avversario non
+        esploda nel suo raggio: e' l'UNICA arma del gioco capace di
+        distruggere una Tesla (vedi explode_superbomb). Finche' resta in
+        piedi fulmina da sola, ogni TESLA_FIRE_INTERVAL_SECONDS, TUTTO cio'
+        che appartiene alla squadra avversaria entro TESLA_RANGE_CELLS
+        caselle, IGNORANDO i muri della mappa (vedi update_teslas/tesla_zap)
+        - CON L'ECCEZIONE del bombolone, che la Tesla non e' in grado di
+        toccare (ne' di far esplodere, ne' di disinnescare).
 
         Se il giocatore e' intrappolato dalla trappola di un avversario,
         NON puo' usare alcun bonus finche' non torna libero di muoversi."""
@@ -3051,15 +3219,16 @@ class Room:
           - distrugge ogni torretta/robot avversario nel raggio;
           - distrugge ogni mortaio avversario nel raggio;
           - distrugge ogni pet avversario nel raggio (vedi destroy_pet);
-          - fa esplodere a sua volta (reazione a catena, con onda d'urto
-            indipendente) ogni bombolone avversario ancora inesploso nel
-            raggio;
           - fa sganciare a sua volta la propria bomba (reazione a catena,
             con onda d'urto indipendente) a ogni mongolfiera avversaria in
             volo nel raggio;
           - distrugge anche il blob gelatinoso avversario nel raggio (vedi
             destroy_blob), come solo il bombolone sapeva fare finora;
           - sgretola anche ogni muro di spunzoni avversario nel raggio.
+        NON tocca invece il bombolone (non lo fa esplodere ne' lo
+        disinnesca): e' l'UNICA minaccia avversaria a cui la Tesla non puo'
+        fare nulla - e non a caso, visto che e' il bombolone stesso l'UNICA
+        arma capace di distruggere una Tesla (vedi explode_superbomb).
         Manda un unico evento "tesla_fire" con la lista di tutte le celle
         colpite, cosi' il client disegna un fulmine separato dalla torre
         verso OGNUNO dei bersagli nello stesso istante (niente evento se
@@ -3123,12 +3292,11 @@ class Room:
                 hits.append([pet["x"], pet["y"]])
                 self.destroy_pet(pet, "tesla", owner)
 
-        for bomb in list(self.superbombs):
-            if (bomb["owner"] != owner and not bomb.get("destroyed")
-                    and abs(bomb["x"] - ox) + abs(bomb["y"] - oy) <= TESLA_RANGE_CELLS):
-                hits.append([bomb["x"], bomb["y"]])
-                bomb["destroyed"] = True
-                self.explode_superbomb(bomb)
+        # Nota: a differenza di torretta/mortaio/mina/pet/blob/mongolfiera,
+        # il bombolone avversario NON viene toccato dalla Tesla (non lo fa
+        # esplodere ne' lo disinnesca): e' l'unica minaccia a cui la Tesla
+        # e' "cieca" (vedi docstring sopra) - non a caso e' anche l'unica
+        # arma capace di distruggerla (vedi explode_superbomb).
 
         for bal in list(self.balloons):
             if (bal["owner"] != owner and not bal.get("destroyed")
@@ -3164,6 +3332,100 @@ class Room:
                 "kind": "tesla_fire", "id": t["id"], "player": owner,
                 "x": ox, "y": oy, "targets": hits, "radius": TESLA_RANGE_CELLS,
             })
+
+    # ---- bonus 2600 punti: trappola territoriale a spunzoni (tasto "1", DOPO la Tesla) ----
+
+    def try_use_territory_trap(self, player):
+        """Tasto '1', RIUSATO un'ottava volta: viene chiamato dal dispatch
+        del messaggio "place_mortar" solo quando TUTTA la catena precedente
+        del tasto "1" e' esaurita (mine, mortaio, bombolone, mongolfiera,
+        blob, risveglio del blob, muro di spunzoni e Tesla). Un solo tasto
+        per tutto il meccanismo, esattamente come la trappola normale
+        (bonus 500 punti, vedi try_activate_trap):
+          - PRIMA pressione: avvia la fase di selezione. Da questo momento
+            (vedi update_territory_marking, chiamato ad ogni tick) ogni
+            cella di strada NON ancora marcata che il giocatore calpesta
+            si illumina del suo colore - ma SOLO ai suoi occhi, tramite un
+            evento privato (push_private_event) mai incluso nello stato
+            pubblico: l'avversario non ha modo di scoprire in anticipo
+            dove scattera' la trappola.
+          - Una volta completata la selezione (TERRITORY_TILES_REQUIRED
+            caselle marcate), la pressione SUCCESSIVA innesca la trappola
+            vera e propria (vedi trigger_territory_trap): a quel punto il
+            bonus e' consumato, UNA SOLA VOLTA per round.
+        Se la selezione e' gia' in corso, una nuova pressione non fa
+        nulla: si completa da sola camminando, non serve ripremere.
+
+        Se il giocatore e' intrappolato dalla trappola di un avversario,
+        NON puo' usare alcun bonus finche' non torna libero di muoversi."""
+        if (not player.alive or player.trapped_left > 0 or not player.has_territory_trap
+                or player.territory_used or player.is_assassin or player.armor_active):
+            return
+        if player.territory_ready:
+            self.trigger_territory_trap(player)
+            return
+        if player.territory_marking:
+            return  # selezione gia' in corso: si completa da sola camminando
+        player.territory_marking = True
+        player.territory_tiles = set()
+        self.push_private_event(player.id, {
+            "kind": "territory_start", "required": TERRITORY_TILES_REQUIRED,
+        })
+
+    def update_territory_marking(self):
+        """Ad ogni tick, per ogni giocatore con la selezione in corso
+        (bonus 2600 punti), marca la cella corrente se non era gia' stata
+        marcata: notifica SOLO il proprietario (evento privato), mai
+        pubblicamente, cosi' gli avversari non possono scoprire dove sta
+        preparando la trappola. Al raggiungimento di
+        TERRITORY_TILES_REQUIRED celle nuove, chiude da sola la selezione
+        (le celle restano illuminate, sempre solo per il proprietario,
+        finche' non arriva la seconda pressione del tasto "1", vedi
+        try_use_territory_trap)."""
+        for p in self.players.values():
+            if not p.territory_marking or not p.alive:
+                continue
+            cell = (p.x, p.y)
+            if cell in p.territory_tiles:
+                continue
+            p.territory_tiles.add(cell)
+            remaining = TERRITORY_TILES_REQUIRED - len(p.territory_tiles)
+            self.push_private_event(p.id, {
+                "kind": "territory_tile", "x": p.x, "y": p.y,
+                "remaining": max(0, remaining),
+            })
+            if len(p.territory_tiles) >= TERRITORY_TILES_REQUIRED:
+                p.territory_marking = False
+                p.territory_ready = True
+                self.push_private_event(p.id, {"kind": "territory_ready"})
+
+    def trigger_territory_trap(self, player):
+        """La SECONDA pressione del tasto "1" (bonus 2600 punti): da OGNI
+        cella marcata durante la selezione sputano all'istante spunzoni
+        acuminati dal pavimento, nel colore del proprietario, che uccidono
+        chiunque - avversario vivo, senza protezioni attive (ghost/post-
+        respawn) - si trovi sopra in quel preciso momento, esattamente
+        come un'esplosione istantanea ad area (vedi tesla_zap/
+        explode_superbomb) ma sagomata sulle caselle scelte invece che su
+        un raggio. A differenza della Tesla o del muro di spunzoni non e'
+        permanente: e' un colpo secco, UNA SOLA VOLTA per round, poi lo
+        stesso tasto resta muto per il resto della partita. L'evento
+        "territory_trigger" e', stavolta, PUBBLICO: e' proprio nell'istante
+        dell'attivazione che la trappola si rivela a tutti, non prima."""
+        player.territory_ready = False
+        player.territory_used = True
+        tiles = list(player.territory_tiles)
+        hits = []
+        for q in self.players.values():
+            if (q.alive and q.id != player.id and q.ghost_left <= 0 and q.prot_left <= 0
+                    and (q.x, q.y) in player.territory_tiles):
+                hits.append(q.id)
+                self.kill_player(q, "territory_trap", shooter_id=player.id)
+        player.territory_tiles = set()
+        self.push_event({
+            "kind": "territory_trigger", "player": player.id,
+            "tiles": [[x, y] for (x, y) in tiles], "hits": hits,
+        })
 
     def mortar_public(self, mt):
         return {
@@ -3326,24 +3588,23 @@ class Room:
     def check_armor_effects(self):
         """Bonus 700 punti: chi ha la corazza laser ATTIVA distrugge ogni
         torretta AVVERSARIA (di un altro giocatore, NON la propria) la cui
-        cella tocca, e allo stesso modo disinnesca ogni mina AVVERSARIA
-        calpestata (anche qui, la propria resta intatta)."""
+        cella tocca - normale O evoluta (robot mobile, bonus 1000 punti)
+        indifferentemente - e allo stesso modo disinnesca ogni mina
+        AVVERSARIA calpestata (anche qui, la propria resta intatta)."""
         armored = [p for p in self.players.values() if p.alive and p.armor_active]
         if not armored:
             return
         if self.turrets:
             remaining = []
             for t in self.turrets:
-                # NERF: la corazza laser distrugge SOLO la torretta nella sua
-                # versione normale, non piu' quella evoluta (robot mobile,
-                # bonus 1000 punti): il resto della logica (mine/mortai/pet)
-                # resta invariato.
-                destroyer = None
-                if not t.get("evolved", False):
-                    destroyer = next(
-                        (a for a in armored if a.id != t["owner"] and a.x == t["x"] and a.y == t["y"]),
-                        None,
-                    )
+                # La corazza laser distrugge la torretta a contatto sia
+                # nella sua versione normale sia in quella evoluta (robot
+                # mobile, bonus 1000 punti): il resto della logica
+                # (mine/mortai/pet) resta invariato.
+                destroyer = next(
+                    (a for a in armored if a.id != t["owner"] and a.x == t["x"] and a.y == t["y"]),
+                    None,
+                )
                 if destroyer is not None:
                     self.push_event({
                         "kind": "turret_destroyed", "id": t["id"],
@@ -3591,6 +3852,10 @@ class Room:
             "portal_on": self.portal_on,
             "portal_cycle_left": round(max(self.portal_cycle_left, 0), 1),
             "missiles": [self.missile_public(mz) for mz in self.missiles],
+            "mega_pellet": (
+                {"x": self.mega_pellet_cell[0], "y": self.mega_pellet_cell[1], "points": MEGA_PELLET_POINTS}
+                if self.mega_pellet_cell is not None else None
+            ),
         }
 
     async def drain_events(self):
@@ -3664,6 +3929,11 @@ class Room:
             p.spike_wall_placed = False
             p.has_tesla = False
             p.tesla_placed = False
+            p.has_territory_trap = False
+            p.territory_marking = False
+            p.territory_ready = False
+            p.territory_used = False
+            p.territory_tiles = set()
             p.kills = 0
 
     # ---------- main loop ----------
@@ -3710,11 +3980,13 @@ class Room:
                 self.check_blobs()    # bonus 1800/2000 punti: fa mangiare al blob (fermo o vivo) chiunque tocchi o gli sia adiacente
                 self.update_spike_walls()  # bonus 2200 punti: scala la durata dei muri di spunzoni (1 minuto) e uccide gli avversari che ci sbattono contro
                 self.update_teslas()  # bonus 2400 punti: la Tesla fulmina ad area, ogni 2.5s, tutto cio' che appartiene al nemico entro 8 caselle, ignorando i muri
+                self.update_territory_marking()  # bonus 2600 punti: marca (in privato) le caselle calpestate durante la fase di selezione della trappola territoriale
                 self.move_missiles()  # bonus 400 punti: avanza i missili guidati verso il bersaglio
                 self.update_bombs()   # bonus 1200 punti: avanza le bombe di mortaio in volo e le fa esplodere all'impatto
                 self.update_poison_zones()  # bonus 1200 punti: le nuvole velenose lasciate dagli impatti continuano a fare danno nel tempo
                 self.update_superbombs()  # bonus 1400 punti: avanza il conto alla rovescia dei bomboloni piazzati e li fa esplodere dopo 2 secondi
                 self.update_balloons()    # bonus 1600 punti: fa vagare a caso le mongolfiere in volo e sganciano bombe istantanee ogni 3 secondi
+                self.update_mega_pellet()  # pallino mega da 100 punti: spawna una volta al minuto al centro esatto della mappa
                 self.check_armor_effects()  # bonus 700 punti: la corazza distrugge torrette/mine/pet/mortai avversari toccati
                 winners, reason = self.check_win()
                 if winners is None and self.timer_left <= 0:
@@ -3729,6 +4001,7 @@ class Room:
                     self.state = "ENDED"
                     self.last_result = {"winners": winners, "reason": reason}
                     await self.drain_events()
+                    await self.drain_private_events()
                     await self.broadcast(self.state_snapshot())
                     await self.broadcast({
                         "type": "round_end",
@@ -3740,6 +4013,7 @@ class Room:
                     break
 
             await self.drain_events()
+            await self.drain_private_events()
             await self.broadcast(self.state_snapshot())
 
         await asyncio.sleep(8)
@@ -4020,7 +4294,16 @@ async def handle_client(ws):
                     )
                     if player.blob_alive_used or not blob_still_there:
                         if player.spike_wall_placed:
-                            room.try_place_tesla(player)
+                            if player.tesla_placed:
+                                # Fine catena (nuovo, bonus 2600 punti): la
+                                # Tesla e' gia' stata piazzata, quindi la
+                                # stessa pressione gestisce ora la
+                                # trappola territoriale (vedi
+                                # try_use_territory_trap): prima pressione
+                                # avvia la selezione, seconda la innesca.
+                                room.try_use_territory_trap(player)
+                            else:
+                                room.try_place_tesla(player)
                         else:
                             room.try_place_spike_wall(player)
                     else:

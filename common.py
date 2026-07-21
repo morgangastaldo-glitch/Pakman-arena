@@ -25,7 +25,7 @@ TICK_HZ = 60
 TICK_DT = 1.0 / TICK_HZ
 
 COUNTDOWN_SECONDS = 15
-ROUND_SECONDS = 600  # durata di un round: 10 minuti
+ROUND_SECONDS = 1200  # durata di un round: 20 minuti
 MAX_PLAYERS = 5
 MIN_PLAYERS = 1
 
@@ -61,7 +61,7 @@ BONUS_THRESHOLDS = [
     (50,  "extra_life"),    # +1 vita: se vieni eliminato, respawni invece di uscire
     (100, "extra_life"),    # +1 seconda vita extra (stesso effetto, soglia diversa)
     (150, "laser"),         # sblocca il laser (un colpo/secondo): resta attivo per tutta la partita, ma spara solo quando un nemico e' entro LASER_RANGE_CELLS caselle
-    (200, "mines"),         # sblocca 3 mine sganciabili sulla mappa (si attivano col tasto "1")
+    (200, "mines"),         # sblocca 1 mina sganciabile sulla mappa (si attiva col tasto "1")
     (400, "missile"),       # sblocca 1 missile guidato (si spara col tasto "3")
     (750, "extra_life_3"),  # +3 vite extra in un colpo solo, tra la corazza (700) e il fulmine (800)
     (1100, "extra_life_3"), # +3 vite extra in un colpo solo, tra la torretta-navicella (1000) e il mortaio (1200)
@@ -70,6 +70,14 @@ PELLET_POINTS = 1                  # valore di un pallino normale
 POWER_PELLET_POINTS = 10           # valore di un pallino grosso/arancione
 POWER_PELLET_COUNT = 10            # quanti pallini grossi su ciascuna mappa
 PELLET_RESPAWN_SECONDS = 20.0      # tempo prima che un pallino mangiato ricompaia
+# Pallino mega (ancora piu' grosso del power pellet arancione): spawna UNA
+# SOLA VOLTA al minuto, sempre nella cella libera piu' vicina all'esatto
+# centro della mappa, e vale 100 punti. A differenza dei pallini normali
+# non ricompare da solo dopo essere stato mangiato: bisogna aspettare il
+# prossimo giro di MEGA_PELLET_INTERVAL_SECONDS (vedi update_mega_pellet/
+# eat_mega_pellet in main.py).
+MEGA_PELLET_POINTS = 100
+MEGA_PELLET_INTERVAL_SECONDS = 60.0
 SUPER_ASSASSIN_THRESHOLD = 300     # punti oltre i quali si sblocca la modalita' ninja
 # La modalita' ninja dura 45 secondi (aumentata da 30) ed e' utilizzabile
 # UNA SOLA VOLTA per round: una volta terminata (scaduto il tempo o dopo
@@ -84,7 +92,7 @@ LASER_INTERVAL_SECONDS = 1.0   # ogni quanto il laser spara un colpo, una volta 
 LASER_FIRST_DELAY_SECONDS = 1.0  # attesa del primo colpo dopo lo sblocco
 LASER_PROJECTILE_SPEED = 20.0  # celle al secondo percorse dal proiettile laser (raddoppiata: e' un proiettile vero, deve sentirsi veloce)
 LASER_BOUNCE_DISTANCE = 12     # celle percorribili dopo il primo rimbalzo su una parete (bonus 150 punti)
-MINES_COUNT = 2                # numero di mine disponibili una volta sbloccato il bonus 200 punti (ridotto da 3 a 2)
+MINES_COUNT = 1                # numero di mine disponibili una volta sbloccato il bonus 200 punti (ridotto da 2 a 1)
 MINE_DOUBLE_TAP_MS = 350       # finestra (ms) del doppio tocco freccia destra/D che sgancia una mina (uso lato client)
 PORTAL_COOLDOWN_SECONDS = 1.2  # anti ping-pong: dopo un teletrasporto i portali si ignorano per un attimo
 
@@ -109,9 +117,9 @@ MISSILE_LOCK_DISTANCE = 2        # NERF: entro questa distanza (caselle, Manhatt
 # esplosione (perde una vita). Se scade il tempo, la trappola si disinnesca
 # da sola e l'avversario torna libero.
 TRAP_THRESHOLD = 500
-TRAP_DURATION_SECONDS = 3.0    # la trappola immobilizza il bersaglio solo 3 secondi (ridotta da 15)
+TRAP_DURATION_SECONDS = 5.0    # la trappola immobilizza il bersaglio per 5 secondi (aumentata da 3)
 TRAP_RANGE = 1  # distanza massima (in celle, stile scacchi/Chebyshev) per far detonare la trappola
-TRAP_MAX_USES = 3              # la trappola si puo' innescare al massimo 3 volte per giocatore, per round
+TRAP_MAX_USES = 1              # la trappola si puo' innescare UNA SOLA VOLTA per giocatore, per round (ridotta da 3)
 
 # ---- bonus 600 punti: torretta automatica piazzabile (tasto "5") ----
 # Allo sblocco NON scatta nulla in automatico: premendo il tasto "5" UNA
@@ -127,9 +135,11 @@ TURRET_FIRE_INTERVAL_SECONDS = LASER_INTERVAL_SECONDS  # stessa cadenza di fuoco
 # questa distanza (in caselle, distanza Manhattan). Fuori raggio la
 # torretta resta in attesa e riprende a sparare appena qualcuno rientra.
 TURRET_RANGE_CELLS = 10
-# Percentuale di punti che chi uccide ruba alla vittima (20%): la vittima
-# conserva l'80% delle sue risorse.
-KILL_STEAL_FRACTION = 0.2
+# Percentuale di punti che chi uccide GUADAGNA come bonus, calcolata sul
+# totale della vittima (10%): NON viene piu' sottratta alla vittima, che
+# conserva sempre tutti i suoi punti - e' un premio per il killer, non un
+# furto.
+KILL_STEAL_FRACTION = 0.1
 
 # ---- bonus 700 punti: corazza laser (tasto "6") ----
 # Allo sblocco NON scatta nulla in automatico: premendo il tasto "6" il
@@ -315,6 +325,27 @@ SPIKE_WALL_HIT_RANGE = 0.6           # distanza (frazione di cella, per asse) so
 TESLA_THRESHOLD = 2400
 TESLA_FIRE_INTERVAL_SECONDS = 2.5    # cadenza dei fulmini ad area
 TESLA_RANGE_CELLS = 8                # raggio d'azione (distanza Manhattan), ignora i muri
+
+# ---- bonus 2600 punti: trappola territoriale a spunzoni (tasto "1", DOPO la Tesla) ----
+# Nuovo, ultimo gradino della catena del tasto "1", dopo la Tesla (2400).
+# La PRIMA pressione del tasto "1" (una volta esaurita tutta la catena
+# precedente) avvia la FASE DI SELEZIONE (vedi try_use_territory_trap in
+# main.py): da quel momento, ogni casella di strada NON ancora marcata che
+# il giocatore calpesta si illumina del suo colore - ma SOLO ai suoi occhi
+# (evento privato, mai incluso nello stato pubblico), cosi' l'avversario
+# non puo' scoprire in anticipo dove scattera' la trappola. La selezione
+# si chiude da sola non appena sono state marcate TERRITORY_TILES_REQUIRED
+# caselle nuove (vedi update_territory_marking): da quel momento le
+# caselle restano illuminate (sempre solo per il proprietario) finche' la
+# SECONDA pressione del tasto "1" non attiva la trappola vera e propria
+# (vedi trigger_territory_trap): in quell'istante, da OGNI casella marcata
+# sputano spunzoni acuminati dal pavimento (nel colore del proprietario,
+# stavolta visibili a TUTTI) che uccidono all'istante chiunque - avversario
+# vivo, senza protezioni attive - si trovi sopra in quel preciso momento.
+# Esaurita l'attivazione, il bonus e' consumato per il resto del round,
+# come tutti gli altri gradini della catena.
+TERRITORY_TRAP_THRESHOLD = 2600
+TERRITORY_TILES_REQUIRED = 20        # caselle nuove da calpestare per completare la selezione
 BLOB_POISON_DURATION_SECONDS = 4.0                # quanto resta a terra ciascuna nuvola della scia del blob vivo
 BLOB_EAT_RANGE_CELLS = 1                          # distanza (caselle, stile scacchi/Chebyshev): il blob mangia anche chi non e' esattamente sopra di lui, ma solo adiacente
 

@@ -858,6 +858,17 @@ let portals = [];          // [[x,y],[x,y]] ricevuti dal server con la mappa
 let beams = [];            // (non piu' usato: il vecchio raggio istantaneo e' stato sostituito dai proiettili)
 let sparks = [];           // scintille per rimbalzo/estinzione laser: {x,y,start}
 let teslaBolts = [];       // fulmini in corso di una Tesla: {x,y,targets:[[x,y],...],start}
+// ---- bonus 2600 punti: trappola territoriale a spunzoni (tasto "1", DOPO la Tesla) ----
+// Le caselle marcate durante la selezione arrivano SOLO a me (eventi
+// privati "territory_tile"/"territory_start"/"territory_ready", mai nello
+// stato pubblico): per questo vivono in variabili locali, non in
+// currSnapshot. territoryBursts invece e' l'esplosione di spunzoni al
+// momento dell'attivazione (evento pubblico "territory_trigger"): quella
+// la vedono TUTTI, proprietario e avversari.
+let myTerritoryTiles = [];      // [[x,y], ...] celle che HO marcato finora
+let myTerritoryMarking = false; // true durante la mia fase di selezione
+let myTerritoryReady = false;   // true quando la mia selezione e' completa, in attesa della 2a pressione
+let territoryBursts = [];       // {tiles:[[x,y],...], color, start} spunzoni erotti, visibili a tutti
 let swirls = [];           // effetti di teletrasporto in corso: {x,y,start,color}
 let themeFx = [];          // particelle atmosferiche a tema della mappa corrente
 let themeFxKind = null;    // tipo di effetto della mappa corrente (embers/snow/...)
@@ -2034,6 +2045,42 @@ function drawPowerPellets(now){
   ctx.restore();
 }
 
+// Pallino MEGA (100 punti): un solo esemplare alla volta, sempre al centro
+// esatto della mappa, spawnato una volta al minuto (vedi update_mega_pellet
+// in main.py). Letto direttamente da currSnapshot.mega_pellet (autorita'
+// server), come le Tesla/torrette/ecc: molto piu' grande e vistoso del
+// power pellet arancione), cosi' non si confonde con esso.
+function drawMegaPellet(now){
+  const mp = currSnapshot && currSnapshot.mega_pellet;
+  if (!mp) return;
+  const pulse = 1 + 0.22 * Math.sin(now / 180);
+  const spin = (now / 900) % (Math.PI * 2);
+  const cx = mp.x * BASE_CELL + BASE_CELL / 2;
+  const cy = mp.y * BASE_CELL + BASE_CELL / 2;
+  const r = 11 * pulse;
+  ctx.save();
+  ctx.fillStyle = "#7fdcff";
+  ctx.shadowColor = "#7fdcff";
+  ctx.shadowBlur = 16;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = "rgba(255,255,255,0.9)";
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r + 2, 0, Math.PI * 2);
+  ctx.stroke();
+  // Anello rotante decorativo, per distinguerlo a colpo d'occhio da un
+  // semplice power pellet piu' grande.
+  ctx.strokeStyle = "rgba(255,255,255,0.55)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r + 5, spin, spin + Math.PI * 1.4);
+  ctx.stroke();
+  ctx.restore();
+}
+
 function drawPellets(){
   if (pelletsLayerDirty) buildPelletsLayer();
   // Blit del bitmap gia' pronto: nessun ridisegno di pallini/glow a runtime.
@@ -2574,7 +2621,7 @@ function drawPlayers(players, now){
       ctx.restore();
     }
 
-    // Bonus 500 punti: nemico intrappolato, immobile per 15s. Visibile a
+    // Bonus 500 punti: nemico intrappolato, immobile per 5s. Visibile a
     // tutti (cosi' si capisce perche' non si muove), anello dorato tratteggiato
     // che ruota lentamente.
     if (p.trapped){
@@ -3407,6 +3454,85 @@ function drawTeslaBolts(now){
   ctx.restore();
 }
 
+// Caselle marcate durante LA MIA selezione territoriale (bonus 2600 punti,
+// tasto "1" dopo la Tesla): vivono SOLO in myTerritoryTiles (mai in
+// currSnapshot, arrivano tramite eventi privati "territory_tile"), quindi
+// SOLO IO le vedo - un avversario non ha modo di disegnarle perche' non
+// gli arriva mai l'evento. Pulsano piano nel mio colore per farsi notare
+// senza disturbare la lettura della mappa; quando la selezione e'
+// completa (myTerritoryReady) restano fisse, piu' piene, in attesa della
+// seconda pressione del tasto "1" che le trasforma in spunzoni veri.
+function drawMyTerritoryTiles(now){
+  if (!myTerritoryTiles.length) return;
+  const me = findPlayer(currSnapshot, myId);
+  const col = (me && COLOR_HEX[(me.colors || [])[0]]) || "#ffd400";
+  ctx.save();
+  const pulse = myTerritoryReady ? 0.85 : 0.45 + Math.sin(now / 220) * 0.2;
+  ctx.globalAlpha = pulse;
+  ctx.fillStyle = col;
+  myTerritoryTiles.forEach(function(t){
+    const x0 = t[0] * BASE_CELL, y0 = t[1] * BASE_CELL;
+    ctx.fillRect(x0, y0, BASE_CELL, BASE_CELL);
+  });
+  ctx.globalAlpha = Math.min(1, pulse + 0.25);
+  ctx.strokeStyle = col;
+  ctx.lineWidth = 2;
+  myTerritoryTiles.forEach(function(t){
+    const x0 = t[0] * BASE_CELL, y0 = t[1] * BASE_CELL;
+    ctx.strokeRect(x0 + 1, y0 + 1, BASE_CELL - 2, BASE_CELL - 2);
+  });
+  ctx.restore();
+}
+
+// Eruzione degli spunzoni della trappola territoriale al momento
+// dell'attivazione (evento pubblico "territory_trigger", bonus 2600
+// punti): a differenza delle caselle marcate durante la selezione, questa
+// la vedono TUTTI, proprietario e avversari - e' proprio in questo istante
+// che la trappola si rivela. Ogni spunzone sale di scatto dal pavimento e
+// si dissolve in TERRITORY_BURST_MS millisecondi, nel colore di chi ha
+// attivato la trappola.
+const TERRITORY_BURST_MS = 500;
+function drawTerritoryBursts(now){
+  territoryBursts = territoryBursts.filter(function(b){ return now - b.start < TERRITORY_BURST_MS; });
+  if (!territoryBursts.length) return;
+  ctx.save();
+  territoryBursts.forEach(function(b){
+    const t = (now - b.start) / TERRITORY_BURST_MS;
+    // Salita rapida nel primo terzo dell'animazione, poi dissolvenza.
+    const rise = Math.min(1, t / 0.3);
+    const alpha = 1 - Math.max(0, (t - 0.3) / 0.7);
+    const spikeLen = BASE_CELL * 0.4 * rise;
+    (b.tiles || []).forEach(function(tile){
+      const x0 = tile[0] * BASE_CELL, y0 = tile[1] * BASE_CELL;
+      const cx = x0 + BASE_CELL / 2, cy = y0 + BASE_CELL / 2;
+      ctx.globalAlpha = alpha * 0.35;
+      ctx.fillStyle = b.color;
+      ctx.fillRect(x0, y0, BASE_CELL, BASE_CELL);
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = "#e8e8ec";
+      ctx.strokeStyle = darkenHex(b.color, 0.55);
+      ctx.lineWidth = 1.4;
+      // 4 spunzoni per casella, disposti a croce, che sporgono dal basso
+      // verso l'alto: danno l'idea di rocce affilate sputate dal suolo.
+      const offs = [-BASE_CELL * 0.22, BASE_CELL * 0.22];
+      offs.forEach(function(ox){
+        offs.forEach(function(oy){
+          const bx = cx + ox, by = cy + oy;
+          const half = BASE_CELL * 0.09;
+          ctx.beginPath();
+          ctx.moveTo(bx - half, by);
+          ctx.lineTo(bx, by - spikeLen);
+          ctx.lineTo(bx + half, by);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+        });
+      });
+    });
+  });
+  ctx.restore();
+}
+
 
 // libera su tutta la mappa senza alcun bersaglio (server-authoritative,
 // vedi update_balloons/balloon_public in main.py), sganciando una bomba
@@ -3714,15 +3840,20 @@ function drawPoisonZones(now){
       return;
     }
 
-    // Nuvole tonde del mortaio (radius >= 1): invariate, verde veleno.
+    // Nuvole tonde del mortaio (radius >= 1): nel colore del proprietario,
+    // esattamente come la scia del blob vivo qui sopra, cosi' si vede
+    // subito di chi e' la nuvola (fallback al verde veleno generico se il
+    // proprietario non e' identificabile, es. gia' disconnesso).
+    const mortarOwner = findPlayer(currSnapshot, pz.owner);
+    const mortarCol = (mortarOwner && COLOR_HEX[(mortarOwner.colors || [])[0]]) || POISON_COLOR;
     const r = BASE_CELL * (0.55 + rad * 1.0);
 
     ctx.globalAlpha = 0.30 * fade;
-    ctx.fillStyle = POISON_COLOR;
+    ctx.fillStyle = mortarCol;
     ctx.beginPath(); ctx.arc(cx, cy, r * pulse, 0, Math.PI * 2); ctx.fill();
 
     ctx.globalAlpha = 0.55 * fade;
-    ctx.strokeStyle = POISON_COLOR;
+    ctx.strokeStyle = mortarCol;
     ctx.lineWidth = 1.4;
     ctx.setLineDash([3, 4]);
     ctx.beginPath(); ctx.arc(cx, cy, r * pulse, 0, Math.PI * 2); ctx.stroke();
@@ -3736,7 +3867,7 @@ function drawPoisonZones(now){
       });
     }
     ctx.globalAlpha = 0.7 * fade;
-    ctx.fillStyle = "#c8ff9a";
+    ctx.fillStyle = mortarCol;
     poisonBubbleSeeds[pz.id].forEach(function(b){
       const bt = ((now + b.off) / 700) % 1;
       const bx = cx + Math.cos(b.a) * r * 0.5;
@@ -4064,6 +4195,7 @@ function renderLoop(now){
   drawMaze();
   drawPellets();
   drawPowerPellets(now);
+  drawMegaPellet(now);
   drawPortals(now);
   drawThemeFx(now);
   drawPlayers(currSnapshot.players, now);
@@ -4082,6 +4214,8 @@ function renderLoop(now){
   drawLaserProjectiles(now);
   drawSparks(now);
   drawTeslaBolts(now);
+  drawMyTerritoryTiles(now);
+  drawTerritoryBursts(now);
   drawExplosions(now);
   drawShockwaves(now);
   drawSkyBolts(now);
@@ -4152,6 +4286,11 @@ function onState(msg){
     beams = [];
     sparks = [];
     swirls = [];
+    teslaBolts = [];
+    territoryBursts = [];
+    myTerritoryTiles = [];
+    myTerritoryMarking = false;
+    myTerritoryReady = false;
     remoteSim = {};
     remotePetSim = {};
     remoteMissileSim = {};
@@ -4503,6 +4642,23 @@ function onGameEvent(msg){
       if (changed) pelletsLayerDirty = true;
       break;
     }
+    case "mega_pellet_spawn": {
+      // Il pallino mega da 100 punti e' appena comparso al centro della
+      // mappa (una volta al minuto, vedi update_mega_pellet in main.py):
+      // annuncio visibile a tutti, cosi' si corre a prenderlo.
+      showToast("Pallino MEGA (100 punti) apparso al centro della mappa!");
+      tone(660, 0.12, "triangle", 0.13);
+      tone(880, 0.14, "triangle", 0.13, 0.05);
+      break;
+    }
+    case "mega_pellet_eaten": {
+      explosions.push({ x: msg.x, y: msg.y, color: "#7fdcff", start: now });
+      if (msg.by === myId){
+        playChomp();
+        showToast("Pallino MEGA mangiato: +" + msg.points + " punti!");
+      }
+      break;
+    }
     case "bonus": {
       // Titolo grande + sottotitolo piccolo (istruzioni d'uso): il banner
       // resta leggibile a colpo d'occhio anche in piena azione.
@@ -4510,10 +4666,10 @@ function onGameEvent(msg){
         extra_life:   ["VITA EXTRA! \u2665", ""],
         extra_life_3: ["3 VITE EXTRA! \u2665\u2665\u2665", ""],
         laser:        ["LASER SBLOCCATO!", "spara da solo quando un nemico e' entro 12 caselle"],
-        mines:        ["MINE SBLOCCATE!", "2 mine \u00b7 premi 1 per posarle (poi mortaio/bombolone/mongolfiera/blob/risveglio blob/muro di spunzoni)"],
+        mines:        ["MINE SBLOCCATE!", "1 mina \u00b7 premi 1 per posarla (poi mortaio/bombolone/mongolfiera/blob/risveglio blob/muro di spunzoni)"],
         ninja:        ["NINJA SBLOCCATO!", "invisibilit\u00e0 \u00b7 premi 2 per attivarla"],
         missile:      ["MISSILE GUIDATO!", "premi 3 per lanciarlo"],
-        trap:         ["TRAPPOLA SBLOCCATA!", "3 secondi \u00b7 3 usi \u00b7 premi 4"],
+        trap:         ["TRAPPOLA SBLOCCATA!", "5 secondi \u00b7 1 uso \u00b7 premi 4"],
         turret:       ["TORRETTA SBLOCCATA!", "raggio 10 caselle \u00b7 premi 5 per piazzarla"],
         armor:        ["CORAZZA LASER SBLOCCATA!", "20 secondi \u00b7 premi 6 per attivarla"],
         lightning:    ["FULMINE SBLOCCATO!", "colpisce un avversario a caso \u00b7 premi 7 per scatenarlo"],
@@ -4564,21 +4720,21 @@ function onGameEvent(msg){
       const byBlob = msg.cause === "blob";
       const bySpikeWall = msg.cause === "spike_wall";
       const byTesla = msg.cause === "tesla";
+      const byTerritory = msg.cause === "territory_trap";
       // Schianto contro un muro di spunzoni: oltre al suono di
       // eliminazione normale, l'impatto di roccia dedicato.
       if (bySpikeWall) playSpikeWallCrash();
       const causeTxt = byLaser ? " dal laser" : (byMine ? " da una mina" : (byAssassin ? " da un ninja invisibile"
         : (byMissile ? " da un missile guidato" : (byTrap ? " da una trappola" : (byArmor ? " dalla corazza laser"
         : (byLightning ? " da un fulmine" : (byPet ? " dal pet avversario" : (byMortar ? " da una bomba di mortaio"
-        : (byPoison ? " dalla nuvola velenosa" : (bySuperbomb ? " da un bombolone" : (byBalloon ? " da una bomba di mongolfiera" : (byBlob ? " mangiato da un blob gelatinoso" : (bySpikeWall ? " schiantato contro un muro di spunzoni" : (byTesla ? " fulminato da una Tesla laser" : ""))))))))))))));
-      const stolenTxt = msg.stolen ? (" (-" + msg.stolen + " punti)") : "";
+        : (byPoison ? " dalla nuvola velenosa" : (bySuperbomb ? " da un bombolone" : (byBalloon ? " da una bomba di mongolfiera" : (byBlob ? " mangiato da un blob gelatinoso" : (bySpikeWall ? " schiantato contro un muro di spunzoni" : (byTesla ? " fulminato da una Tesla laser" : (byTerritory ? " infilzato da una trappola territoriale" : "")))))))))))))));
       if (msg.victim === myId){
         showBonusBanner(msg.respawn ? ("HAI PERSO UNA VITA \u2665" + msg.lives) : "SEI STATO ELIMINATO");
       } else if (victim){
-        showToast(victim.name + (msg.respawn ? " colpito!" : " eliminato") + causeTxt + stolenTxt);
+        showToast(victim.name + (msg.respawn ? " colpito!" : " eliminato") + causeTxt);
       }
       if (msg.stolen && msg.by === myId){
-        showToast("Hai rubato " + msg.stolen + " punti (il 50% delle sue risorse)!");
+        showToast("Hai guadagnato " + msg.stolen + " punti (il 10% delle risorse dell'avversario)!");
       }
       break;
     }
@@ -4738,6 +4894,58 @@ function onGameEvent(msg){
       tone(1600, 0.05, "square", 0.1, 0.03);
       break;
     }
+    case "territory_start": {
+      // Bonus 2600 punti, prima pressione del tasto "1" dopo la Tesla:
+      // avvia SOLO PER ME la fase di selezione (evento privato, arriva
+      // solo a chi ha premuto). Azzero lo stato locale e mostro un
+      // avviso di quante caselle mi servono ancora.
+      myTerritoryMarking = true;
+      myTerritoryReady = false;
+      myTerritoryTiles = [];
+      showToast("Trappola territoriale: cammina su " + msg.required + " caselle per marcarle!");
+      tone(300, 0.08, "square", 0.1);
+      break;
+    }
+    case "territory_tile": {
+      // Una nuova casella e' stata marcata (evento privato, SOLO mio):
+      // resta illuminata nel mio colore finche' non attivo la trappola
+      // (vedi drawMyTerritoryTiles) o finche' non finisce il round.
+      myTerritoryTiles.push([msg.x, msg.y]);
+      tone(700 + Math.min(msg.remaining, 20) * 8, 0.04, "square", 0.06);
+      break;
+    }
+    case "territory_ready": {
+      // Selezione completata (evento privato, SOLO mio): le caselle
+      // restano accese, la trappola e' pronta. Ripremendo "1" scatta.
+      myTerritoryMarking = false;
+      myTerritoryReady = true;
+      showBonusBanner("TRAPPOLA PRONTA! Ripremi 1 per attivarla");
+      tone(900, 0.12, "square", 0.12);
+      tone(1300, 0.1, "square", 0.1, 0.06);
+      break;
+    }
+    case "territory_trigger": {
+      // Seconda pressione del tasto "1": la trappola scatta DAVVERO, e da
+      // qui in poi l'evento e' PUBBLICO (a differenza delle celle marcate
+      // finora, viste solo dal proprietario) - e' proprio nell'istante
+      // dell'attivazione che si rivela a tutti. Gli eventuali "kill" delle
+      // vittime arrivano come eventi "kill" separati subito dopo (causa
+      // "territory_trap"), con il loro toast/suono dedicato: qui c'e' solo
+      // l'eruzione degli spunzoni da ogni casella marcata.
+      const owner = findPlayer(currSnapshot, msg.player);
+      const col = (owner && COLOR_HEX[(owner.colors || [])[0]]) || "#ff4d4d";
+      territoryBursts.push({ tiles: msg.tiles || [], color: col, start: now });
+      if (msg.player === myId){
+        myTerritoryTiles = [];
+        myTerritoryMarking = false;
+        myTerritoryReady = false;
+        showToast("Trappola territoriale attivata!");
+      }
+      noiseBurst(0.25, 0.2);
+      tone(140, 0.22, "sawtooth", 0.16);
+      tone(1800, 0.08, "square", 0.1, 0.05);
+      break;
+    }
     case "poison_spawn": {
       // Suono acido/gorgogliante distinto dal boato dell'impatto diretto,
       // per far capire che resta un pericolo a terra.
@@ -4866,6 +5074,19 @@ function onGameEvent(msg){
         const what = msg.evolved ? "Navicella avversaria" : "Torretta avversaria";
         const turretCauseTxt = { superbomb: "dal bombolone", balloon: "da una bomba di mongolfiera", tesla: "da una Tesla laser" }[msg.cause] || "dalla corazza";
         showToast(what + " distrutta " + turretCauseTxt + "!");
+      }
+      break;
+    }
+    case "tesla_destroyed": {
+      // Il bombolone (bonus 1400 punti) e' l'UNICA arma capace di
+      // distruggere una Tesla laser avversaria (vedi explode_superbomb in
+      // main.py): la Tesla stessa, dal canto suo, non puo' fare nulla
+      // contro il bombolone (vedi tesla_zap).
+      explosions.push({ x: msg.x, y: msg.y, color: TESLA_COLOR, start: now });
+      noiseBurst(0.22, 0.18);
+      tone(110, 0.2, "sawtooth", 0.14, 0.02);
+      if (msg.by === myId){
+        showToast("Tesla laser avversaria distrutta dal bombolone!");
       }
       break;
     }
@@ -5092,6 +5313,13 @@ function mineChainStep(p){
   if (p.blob_alive_bonus && !p.blob_alive_used && myBlobStillThere) return "blob_alive";
   if (p.spike_wall && !p.spike_wall_placed) return "spike_wall";
   if (p.tesla && !p.tesla_placed) return "tesla";
+  // Nuovo, ultimo gradino (bonus 2600 punti): la trappola territoriale.
+  // Resta l'icona attiva finche' non e' stata CONSUMATA (territory_used),
+  // non solo finche' non e' stata piazzata: a differenza degli altri
+  // gradini, questa ha due fasi (selezione + attivazione) sotto la STESSA
+  // icona, distinta localmente da myTerritoryMarking/myTerritoryReady
+  // (vedi renderGadgetIcon).
+  if (p.territory_trap && !p.territory_used) return "territory_trap";
   return null;
 }
 const GADGET_RAIL_KEYS = [
@@ -5303,6 +5531,34 @@ function renderGadgetIcon(icx, key, color){
     icx.lineTo(cx + res * 0.01, topY - res * 0.03);
     icx.lineTo(cx + res * 0.07, topY - res * 0.16);
     icx.stroke();
+  } else if (key === "territory_trap"){
+    // Trappola territoriale (bonus 2600 punti): icona a due stati, letta
+    // dallo stato LOCALE (myTerritoryMarking/myTerritoryReady, mai dallo
+    // stato pubblico, che non conosce le caselle). Prima di iniziare/
+    // durante la selezione: un riquadro tratteggiato pulsante nel mio
+    // colore (sto "disegnando" il perimetro). Una volta pronta: uno
+    // spunzone pieno, per segnalare che ripremendo "1" scatta davvero.
+    if (myTerritoryReady){
+      const half = res * 0.28, spike = res * 0.16;
+      icx.fillStyle = color;
+      icx.strokeStyle = darkenHex(color, 0.55);
+      icx.lineWidth = res * 0.03;
+      icx.beginPath();
+      icx.moveTo(cx - spike, cy + half);
+      icx.lineTo(cx, cy - half);
+      icx.lineTo(cx + spike, cy + half);
+      icx.closePath();
+      icx.fill(); icx.stroke();
+    } else {
+      icx.strokeStyle = color;
+      icx.lineWidth = res * 0.06;
+      icx.setLineDash([res * 0.09, res * 0.07]);
+      icx.strokeRect(cx - res * 0.3, cy - res * 0.3, res * 0.6, res * 0.6);
+      icx.setLineDash([]);
+      icx.fillStyle = color;
+      icx.globalAlpha = 0.35;
+      icx.fillRect(cx - res * 0.3, cy - res * 0.3, res * 0.6, res * 0.6);
+    }
   } else if (key === "2" || key === "8"){
     // Ninja/pet (vedi drawPacmanVariant): stesso mini Pac-Man del gioco.
     // Il ninja e' semitrasparente con alone rosso pulsante (come si vede
@@ -5664,6 +5920,7 @@ function mineMortarChainPending(me){
   if (me.blob_alive_bonus && !me.blob_alive_used) return true;
   if (me.spike_wall && !me.spike_wall_placed) return true;
   if (me.tesla && !me.tesla_placed) return true;
+  if (me.territory_trap && !me.territory_used) return true;
   return false;
 }
 
