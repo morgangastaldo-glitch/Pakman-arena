@@ -3467,14 +3467,14 @@ function drawMyTerritoryTiles(now){
   const me = findPlayer(currSnapshot, myId);
   const col = (me && COLOR_HEX[(me.colors || [])[0]]) || "#ffd400";
   ctx.save();
-  const pulse = myTerritoryReady ? 0.85 : 0.45 + Math.sin(now / 220) * 0.2;
+  const pulse = myTerritoryReady ? 0.5 : 0.22 + Math.sin(now / 220) * 0.12;
   ctx.globalAlpha = pulse;
   ctx.fillStyle = col;
   myTerritoryTiles.forEach(function(t){
     const x0 = t[0] * BASE_CELL, y0 = t[1] * BASE_CELL;
     ctx.fillRect(x0, y0, BASE_CELL, BASE_CELL);
   });
-  ctx.globalAlpha = Math.min(1, pulse + 0.25);
+  ctx.globalAlpha = Math.min(1, pulse + 0.2);
   ctx.strokeStyle = col;
   ctx.lineWidth = 2;
   myTerritoryTiles.forEach(function(t){
@@ -3492,6 +3492,30 @@ function drawMyTerritoryTiles(now){
 // si dissolve in TERRITORY_BURST_MS millisecondi, nel colore di chi ha
 // attivato la trappola.
 const TERRITORY_BURST_MS = 500;
+// Genera un cluster irregolare di spunzoni per UNA casella: numero,
+// posizione, altezza, larghezza e inclinazione variabili, cosi' che ogni
+// casella della trappola sembri rotta/spaccata a modo suo invece che una
+// croce identica ripetuta ovunque. Va chiamata UNA sola volta per casella
+// (alla creazione del burst, non ad ogni frame di drawTerritoryBursts),
+// altrimenti gli spunzoni "tremolerebbero" ridisegnandosi random ogni volta.
+function makeSpikeCluster(){
+  const count = 5 + Math.floor(Math.random() * 4); // 5-8 spunzoni
+  const spikes = [];
+  for (let i = 0; i < count; i++){
+    spikes.push({
+      // posizione della base dello spunzone, sparsa dentro la casella
+      ox: (Math.random() - 0.5) * BASE_CELL * 0.72,
+      oy: (Math.random() - 0.5) * BASE_CELL * 0.72,
+      // altezza e larghezza proprie, cosi' non sono tutti uguali
+      len: BASE_CELL * (0.26 + Math.random() * 0.34),
+      half: BASE_CELL * (0.05 + Math.random() * 0.07),
+      // la punta si inclina lateralmente rispetto alla base: rende
+      // gli spunzoni "storti" invece che dritti come pali
+      tilt: (Math.random() - 0.5) * BASE_CELL * 0.26
+    });
+  }
+  return spikes;
+}
 function drawTerritoryBursts(now){
   territoryBursts = territoryBursts.filter(function(b){ return now - b.start < TERRITORY_BURST_MS; });
   if (!territoryBursts.length) return;
@@ -3501,8 +3525,7 @@ function drawTerritoryBursts(now){
     // Salita rapida nel primo terzo dell'animazione, poi dissolvenza.
     const rise = Math.min(1, t / 0.3);
     const alpha = 1 - Math.max(0, (t - 0.3) / 0.7);
-    const spikeLen = BASE_CELL * 0.4 * rise;
-    (b.tiles || []).forEach(function(tile){
+    (b.tiles || []).forEach(function(tile, i){
       const x0 = tile[0] * BASE_CELL, y0 = tile[1] * BASE_CELL;
       const cx = x0 + BASE_CELL / 2, cy = y0 + BASE_CELL / 2;
       ctx.globalAlpha = alpha * 0.35;
@@ -3512,21 +3535,22 @@ function drawTerritoryBursts(now){
       ctx.fillStyle = "#e8e8ec";
       ctx.strokeStyle = darkenHex(b.color, 0.55);
       ctx.lineWidth = 1.4;
-      // 4 spunzoni per casella, disposti a croce, che sporgono dal basso
-      // verso l'alto: danno l'idea di rocce affilate sputate dal suolo.
-      const offs = [-BASE_CELL * 0.22, BASE_CELL * 0.22];
-      offs.forEach(function(ox){
-        offs.forEach(function(oy){
-          const bx = cx + ox, by = cy + oy;
-          const half = BASE_CELL * 0.09;
-          ctx.beginPath();
-          ctx.moveTo(bx - half, by);
-          ctx.lineTo(bx, by - spikeLen);
-          ctx.lineTo(bx + half, by);
-          ctx.closePath();
-          ctx.fill();
-          ctx.stroke();
-        });
+      // Cluster irregolare gia' generato alla creazione del burst (vedi
+      // makeSpikeCluster): qui si disegna soltanto, in base alla salita
+      // corrente, cosi' tutti gli spunzoni della casella crescono insieme
+      // ma con forma/posizione/inclinazione proprie.
+      const cluster = (b.clusters && b.clusters[i]) || [];
+      cluster.forEach(function(s){
+        const bx = cx + s.ox, by = cy + s.oy;
+        const tipY = by - s.len * rise;
+        const tipX = bx + s.tilt * rise;
+        ctx.beginPath();
+        ctx.moveTo(bx - s.half, by);
+        ctx.lineTo(tipX, tipY);
+        ctx.lineTo(bx + s.half, by);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
       });
     });
   });
@@ -4934,7 +4958,15 @@ function onGameEvent(msg){
       // l'eruzione degli spunzoni da ogni casella marcata.
       const owner = findPlayer(currSnapshot, msg.player);
       const col = (owner && COLOR_HEX[(owner.colors || [])[0]]) || "#ff4d4d";
-      territoryBursts.push({ tiles: msg.tiles || [], color: col, start: now });
+      const burstTiles = msg.tiles || [];
+      territoryBursts.push({
+        tiles: burstTiles,
+        color: col,
+        start: now,
+        // un cluster irregolare per casella, generato una volta sola qui
+        // cosi' resta stabile per tutta la durata dell'animazione
+        clusters: burstTiles.map(makeSpikeCluster)
+      });
       if (msg.player === myId){
         myTerritoryTiles = [];
         myTerritoryMarking = false;
