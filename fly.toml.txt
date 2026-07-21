@@ -1,0 +1,28 @@
+# Config Fly.io per Pac-Man Arena (server WebSocket Python).
+# NB: cambia "app" con un nome univoco (Fly rifiuta nomi già usati da altri).
+
+app = "pakman-arena"
+primary_region = "fra"  # Francoforte: la regione più vicina all'Italia
+
+[build]
+
+[env]
+  PORT = "8765"
+
+[http_service]
+  internal_port = 8765
+  force_https = true
+  auto_stop_machines = "stop"    # spegne la macchina quando non c'è traffico (risparmia banda/ore)
+  auto_start_machines = true     # la riaccende automaticamente al primo collegamento
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    timeout = "5s"
+    path = "/"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
