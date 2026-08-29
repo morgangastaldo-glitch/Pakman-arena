@@ -26,7 +26,30 @@ l'architettura di questi script (dati, componenti, manager) si traduce 1:1 in C#
 
 ---
 
-## Avvio rapido
+## Due versioni dello stesso prototipo
+
+| | Dove | A cosa serve |
+|---|---|---|
+| **Godot 4.3** | `scenes/`, `scripts/` | versione di riferimento: scene, editor, esportazione su desktop/console |
+| **HTML** | `web/platform_fighter.html` | un unico file: doppio clic e si gioca nel browser, come il resto di questo repo |
+
+La versione HTML e' un porting in Canvas 2D **con gli stessi identici numeri**:
+stessa formula di knockback, stesso frame data, stesse statistiche. Si puo'
+bilanciare in una e riportare nell'altra. Non richiede build ne' dipendenze e
+funziona anche offline (i font di Google hanno stack di fallback dichiarati).
+
+```bash
+# giocare subito nel browser
+xdg-open platform_fighter/web/platform_fighter.html    # oppure aprilo con doppio clic
+```
+
+Verifica automatica della versione web (Playwright + Chromium, 21 controlli:
+collisioni, salto, drop-through, fast fall, danno, knockback, Ring Out):
+il file espone `window.__pf` per pilotare il gioco da console o da test.
+
+---
+
+## Avvio rapido (versione Godot)
 
 ```bash
 # 1. generare input map e scene (una sola volta)

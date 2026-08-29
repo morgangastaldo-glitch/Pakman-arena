@@ -1,0 +1,1317 @@
+<!doctype html>
+<html lang="it">
+<meta charset="utf-8">
+<title>Platform Fighter Arena</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Barlow:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+  /* -------------------------------------------------------------------------
+     Il gioco vive in un'arena notturna: la pagina si impegna su un solo mondo
+     scuro (niente tema chiaro) e dipinge esplicitamente ogni colore, cosi'
+     regge su qualsiasi sfondo la ospiti. I due accenti sono i colori dei
+     giocatori, gli stessi usati dentro il canvas: l'interfaccia e la partita
+     parlano la stessa lingua.
+     ------------------------------------------------------------------------- */
+  :root {
+    color-scheme: dark;
+    --ground: #090c14;
+    --panel: #111826;
+    --panel-hi: #172033;
+    --line: #1e2942;
+    --ink: #e8eefb;
+    --muted: #7b89a6;
+    --p1: #45c7f5;
+    --p2: #ff7a45;
+    --display: "Chakra Petch", ui-sans-serif, system-ui, sans-serif;
+    --body: "Barlow", ui-sans-serif, system-ui, sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font: 400 15px/1.55 var(--body);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 18px;
+    min-height: 100vh;
+    padding: 22px 16px 36px;
+  }
+  .shell { width: min(1280px, 100%); display: flex; flex-direction: column; gap: 18px; }
+
+  /* Intestazione: il titolo e' un'insegna, i due colori dei giocatori fanno
+     da firma cromatica invece di un logo. */
+  header { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+  h1 {
+    font: 700 26px/1 var(--display);
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    margin: 0;
+    text-wrap: balance;
+  }
+  h1 em { font-style: normal; color: var(--p2); }
+  header p { margin: 0; color: var(--muted); font-size: 14px; max-width: 62ch; }
+
+  /* Il canvas E' la tesi della pagina: sta in cima, a tutta larghezza, con una
+     sola guida cromatica sopra che ricorda chi sono i due contendenti. */
+  #stage {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    overflow: hidden;
+    background: #10141d;
+  }
+  #stage::before {
+    content: "";
+    position: absolute; inset: 0 0 auto 0; height: 3px; z-index: 2;
+    background: linear-gradient(90deg, var(--p1) 0 42%, var(--line) 42% 58%, var(--p2) 58% 100%);
+  }
+  canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+
+  #hint {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    gap: 10px; flex-direction: column;
+    background: rgba(7, 10, 18, 0.86);
+    color: var(--ink); border: 0; cursor: pointer;
+    font: 400 15px/1.6 var(--body); text-align: center; padding: 28px;
+  }
+  #hint b { font: 700 24px/1.1 var(--display); letter-spacing: 0.04em; text-transform: uppercase; }
+  #hint span { max-width: 48ch; color: var(--muted); }
+  #hint:focus-visible { outline: 2px solid var(--p1); outline-offset: -6px; }
+
+  .cards { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 14px 16px 16px;
+  }
+  .card h2 {
+    margin: 0 0 10px;
+    font: 600 12px/1 var(--display);
+    letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--muted);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .card h2::before { content: ""; width: 8px; height: 8px; border-radius: 2px; background: var(--muted); }
+  .card--p1 h2 { color: var(--p1); }
+  .card--p1 h2::before { background: var(--p1); }
+  .card--p2 h2 { color: var(--p2); }
+  .card--p2 h2::before { background: var(--p2); }
+  dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 7px 16px; align-items: baseline; }
+  dt { color: var(--muted); font-size: 14px; }
+  dd { margin: 0; font-size: 14px; display: flex; gap: 5px; flex-wrap: wrap; align-items: center; }
+  kbd {
+    font: 500 12px/1.4 var(--mono);
+    background: var(--panel-hi);
+    border: 1px solid var(--line);
+    border-bottom-width: 2px;
+    border-radius: 5px;
+    padding: 2px 7px;
+    color: var(--ink);
+    white-space: nowrap;
+  }
+  .sep { color: var(--muted); }
+  footer { color: var(--muted); font-size: 13px; }
+  footer code { font: 500 12px/1 var(--mono); color: var(--ink); }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="shell">
+  <header>
+    <h1>Platform Fighter <em>Arena</em></h1>
+    <p>Due giocatori, stessa tastiera. Nessun punto vita: ogni colpo alza una percentuale, e piu&#768; e&#768; alta piu&#768; lontano voli. Si vince buttando l&rsquo;avversario fuori dall&rsquo;arena.</p>
+  </header>
+
+  <div id="stage">
+    <canvas id="game" width="1280" height="720"></canvas>
+    <button id="hint" type="button">
+      <b>Clicca per giocare</b>
+      <span>P1 si muove con WASD e attacca con F e G. P2 usa le frecce e il tastierino (oppure J e K). Due gamepad funzionano al posto della tastiera.</span>
+    </button>
+  </div>
+
+  <div class="cards">
+    <div class="card card--p1">
+      <h2>Giocatore 1</h2>
+      <dl>
+        <dt>Movimento</dt><dd><kbd>A</kbd><kbd>D</kbd></dd>
+        <dt>Mira</dt><dd><kbd>W</kbd><kbd>S</kbd></dd>
+        <dt>Salto / doppio</dt><dd><kbd>Spazio</kbd></dd>
+        <dt>Leggero</dt><dd><kbd>F</kbd></dd>
+        <dt>Pesante</dt><dd><kbd>G</kbd></dd>
+        <dt>Schivata</dt><dd><kbd>Shift</kbd></dd>
+      </dl>
+    </div>
+    <div class="card card--p2">
+      <h2>Giocatore 2</h2>
+      <dl>
+        <dt>Movimento</dt><dd><kbd>&larr;</kbd><kbd>&rarr;</kbd></dd>
+        <dt>Mira</dt><dd><kbd>&uarr;</kbd><kbd>&darr;</kbd></dd>
+        <dt>Salto / doppio</dt><dd><kbd>Num 0</kbd><span class="sep">/</span><kbd>L</kbd></dd>
+        <dt>Leggero</dt><dd><kbd>Num 1</kbd><span class="sep">/</span><kbd>J</kbd></dd>
+        <dt>Pesante</dt><dd><kbd>Num 2</kbd><span class="sep">/</span><kbd>K</kbd></dd>
+        <dt>Schivata</dt><dd><kbd>Num 3</kbd><span class="sep">/</span><kbd>H</kbd></dd>
+      </dl>
+    </div>
+    <div class="card">
+      <h2>Tecniche</h2>
+      <dl>
+        <dt>Fast fall</dt><dd>gi&ugrave; mentre scendi</dd>
+        <dt>Drop-through</dt><dd>gi&ugrave; + salto su piattaforma sottile</dd>
+        <dt>Spike</dt><dd>gi&ugrave; + leggero in aria</dd>
+        <dt>DI</dt><dd>tieni una direzione mentre voli</dd>
+        <dt>Riavvia</dt><dd><kbd>R</kbd></dd>
+        <dt>Hitbox</dt><dd><kbd>0</kbd></dd>
+      </dl>
+    </div>
+  </div>
+
+  <footer>Porting in Canvas 2D del prototipo Godot 4 in <code>platform_fighter/</code>: stessa formula di knockback, stesso frame data.</footer>
+</div>
+
+<script>
+"use strict";
+// =============================================================================
+//  PLATFORM FIGHTER ARENA - porting in Canvas 2D del prototipo Godot 4
+// =============================================================================
+//  Stessa architettura del progetto GDScript in ../scripts:
+//    CharacterStats  -> statistiche del personaggio (dati puri)
+//    AttackData      -> frame data e knockback di ogni mossa (dati puri)
+//    CombatManager   -> autorita' unica su danno, knockback, hitstun, hitlag
+//    Fighter         -> fisica + macchina a stati + trigger visivi
+//    Platform/Blast  -> mondo e zone di Ring Out
+//    GameManager     -> vite, respawn, vittoria
+//  I numeri sono identici alla versione Godot, quindi il "feeling" e' lo stesso
+//  e si puo' bilanciare qui e riportare la' (o viceversa).
+// =============================================================================
+
+// --- Loop a passo fisso -------------------------------------------------------
+// Il combattimento e' basato su frame data: la simulazione DEVE girare a 60 Hz
+// fissi indipendentemente dal refresh del monitor, altrimenti gli startup degli
+// attacchi durerebbero tempi diversi su macchine diverse.
+const FPS = 60;
+const DT = 1 / FPS;
+const MAX_FRAME_SKIP = 5;
+
+// =============================================================================
+//  1. DATI: statistiche del personaggio
+// =============================================================================
+function makeStats(over = {}) {
+  const s = {
+    name: "Fighter",
+    weight: 1.0,            // 1 = medio; alto = vola meno lontano
+
+    maxRunSpeed: 340, runAccel: 2800, groundFriction: 3400, turnBoost: 2.0,
+    maxAirSpeed: 300, airAccel: 1600, airFriction: 500, attackAirControl: 0.35,
+
+    // Salto espresso in altezza e tempi: la gravita' e' DERIVATA (vedi sotto).
+    jumpHeight: 136, jumpTimeToPeak: 0.34, jumpTimeToDescent: 0.24,
+    airJumps: 1, airJumpHeight: 122, jumpCutFactor: 0.45,
+    airJumpHorizontalBoost: 160, coyoteTime: 0.10, jumpBufferTime: 0.12,
+
+    maxFallSpeed: 900, fastFallSpeed: 1450, fastFallGravityMul: 2.2,
+
+    dodgeDuration: 0.42, dodgeInvulnStart: 0.05, dodgeInvulnEnd: 0.28,
+    dodgeGroundSpeed: 520, dodgeAirSpeed: 460, dodgeCooldown: 0.55,
+    hitstunResistance: 1.0,
+    ...over,
+  };
+  // Cinematica del salto: v0 = 2h/t, g = 2h/t^2.
+  // Gravita' di discesa maggiore di quella di salita = salto NON fluttuante.
+  s.jumpVelocity    = -2 * s.jumpHeight / s.jumpTimeToPeak;
+  s.airJumpVelocity = -2 * s.airJumpHeight / s.jumpTimeToPeak;
+  s.riseGravity     =  2 * s.jumpHeight / (s.jumpTimeToPeak ** 2);
+  s.fallGravity     =  2 * s.jumpHeight / (s.jumpTimeToDescent ** 2);
+  return s;
+}
+
+// =============================================================================
+//  2. DATI: moveset
+// =============================================================================
+//  startup/active/recovery in secondi; angle in gradi (0 = avanti, 90 = su,
+//  negativo = verso il basso -> spike). Regola: piu' knockback => piu' startup.
+function atk(id, type, dmg, baseKb, kbScale, angle, startup, active, recovery, ox, oy, w, h, hitlag, extra = {}) {
+  return {
+    id, type, damage: dmg, baseKnockback: baseKb, knockbackScaling: kbScale,
+    launchAngle: angle, startup, active, recovery,
+    offset: { x: ox, y: oy }, size: { w, h }, hitlag,
+    hitstunMultiplier: type === "heavy" ? 1.15 : 1.0,
+    shake: type === "heavy" ? 9 : 3,
+    sparkColor: type === "heavy" ? "#ff9d4d" : "#ffe98c",
+    selfImpulse: 0, stallInAir: false, airOnly: false,
+    ...extra,
+  };
+}
+
+const MOVESET = {
+  // --- LEGGERI A TERRA: costruiscono la percentuale, non uccidono -----------
+  light_neutral: atk("light_neutral", "light", 4, 110, 210, 42, 0.05, 0.05, 0.12, 34, -4, 46, 40, 0.035),
+  light_side:    atk("light_side",    "light", 6, 150, 300, 32, 0.08, 0.06, 0.17, 44, -2, 60, 42, 0.045),
+  light_up:      atk("light_up",      "light", 5, 160, 320, 78, 0.07, 0.07, 0.18, 10, -46, 56, 56, 0.045),
+  light_down:    atk("light_down",    "light", 6, 140, 290, 14, 0.09, 0.06, 0.20, 40, 18, 62, 30, 0.045),
+  // --- PESANTI: lenti e leggibili, ma sono loro a mandare in Ring Out -------
+  heavy_side:    atk("heavy_side",    "heavy", 14, 330, 640, 36, 0.22, 0.09, 0.34, 56, -2, 78, 54, 0.10, { selfImpulse: 190 }),
+  heavy_up:      atk("heavy_up",      "heavy", 15, 350, 660, 82, 0.24, 0.09, 0.36, 12, -56, 66, 74, 0.10),
+  heavy_down:    atk("heavy_down",    "heavy", 13, 300, 600, 18, 0.20, 0.10, 0.38, 46, 20, 86, 34, 0.10),
+  // --- AEREI ---------------------------------------------------------------
+  air_light_neutral: atk("air_light_neutral", "light", 5, 130, 250, 45, 0.06, 0.10, 0.16, 0, 0, 78, 70, 0.04, { airOnly: true }),
+  air_light_side:    atk("air_light_side",    "light", 7, 160, 330, 38, 0.08, 0.08, 0.20, 44, 0, 64, 52, 0.05, { airOnly: true }),
+  air_light_up:      atk("air_light_up",      "light", 6, 150, 340, 85, 0.07, 0.07, 0.18, 6, -44, 60, 56, 0.05, { airOnly: true }),
+  // Spike: angolo negativo, scaraventa verso il basso (Ring Out inferiore).
+  air_light_down:    atk("air_light_down",    "light", 8, 210, 300, -74, 0.11, 0.07, 0.26, 8, 42, 56, 52, 0.08, { airOnly: true }),
+  air_heavy_side:    atk("air_heavy_side",    "heavy", 12, 290, 560, 44, 0.19, 0.09, 0.32, 50, -2, 72, 58, 0.09, { airOnly: true, stallInAir: true }),
+  air_heavy_up:      atk("air_heavy_up",      "heavy", 12, 300, 590, 84, 0.20, 0.08, 0.34, 8, -52, 64, 66, 0.09, { airOnly: true }),
+  air_heavy_down:    atk("air_heavy_down",    "heavy", 13, 250, 430, -70, 0.22, 0.09, 0.40, 8, 46, 60, 58, 0.10, { airOnly: true }),
+};
+MOVESET.heavy_neutral = MOVESET.heavy_side;
+MOVESET.air_heavy_neutral = MOVESET.air_heavy_side;
+
+// Catena di fallback: un moveset incompleto non deve mai crashare.
+function resolveAttack(key) {
+  if (MOVESET[key]) return MOVESET[key];
+  if (key.startsWith("air_") && MOVESET[key.slice(4)]) return MOVESET[key.slice(4)];
+  if (key.includes("heavy")) return MOVESET.heavy_side;
+  return MOVESET.light_neutral;
+}
+
+// =============================================================================
+//  3. COMBAT & DAMAGE MANAGER
+// =============================================================================
+//  Nessuno ha punti vita: ogni colpo alza una PERCENTUALE che rende il
+//  bersaglio sempre piu' facile da scaraventare fuori dall'arena.
+//
+//     kb = (base + scaling * (percent/100) * (1 + danno/20)) * (2 / (1 + peso))
+//
+//  La percentuale usata e' quella DOPO il colpo corrente: e' la convenzione dei
+//  platform fighter e rende esplosivi gli scambi ad alte percentuali.
+const Combat = {
+  DAMAGE_FACTOR_DIVISOR: 20,
+  MAX_KNOCKBACK_SPEED: 2200,   // tetto anti-tunneling
+  MAX_PERCENT: 999,
+  HITSTUN_PER_KNOCKBACK: 0.00062,
+  MIN_HITSTUN: 0.14,           // sotto gli ~8 frame un colpo leggero non si sente
+  MAX_HITSTUN: 1.30,
+  MAX_DI_ROTATION: 18,         // gradi di curvatura concessi a chi subisce
+  ATTACKER_HITLAG_RATIO: 0.85,
+
+  knockbackMagnitude(percent, attack, weight) {
+    const damageFactor = 1 + attack.damage / this.DAMAGE_FACTOR_DIVISOR;
+    const raw = attack.baseKnockback + attack.knockbackScaling * (percent / 100) * damageFactor;
+    const weightFactor = 2 / (1 + Math.max(weight, 0.1));
+    return clamp(raw * weightFactor, 0, this.MAX_KNOCKBACK_SPEED);
+  },
+
+  hitstun(magnitude, attack, defender) {
+    const stun = magnitude * this.HITSTUN_PER_KNOCKBACK * attack.hitstunMultiplier * defender.stats.hitstunResistance;
+    return clamp(stun, this.MIN_HITSTUN, this.MAX_HITSTUN);
+  },
+
+  // Risolve un colpo andato a segno: e' l'unico posto in cui si fa matematica.
+  resolveHit(game, attacker, defender, attack, contact) {
+    const percentAfter = Math.min(defender.percent + attack.damage, this.MAX_PERCENT);
+    const magnitude = this.knockbackMagnitude(percentAfter, attack, defender.stats.weight);
+
+    // Direzione: angolo della mossa orientato secondo chi attacca...
+    const rad = (attack.launchAngle * Math.PI) / 180;
+    let dir = { x: Math.cos(rad) * Math.sign(attacker.facing), y: -Math.sin(rad) };
+    // ...specchiata se il bersaglio sta dall'altro lato (scambio incrociato),
+    // cosi' non viene mai risucchiato "dentro" chi lo colpisce.
+    const side = Math.sign(defender.x - attacker.x);
+    if (side !== 0 && Math.sign(dir.x) !== 0 && side !== Math.sign(dir.x)) dir.x = -dir.x;
+    dir = this.applyDI(dir, defender);
+
+    const kb = { x: dir.x * magnitude, y: dir.y * magnitude };
+    const stun = this.hitstun(magnitude, attack, defender);
+
+    defender.applyHit(kb, attack.damage, stun, attack.hitlag, attacker);
+    attacker.applyHitlag(attack.hitlag * this.ATTACKER_HITLAG_RATIO);
+
+    game.spawnSpark(contact.x, contact.y, attack, Math.atan2(kb.y, kb.x));
+    game.camera.shake(attack.shake);
+    game.log(`${attacker.label} colpisce ${defender.label} con ${attack.id}: +${attack.damage}% (ora ${Math.round(percentAfter)}%)`);
+  },
+
+  // DIRECTIONAL INFLUENCE: chi subisce ruota il vettore di lancio con lo stick.
+  // Conta solo la componente perpendicolare: si curva la traiettoria, non la
+  // si annulla. E' lo skill ceiling difensivo del genere.
+  applyDI(dir, defender) {
+    const stick = defender.inputDirection();
+    const len = Math.hypot(stick.x, stick.y);
+    if (len < 0.25) return dir;
+    const sx = stick.x / len, sy = stick.y / len;
+    const perpendicular = clamp(dir.x * sy - dir.y * sx, -1, 1);
+    const a = (perpendicular * this.MAX_DI_ROTATION * Math.PI) / 180;
+    return { x: dir.x * Math.cos(a) - dir.y * Math.sin(a), y: dir.x * Math.sin(a) + dir.y * Math.cos(a) };
+  },
+};
+
+// =============================================================================
+//  4. INPUT (tastiera per 2 giocatori + gamepad nativo)
+// =============================================================================
+const KEYMAP = {
+  1: { left: ["KeyA"], right: ["KeyD"], up: ["KeyW"], down: ["KeyS"],
+       jump: ["Space"], light: ["KeyF"], heavy: ["KeyG"], dodge: ["ShiftLeft", "ShiftRight"] },
+  2: { left: ["ArrowLeft"], right: ["ArrowRight"], up: ["ArrowUp"], down: ["ArrowDown"],
+       jump: ["Numpad0", "KeyL"], light: ["Numpad1", "KeyJ"], heavy: ["Numpad2", "KeyK"], dodge: ["Numpad3", "KeyH"] },
+};
+const AXIS_DEADZONE = 0.30;
+
+const Keys = new Set();
+// Buffer dei tasti "appena premuti". Serve perche' gli eventi del browser sono
+// asincroni rispetto al passo fisso di simulazione: un tap piu' corto di un
+// frame (o dato durante un lag spike) verrebbe altrimenti perso del tutto,
+// ed e' esattamente il tipo di input che un fighter NON puo' permettersi di
+// mancare. Gli eventi si accumulano qui e la simulazione li consuma.
+const Pressed = new Set();
+addEventListener("keydown", (e) => {
+  // Le frecce e lo spazio scrollerebbero la pagina sotto il gioco.
+  if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"].includes(e.code)) e.preventDefault();
+  if (!e.repeat) Pressed.add(e.code);   // niente auto-ripetizione del sistema
+  Keys.add(e.code);
+});
+addEventListener("keyup", (e) => Keys.delete(e.code));
+addEventListener("blur", () => { Keys.clear(); Pressed.clear(); });
+// Chiamata a fine passo di simulazione, quando tutti i giocatori hanno letto.
+function consumePresses() { Pressed.clear(); }
+
+// Fotografia dell'input di un frame: isola la logica dalla sorgente dei comandi
+// (tastiera, gamepad e domani una IA riempiono la stessa struttura).
+class InputState {
+  constructor() { this.reset(); }
+  reset() {
+    this.move = 0; this.aim = 0;
+    this.jump = false; this.jumpPressed = false;
+    this.light = false; this.lightPressed = false;
+    this.heavy = false; this.heavyPressed = false;
+    this.dodge = false; this.dodgePressed = false;
+    this.down = false;
+  }
+  poll(playerIndex) {
+    const map = KEYMAP[playerIndex];
+    const held = (list) => list.some((code) => Keys.has(code));
+    const tapped = (list) => list.some((code) => Pressed.has(code));
+    let move = (held(map.right) ? 1 : 0) - (held(map.left) ? 1 : 0);
+    let aim = (held(map.down) ? 1 : 0) - (held(map.up) ? 1 : 0);
+    let jump = held(map.jump), light = held(map.light), heavy = held(map.heavy), dodge = held(map.dodge);
+
+    // Gamepad: device 0 -> P1, device 1 -> P2. Lo stick analogico ha priorita'
+    // sulla tastiera solo se effettivamente inclinato.
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    const pad = pads[playerIndex - 1];
+    if (pad) {
+      const ax = pad.axes[0] || 0, ay = pad.axes[1] || 0;
+      if (Math.abs(ax) > AXIS_DEADZONE) move = ax;
+      if (Math.abs(ay) > AXIS_DEADZONE) aim = ay;
+      const btn = (i) => pad.buttons[i] && pad.buttons[i].pressed;
+      if (btn(14)) move = -1;             // d-pad
+      if (btn(15)) move = 1;
+      if (btn(12)) aim = -1;
+      if (btn(13)) aim = 1;
+      jump = jump || btn(0);              // A
+      light = light || btn(2);            // X
+      heavy = heavy || btn(1);            // B
+      dodge = dodge || btn(5);            // R1
+    }
+
+    // "Appena premuto" = fronte di salita rilevato dal polling (gamepad) OPPURE
+    // evento di tastiera arrivato in questo frame (anche se gia' rilasciato).
+    this.jumpPressed = (jump && !this.jump) || tapped(map.jump);
+    this.lightPressed = (light && !this.light) || tapped(map.light);
+    this.heavyPressed = (heavy && !this.heavy) || tapped(map.heavy);
+    this.dodgePressed = (dodge && !this.dodge) || tapped(map.dodge);
+    this.move = move; this.aim = aim;
+    this.jump = jump; this.light = light; this.heavy = heavy; this.dodge = dodge;
+    this.down = aim > AXIS_DEADZONE;
+  }
+}
+
+// =============================================================================
+//  5. MONDO: piattaforme e zone di Ring Out
+// =============================================================================
+class Platform {
+  // oneWay = piattaforma sottile: la si attraversa da sotto e si scende con
+  // GIU' + SALTO. Il margine evita che un fast fall la buchi di netto.
+  constructor(x, y, w, h, oneWay = false) {
+    Object.assign(this, { x, y, w, h, oneWay });
+    this.left = x - w / 2; this.right = x + w / 2;
+    this.top = y - h / 2; this.bottom = y + h / 2;
+  }
+}
+
+const ARENA = {
+  platforms: [
+    new Platform(0, 180, 760, 56, false),      // piattaforma principale
+    new Platform(-330, 10, 250, 24, true),     // sottile sinistra
+    new Platform(330, 10, 250, 24, true),      // sottile destra
+    new Platform(0, -150, 270, 24, true),      // sottile alta
+  ],
+  // Zona di Ring Out: fuori da questo rettangolo si perde una vita.
+  blast: { left: -950, right: 950, top: -850, bottom: 700 },
+  spawns: [{ x: -220, y: 60 }, { x: 220, y: 60 }, { x: 0, y: -260 }, { x: -330, y: -90 }],
+};
+
+// =============================================================================
+//  6. FIGHTER: fisica, macchina a stati, trigger visivi
+// =============================================================================
+const STATE = {
+  IDLE: "idle", RUN: "run", JUMP: "jump", FALL: "fall", LAND: "land",
+  ATTACK: "attack", HITSTUN: "hitstun", DODGE: "dodge", KO: "ko",
+};
+// Colori del segnaposto per stato: leggere lo stato a colpo d'occhio durante il
+// playtest vale piu' di qualsiasi sprite provvisorio.
+const STATE_TINT = {
+  idle: "#ffffff", run: "#eef8ff", jump: "#cceaff", fall: "#b8dcff", land: "#f2fff2",
+  attack: "#ffe89a", hitstun: "#ff6b70", dodge: "#9fd8ff", ko: "#5a5a66",
+};
+
+const BODY_W = 34, BODY_H = 58;
+const MAX_SPEED = 2400;          // tetto assoluto: nessun tunneling
+const SUBSTEP_MAX_DISTANCE = 7;  // px per sotto-passo di collisione
+const MAX_SUBSTEPS = 10;
+const DROP_THROUGH_TIME = 0.24;
+const AERIAL_LANDING_LAG = 0.10;
+const HITSTUN_DRAG = 0.985;
+
+class Fighter {
+  constructor(game, index, color, stats = makeStats()) {
+    this.game = game; this.index = index; this.color = color; this.stats = stats;
+    this.label = "P" + index;
+    this.input = new InputState();
+    this.reset(ARENA.spawns[index - 1]);
+    this.stocks = 3;
+  }
+
+  reset(spawn) {
+    this.x = spawn.x; this.y = spawn.y;
+    this.vx = 0; this.vy = 0;
+    this.percent = 0;
+    this.facing = this.index === 1 ? 1 : -1;
+    this.state = STATE.FALL;
+    this.onGround = false; this.wasOnGround = false;
+    this.airJumps = this.stats.airJumps;
+    this.fastFalling = false; this.jumpCutDone = false;
+    this.coyote = 0; this.jumpBuffer = 0; this.landLock = 0;
+    this.hitstun = 0; this.hitlag = 0; this.dropTimer = 0;
+    this.dodgeTimer = 0; this.dodgeCooldown = 0;
+    this.invulnTimer = 0; this.invulnerable = false;
+    this.attack = null; this.attackPhase = "none"; this.attackTimer = 0;
+    this.alreadyHit = new Set();
+    this.squashX = 1; this.squashY = 1; this.flash = 0;
+    this.visible = true; this.koTimer = 0;
+    this.anim = "fall";
+  }
+
+  // --- geometria ---
+  get left() { return this.x - BODY_W / 2; }
+  get right() { return this.x + BODY_W / 2; }
+  get top() { return this.y - BODY_H; }
+  get bottom() { return this.y; }
+  get center() { return { x: this.x, y: this.y - BODY_H / 2 }; }
+
+  inputDirection() { return { x: this.input.move, y: this.input.aim }; }
+
+  // ===========================================================================
+  //  CICLO PRINCIPALE
+  // ===========================================================================
+  update(dt) {
+    // L'input si legge SEMPRE, anche durante l'hitlag: serve alla DI.
+    if (this.state !== STATE.KO) this.input.poll(this.index);
+    else this.input.reset();
+
+    // HITLAG: freeze frame all'impatto. E' il 90% della sensazione di peso.
+    if (this.hitlag > 0) { this.hitlag -= dt; this.updateVisualTimers(dt); return; }
+
+    if (this.state === STATE.KO) { this.updateVisualTimers(dt); return; }
+
+    this.tickTimers(dt);
+
+    switch (this.state) {
+      case STATE.HITSTUN: this.processHitstun(dt); break;
+      case STATE.DODGE:   this.processDodge(dt); break;
+      case STATE.ATTACK:  this.processAttack(dt); break;
+      default:            this.processFree(dt); break;
+    }
+
+    this.applyGravity(dt);
+    this.movePrecise(dt);
+    this.postMove();
+    this.updateAnimation();
+    this.updateVisualTimers(dt);
+  }
+
+  tickTimers(dt) {
+    this.coyote = Math.max(this.coyote - dt, 0);
+    this.jumpBuffer = Math.max(this.jumpBuffer - dt, 0);
+    this.dodgeCooldown = Math.max(this.dodgeCooldown - dt, 0);
+    this.landLock = Math.max(this.landLock - dt, 0);
+    if (this.dropTimer > 0) this.dropTimer -= dt;
+    if (this.invulnTimer > 0) {
+      this.invulnTimer -= dt;
+      if (this.invulnTimer <= 0) this.setInvulnerable(false);
+    }
+    if (this.input.jumpPressed) this.jumpBuffer = this.stats.jumpBufferTime;
+    // Salto variabile: rilasciando il tasto in salita la velocita' viene tagliata.
+    if (!this.input.jump && this.vy < 0 && !this.jumpCutDone &&
+        (this.state === STATE.JUMP || this.state === STATE.ATTACK)) {
+      this.vy *= this.stats.jumpCutFactor;
+      this.jumpCutDone = true;
+    }
+  }
+
+  // --- STATI LIBERI (idle/run/jump/fall/land) --------------------------------
+  processFree(dt) {
+    if (this.landLock <= 0) {
+      if (this.input.heavyPressed) return this.startAttack(true);
+      if (this.input.lightPressed) return this.startAttack(false);
+      if (this.input.dodgePressed && this.dodgeCooldown <= 0) return this.startDodge();
+    }
+
+    this.applyHorizontal(dt, 1);
+
+    // Drop-through: GIU' + SALTO stando su una piattaforma sottile.
+    if (this.onGround && this.input.down && this.jumpBuffer > 0 && this.standingOnOneWay()) {
+      return this.dropThrough();
+    }
+    if (this.jumpBuffer > 0) {
+      if (this.onGround || this.coyote > 0) this.doJump(false);
+      else if (this.airJumps > 0) this.doJump(true);
+    }
+    // Fast fall: giu' in aria mentre si sta gia' scendendo.
+    if (!this.onGround && this.input.down && this.vy > -40) this.fastFalling = true;
+
+    if (this.landLock > 0) this.state = STATE.LAND;
+    else if (this.onGround) this.state = Math.abs(this.vx) > 20 ? STATE.RUN : STATE.IDLE;
+    else this.state = this.vy < 0 ? STATE.JUMP : STATE.FALL;
+  }
+
+  // Accelerazione/attrito. `control` riduce la manovrabilita' durante gli aerei.
+  applyHorizontal(dt, control) {
+    const s = this.stats;
+    const maxSpeed = this.onGround ? s.maxRunSpeed : s.maxAirSpeed;
+    let accel = this.onGround ? s.runAccel : s.airAccel;
+    const friction = this.onGround ? s.groundFriction : s.airFriction;
+
+    if (Math.abs(this.input.move) > AXIS_DEADZONE && control > 0) {
+      const target = this.input.move * maxSpeed;
+      // Inversione di direzione: accelerazione potenziata, niente "ghiaccio".
+      if (Math.sign(this.input.move) !== Math.sign(this.vx) && Math.abs(this.vx) > 10) accel *= s.turnBoost;
+      this.vx = moveToward(this.vx, target, accel * control * dt);
+      if (this.canTurn()) this.facing = this.input.move > 0 ? 1 : -1;
+    } else {
+      this.vx = moveToward(this.vx, 0, friction * dt);
+    }
+  }
+
+  canTurn() {
+    return [STATE.IDLE, STATE.RUN, STATE.JUMP, STATE.FALL, STATE.LAND].includes(this.state);
+  }
+
+  doJump(isAirJump) {
+    const s = this.stats;
+    this.jumpBuffer = 0; this.coyote = 0; this.jumpCutDone = false; this.fastFalling = false;
+    if (isAirJump) {
+      this.airJumps--;
+      this.vy = s.airJumpVelocity;
+      // Il salto in aria reindirizza: e' anche uno strumento di recovery.
+      if (Math.abs(this.input.move) > AXIS_DEADZONE) {
+        this.vx = Math.sign(this.input.move) * Math.max(Math.abs(this.vx), s.airJumpHorizontalBoost);
+        this.facing = this.input.move > 0 ? 1 : -1;
+      }
+      this.squash(0.78, 1.24);
+      this.game.spawnRing(this.x, this.y - BODY_H / 2, this.color);
+    } else {
+      this.vy = s.jumpVelocity;
+      this.squash(0.82, 1.20);
+    }
+    this.state = STATE.JUMP;
+  }
+
+  standingOnOneWay() {
+    for (const p of ARENA.platforms) {
+      if (!p.oneWay) continue;
+      if (this.right > p.left && this.left < p.right && Math.abs(this.bottom - p.top) < 2.5) return true;
+    }
+    return false;
+  }
+
+  // Si disattiva SOLO la collisione con le piattaforme sottili, mai il terreno
+  // solido: cosi' non si cade mai nel vuoto per errore.
+  dropThrough() {
+    this.dropTimer = DROP_THROUGH_TIME;
+    this.jumpBuffer = 0;
+    this.vy = Math.max(this.vy, 60);
+    this.onGround = false;
+    this.state = STATE.FALL;
+  }
+
+  applyGravity(dt) {
+    if (this.onGround) return;
+    const s = this.stats;
+    let g = this.vy < 0 ? s.riseGravity : s.fallGravity;   // asimmetrica
+    let limit = s.maxFallSpeed;
+    if (this.fastFalling) { g *= s.fastFallGravityMul; limit = s.fastFallSpeed; }
+    // In hitstun non c'e' limite: il knockback deve poter buttare fuori schermo.
+    if (this.state === STATE.HITSTUN) this.vy += g * dt;
+    else this.vy = Math.min(this.vy + g * dt, limit);
+  }
+
+  // ===========================================================================
+  //  MOVIMENTO A SOTTO-PASSI (anti-clipping)
+  // ===========================================================================
+  //  A 2000+ px/s un frame vale ~35 px: abbastanza per attraversare una
+  //  piattaforma spessa 24 px senza mai toccarla. Si divide lo spostamento in
+  //  passi da massimo 7 px e si risolve la collisione a ogni passo.
+  movePrecise(dt) {
+    this.vx = clamp(this.vx, -MAX_SPEED, MAX_SPEED);
+    this.vy = clamp(this.vy, -MAX_SPEED, MAX_SPEED);
+    const travel = Math.hypot(this.vx, this.vy) * dt;
+    const steps = clamp(Math.ceil(travel / SUBSTEP_MAX_DISTANCE), 1, MAX_SUBSTEPS);
+    const step = dt / steps;
+    for (let i = 0; i < steps; i++) {
+      this.moveAxisX(this.vx * step);
+      this.moveAxisY(this.vy * step);
+    }
+  }
+
+  moveAxisX(dx) {
+    if (dx === 0) return;
+    this.x += dx;
+    for (const p of ARENA.platforms) {
+      if (p.oneWay) continue;                       // le sottili non bloccano di lato
+      if (!this.overlaps(p)) continue;
+      if (dx > 0) this.x = p.left - BODY_W / 2;
+      else this.x = p.right + BODY_W / 2;
+      this.vx = 0;
+    }
+  }
+
+  moveAxisY(dy) {
+    if (dy === 0) return;
+    const prevBottom = this.bottom;
+    this.y += dy;
+    for (const p of ARENA.platforms) {
+      if (p.oneWay) {
+        // Regola della piattaforma sottile: blocca solo scendendo, e solo se i
+        // piedi erano SOPRA il bordo prima di muoversi (niente teletrasporti).
+        if (this.dropTimer > 0 || dy <= 0) continue;
+        if (!this.overlaps(p)) continue;
+        if (prevBottom > p.top + 8) continue;       // margine di tolleranza
+        this.y = p.top; this.vy = 0; this.landOn();
+        continue;
+      }
+      if (!this.overlaps(p)) continue;
+      if (dy > 0) { this.y = p.top; this.vy = 0; this.landOn(); }
+      else { this.y = p.bottom + BODY_H; this.vy = 0; }  // testa contro il soffitto
+    }
+  }
+
+  overlaps(p) {
+    return this.right > p.left && this.left < p.right && this.bottom > p.top && this.top < p.bottom;
+  }
+
+  landOn() { this.onGround = true; }
+
+  // Sonda di contatto col terreno: 2 px sotto i piedi. Evita che is_on_floor
+  // sfarfalli e permette il coyote time corretto.
+  groundProbe() {
+    for (const p of ARENA.platforms) {
+      if (p.oneWay && this.dropTimer > 0) continue;
+      if (this.right <= p.left || this.left >= p.right) continue;
+      if (this.bottom >= p.top - 0.5 && this.bottom <= p.top + 2.5 && this.vy >= 0) return true;
+    }
+    return false;
+  }
+
+  postMove() {
+    this.onGround = this.groundProbe();
+    if (this.onGround) {
+      this.coyote = this.stats.coyoteTime;
+      this.airJumps = this.stats.airJumps;
+      this.fastFalling = false;
+      this.jumpCutDone = false;
+      if (!this.wasOnGround) this.onLanded();
+    } else if (this.wasOnGround) {
+      this.coyote = this.stats.coyoteTime;   // finestra di coyote time
+    }
+    this.wasOnGround = this.onGround;
+  }
+
+  onLanded() {
+    const impact = Math.min(Math.abs(this.vy) / 900, 0.45);
+    this.squash(1 + impact, 1 - impact);
+    // Un aereo che tocca terra viene annullato con landing lag: e' il costo che
+    // rende gli attacchi in aria una scelta e non la risposta a tutto.
+    if (this.state === STATE.ATTACK && this.attack && this.attack.airOnly) {
+      this.endAttack();
+      this.landLock = AERIAL_LANDING_LAG;
+    }
+    if (this.state === STATE.HITSTUN && this.hitstun <= 0.12) {
+      this.hitstun = 0; this.state = STATE.IDLE;
+    }
+  }
+
+  // ===========================================================================
+  //  ATTACCHI (frame data: startup -> active -> recovery)
+  // ===========================================================================
+  selectAttack(isHeavy) {
+    let dir = "neutral";
+    if (this.input.aim < -AXIS_DEADZONE) dir = "up";
+    else if (this.input.aim > AXIS_DEADZONE) dir = "down";
+    else if (Math.abs(this.input.move) > AXIS_DEADZONE) dir = "side";
+    return resolveAttack(`${this.onGround ? "" : "air_"}${isHeavy ? "heavy" : "light"}_${dir}`);
+  }
+
+  startAttack(isHeavy) {
+    const attack = this.selectAttack(isHeavy);
+    this.attack = attack;
+    this.attackPhase = "startup";
+    this.attackTimer = attack.startup;
+    this.alreadyHit.clear();
+    if (Math.abs(this.input.move) > AXIS_DEADZONE) this.facing = this.input.move > 0 ? 1 : -1;
+    if (attack.selfImpulse > 0 && this.onGround) this.vx = this.facing * attack.selfImpulse;
+    if (attack.stallInAir && !this.onGround) this.vy = Math.min(this.vy, 0) * 0.2;
+    this.state = STATE.ATTACK;
+  }
+
+  processAttack(dt) {
+    // A terra nessun movimento, in aria controllo ridotto: ogni mossa e' un
+    // impegno, non un movimento gratuito.
+    if (this.onGround) this.vx = moveToward(this.vx, 0, this.stats.groundFriction * 0.6 * dt);
+    else this.applyHorizontal(dt, this.stats.attackAirControl);
+
+    this.attackTimer -= dt;
+    if (this.attackPhase === "active") this.checkHits();
+    if (this.attackTimer > 0) return;
+
+    if (this.attackPhase === "startup") {
+      this.attackPhase = "active";
+      this.attackTimer = this.attack.active;
+      this.checkHits();                         // i frame attivi partono ORA
+    } else if (this.attackPhase === "active") {
+      this.attackPhase = "recovery";
+      this.attackTimer = this.attack.recovery;
+    } else {
+      this.endAttack();
+    }
+  }
+
+  endAttack() {
+    this.attack = null; this.attackPhase = "none"; this.attackTimer = 0;
+    if (this.state === STATE.ATTACK) this.state = this.onGround ? STATE.IDLE : STATE.FALL;
+  }
+
+  // Rettangolo della hitbox nello spazio del mondo (specchiato dal facing).
+  hitboxRect() {
+    if (!this.attack || this.attackPhase !== "active") return null;
+    const a = this.attack, c = this.center;
+    return {
+      left: c.x + a.offset.x * this.facing - a.size.w / 2,
+      right: c.x + a.offset.x * this.facing + a.size.w / 2,
+      top: c.y + a.offset.y - a.size.h / 2,
+      bottom: c.y + a.offset.y + a.size.h / 2,
+    };
+  }
+
+  // Hurtbox leggermente piu' generosa del corpo: i colpi di striscio registrano.
+  hurtboxRect() {
+    return { left: this.left - 3, right: this.right + 3, top: this.top - 2, bottom: this.bottom + 2 };
+  }
+
+  checkHits() {
+    const box = this.hitboxRect();
+    if (!box) return;
+    for (const other of this.game.fighters) {
+      if (other === this || other.state === STATE.KO) continue;
+      if (other.invulnerable) continue;                 // i-frame di schivata/respawn
+      if (this.alreadyHit.has(other.index)) continue;   // un solo colpo per attacco
+      const h = other.hurtboxRect();
+      if (box.right < h.left || box.left > h.right || box.bottom < h.top || box.top > h.bottom) continue;
+      this.alreadyHit.add(other.index);
+      Combat.resolveHit(this.game, this, other, this.attack, {
+        x: (Math.max(box.left, h.left) + Math.min(box.right, h.right)) / 2,
+        y: (Math.max(box.top, h.top) + Math.min(box.bottom, h.bottom)) / 2,
+      });
+    }
+  }
+
+  // --- SCHIVATA -------------------------------------------------------------
+  startDodge() {
+    const s = this.stats;
+    this.dodgeTimer = s.dodgeDuration;
+    this.dodgeCooldown = s.dodgeDuration + s.dodgeCooldown;
+    const dx = this.input.move, dy = this.input.aim;
+    if (this.onGround) {
+      this.vx = Math.abs(dx) > AXIS_DEADZONE ? Math.sign(dx) * s.dodgeGroundSpeed : 0;
+    } else {
+      const len = Math.hypot(dx, dy);
+      if (len > AXIS_DEADZONE) { this.vx = (dx / len) * s.dodgeAirSpeed; this.vy = (dy / len) * s.dodgeAirSpeed; }
+      else { this.vx = 0; this.vy = 0; }
+    }
+    this.state = STATE.DODGE;
+  }
+
+  processDodge(dt) {
+    const s = this.stats;
+    this.dodgeTimer -= dt;
+    const elapsed = s.dodgeDuration - this.dodgeTimer;
+    // Gli i-frame NON coprono tutta la schivata: senza rischio sarebbe gratis.
+    const shouldBeInvulnerable = elapsed >= s.dodgeInvulnStart && elapsed <= s.dodgeInvulnEnd;
+    if (this.invulnTimer <= 0) this.setInvulnerable(shouldBeInvulnerable);
+    this.vx = moveToward(this.vx, 0, s.groundFriction * 0.5 * dt);
+    if (this.dodgeTimer <= 0) {
+      if (this.invulnTimer <= 0) this.setInvulnerable(false);
+      this.state = this.onGround ? STATE.IDLE : STATE.FALL;
+    }
+  }
+
+  // --- DANNO SUBITO ---------------------------------------------------------
+  applyHit(kb, damage, hitstun, hitlag, attacker) {
+    if (this.invulnerable || this.state === STATE.KO) return;
+    this.percent = Math.min(this.percent + damage, Combat.MAX_PERCENT);
+    if (this.state === STATE.ATTACK) this.endAttack();
+    if (this.state === STATE.DODGE) { this.dodgeTimer = 0; this.setInvulnerable(false); }
+    this.vx = kb.x; this.vy = kb.y;
+    this.hitstun = hitstun; this.hitlag = hitlag;
+    this.fastFalling = false;
+    this.facing = attacker.x > this.x ? 1 : -1;
+    this.airJumps = this.stats.airJumps;   // il knockback ricarica i salti
+    this.state = STATE.HITSTUN;
+    this.flash = 0.16;
+    this.squash(1.25, 0.75);
+  }
+
+  applyHitlag(d) { this.hitlag = Math.max(this.hitlag, d); }
+
+  processHitstun(dt) {
+    this.hitstun -= dt;
+    this.vx *= HITSTUN_DRAG;   // il volo decade in modo naturale
+    if (this.hitstun <= 0) this.state = this.onGround ? STATE.IDLE : STATE.FALL;
+  }
+
+  // --- KO / RESPAWN ---------------------------------------------------------
+  enterKO() {
+    this.state = STATE.KO;
+    this.vx = 0; this.vy = 0;
+    this.attack = null; this.attackPhase = "none";
+    this.setInvulnerable(true);
+    this.visible = false;
+  }
+
+  respawn(spawn, invulnerability = 2) {
+    const stocks = this.stocks;
+    this.reset(spawn);
+    this.stocks = stocks;
+    this.visible = true;
+    this.invulnTimer = invulnerability;
+    this.setInvulnerable(true);
+  }
+
+  setInvulnerable(v) { this.invulnerable = v; }
+
+  // --- PRESENTAZIONE --------------------------------------------------------
+  squash(sx, sy) { this.squashX = sx; this.squashY = sy; }
+
+  updateVisualTimers(dt) {
+    this.squashX += (1 - this.squashX) * Math.min(dt * 12, 1);
+    this.squashY += (1 - this.squashY) * Math.min(dt * 12, 1);
+    this.flash = Math.max(this.flash - dt, 0);
+  }
+
+  // TRIGGER VISIVI: unico punto in cui lo stato logico diventa animazione.
+  // Con veri sprite qui si chiamerebbe sprite.play(nome) invece di salvare
+  // una stringa: la logica di gioco resta identica.
+  updateAnimation() {
+    if (this.state === STATE.ATTACK && this.attack) this.anim = this.attack.id;
+    else this.anim = this.state;
+  }
+}
+
+// =============================================================================
+//  7. CAMERA dinamica
+// =============================================================================
+class Camera {
+  constructor() { this.x = 0; this.y = -40; this.zoom = 1; this.shakeAmount = 0; this.ox = 0; this.oy = 0; }
+  shake(v) { this.shakeAmount = Math.max(this.shakeAmount, v); }
+  update(dt, fighters, viewW, viewH) {
+    const alive = fighters.filter((f) => f.visible);
+    if (alive.length) {
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      for (const f of alive) {
+        minX = Math.min(minX, f.x); maxX = Math.max(maxX, f.x);
+        minY = Math.min(minY, f.y); maxY = Math.max(maxY, f.y);
+      }
+      // Zoom necessario a contenere entrambi gli assi, con margine.
+      // Il margine e' quello che tiene i personaggi lontani dal bordo dello
+      // schermo: troppo poco e non si vede arrivare il colpo, troppo e i
+      // personaggi diventano puntini.
+      const spreadX = maxX - minX + 720, spreadY = maxY - minY + 470;
+      const needed = Math.min(viewW / spreadX, viewH / spreadY);
+      const targetZoom = clamp(needed, 0.62, 1.5);
+      const cx = clamp((minX + maxX) / 2, -520, 520);
+      const cy = clamp((minY + maxY) / 2, -360, 300);
+      this.x += (cx - this.x) * Math.min(dt * 6, 1);
+      this.y += (cy - this.y) * Math.min(dt * 6, 1);
+      this.zoom += (targetZoom - this.zoom) * Math.min(dt * 4, 1);
+    }
+    if (this.shakeAmount > 0) {
+      this.shakeAmount = Math.max(this.shakeAmount - 9 * dt * 6, 0);
+      this.ox = (Math.random() * 2 - 1) * this.shakeAmount;
+      this.oy = (Math.random() * 2 - 1) * this.shakeAmount;
+    } else { this.ox *= 0.8; this.oy *= 0.8; }
+  }
+}
+
+// =============================================================================
+//  8. GAME MANAGER: vite, Ring Out, respawn, vittoria
+// =============================================================================
+class Game {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext("2d");
+    this.camera = new Camera();
+    this.effects = [];
+    this.logLines = [];
+    this.showHitboxes = false;
+    this.startMatch();
+  }
+
+  startMatch() {
+    this.fighters = [
+      new Fighter(this, 1, "#4fc3f7"),
+      new Fighter(this, 2, "#ff7043", makeStats({ name: "Bruiser" })),
+    ];
+    this.effects.length = 0;
+    this.winner = null;
+    this.respawnQueue = [];
+    this.time = 0;
+    this.log("Match iniziato: 3 vite a testa.");
+  }
+
+  log(text) {
+    this.logLines.unshift({ text, life: 4 });
+    if (this.logLines.length > 4) this.logLines.pop();
+  }
+
+  spawnSpark(x, y, attack, angle) {
+    this.effects.push({ type: "spark", x, y, angle, life: 0, max: attack.type === "heavy" ? 0.26 : 0.18,
+                        color: attack.sparkColor, size: attack.type === "heavy" ? 1.5 : 1 });
+  }
+  spawnRing(x, y, color) {
+    this.effects.push({ type: "ring", x, y, life: 0, max: 0.3, color, size: 1 });
+  }
+
+  update(dt) {
+    this.time += dt;
+    if (Pressed.has("KeyR")) { consumePresses(); this.startMatch(); return; }
+    if (Pressed.has("Digit0")) this.showHitboxes = !this.showHitboxes;
+
+    for (const f of this.fighters) f.update(dt);
+    // I tasti premuti valgono per UN solo passo di simulazione, letto da tutti.
+    consumePresses();
+    if (!this.winner) this.checkRingOut();
+    this.processRespawns(dt);
+
+    for (const e of this.effects) e.life += dt;
+    this.effects = this.effects.filter((e) => e.life < e.max);
+    for (const l of this.logLines) l.life -= dt;
+    this.logLines = this.logLines.filter((l) => l.life > 0);
+
+    this.camera.update(dt, this.fighters, this.canvas.width, this.canvas.height);
+  }
+
+  // RING OUT: si perde uscendo dai limiti dell'arena, non finendo la vita.
+  checkRingOut() {
+    const b = ARENA.blast;
+    for (const f of this.fighters) {
+      if (f.state === STATE.KO) continue;
+      if (f.x > b.left && f.x < b.right && f.y > b.top && f.y < b.bottom) continue;
+      f.stocks = Math.max(f.stocks - 1, 0);
+      f.enterKO();
+      this.camera.shake(14);
+      this.log(`KO! ${f.label} eliminato (vite rimaste: ${f.stocks})`);
+      if (f.stocks <= 0) {
+        const alive = this.fighters.filter((o) => o.stocks > 0);
+        this.winner = alive.length === 1 ? alive[0] : null;
+        this.log(this.winner ? `${this.winner.label} vince il match!` : "Pareggio!");
+      } else {
+        this.respawnQueue.push({ fighter: f, timer: 1.1 });
+      }
+    }
+  }
+
+  processRespawns(dt) {
+    for (const entry of this.respawnQueue) entry.timer -= dt;
+    const ready = this.respawnQueue.filter((e) => e.timer <= 0);
+    this.respawnQueue = this.respawnQueue.filter((e) => e.timer > 0);
+    for (const entry of ready) entry.fighter.respawn(this.pickSpawn(entry.fighter));
+  }
+
+  // Si rinasce nel punto piu' lontano dagli avversari: mai dentro uno smash.
+  pickSpawn(fighter) {
+    let best = ARENA.spawns[0], bestDist = -1;
+    for (const s of ARENA.spawns) {
+      let nearest = Infinity;
+      for (const o of this.fighters) {
+        if (o === fighter || !o.visible) continue;
+        nearest = Math.min(nearest, Math.hypot(s.x - o.x, s.y - o.y));
+      }
+      if (nearest === Infinity) nearest = 99999;
+      if (nearest > bestDist) { bestDist = nearest; best = s; }
+    }
+    return best;
+  }
+
+  // ===========================================================================
+  //  RENDERING
+  // ===========================================================================
+  draw() {
+    const ctx = this.ctx, W = this.canvas.width, H = this.canvas.height;
+    ctx.fillStyle = "#10141d";
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.save();
+    ctx.translate(W / 2 + this.camera.ox, H / 2 + this.camera.oy);
+    ctx.scale(this.camera.zoom, this.camera.zoom);
+    ctx.translate(-this.camera.x, -this.camera.y);
+
+    this.drawBackdrop(ctx);
+    this.drawBlastBounds(ctx);
+    for (const p of ARENA.platforms) this.drawPlatform(ctx, p);
+    for (const f of this.fighters) this.drawFighter(ctx, f);
+    this.drawEffects(ctx);
+    if (this.showHitboxes) this.drawDebugBoxes(ctx);
+
+    ctx.restore();
+    this.drawHUD(ctx, W, H);
+  }
+
+  drawBackdrop(ctx) {
+    // Griglia di profondita': da' un riferimento al movimento della camera.
+    ctx.strokeStyle = "rgba(255,255,255,0.032)";
+    ctx.lineWidth = 1;
+    for (let x = -1000; x <= 1000; x += 100) {
+      ctx.beginPath(); ctx.moveTo(x, -900); ctx.lineTo(x, 760); ctx.stroke();
+    }
+    for (let y = -900; y <= 700; y += 100) {
+      ctx.beginPath(); ctx.moveTo(-1000, y); ctx.lineTo(1000, y); ctx.stroke();
+    }
+  }
+
+  drawBlastBounds(ctx) {
+    const b = ARENA.blast;
+    ctx.setLineDash([14, 12]);
+    ctx.strokeStyle = "rgba(255,90,90,0.34)";
+    ctx.lineWidth = 3;
+    ctx.strokeRect(b.left, b.top, b.right - b.left, b.bottom - b.top);
+    ctx.setLineDash([]);
+  }
+
+  drawPlatform(ctx, p) {
+    ctx.fillStyle = p.oneWay ? "#4a5b7a" : "#36445d";
+    ctx.fillRect(p.left, p.top, p.w, p.h);
+    ctx.fillStyle = p.oneWay ? "#7d92b8" : "#5b7095";
+    ctx.fillRect(p.left, p.top, p.w, 5);      // bordo: "qui si sta in piedi"
+    if (p.oneWay) {
+      // Tratteggio inferiore = segnale di "attraversabile dal basso".
+      ctx.strokeStyle = "rgba(160,185,225,0.55)";
+      ctx.lineWidth = 3;
+      for (let x = p.left; x < p.right; x += 26) {
+        ctx.beginPath(); ctx.moveTo(x, p.bottom); ctx.lineTo(Math.min(x + 14, p.right), p.bottom); ctx.stroke();
+      }
+    }
+  }
+
+  drawFighter(ctx, f) {
+    if (!f.visible) return;
+    // Sfarfallio da invulnerabilita' (respawn / i-frame di schivata).
+    if (f.invulnerable && Math.floor(this.time * 12) % 2 === 0) return;
+
+    ctx.save();
+    ctx.translate(f.x, f.y);
+    ctx.scale(f.squashX * (f.facing >= 0 ? 1 : -1), f.squashY);
+
+    const tint = STATE_TINT[f.state] || "#ffffff";
+    let color = mixColor(f.color, tint, 0.45);
+    if (f.flash > 0) color = mixColor(color, "#ffffff", Math.min(f.flash * 8, 1));
+
+    // Ombra a terra: aiuta a giudicare le distanze in aria.
+    ctx.fillStyle = "rgba(0,0,0,0.28)";
+    ctx.beginPath(); ctx.ellipse(0, 2, BODY_W * 0.5, 5, 0, 0, Math.PI * 2); ctx.fill();
+
+    ctx.fillStyle = color;
+    ctx.fillRect(-BODY_W / 2, -BODY_H, BODY_W, BODY_H);
+    ctx.strokeStyle = shade(color, -0.55); ctx.lineWidth = 2;
+    ctx.strokeRect(-BODY_W / 2, -BODY_H, BODY_W, BODY_H);
+    // Occhio: indica sempre il verso, indispensabile per leggere i side attack.
+    ctx.fillStyle = "#12141c";
+    ctx.beginPath(); ctx.arc(BODY_W * 0.22, -BODY_H * 0.72, 4.5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = shade(color, -0.7);
+    ctx.fillRect(-BODY_W / 2, -4, BODY_W, 4);
+    ctx.restore();
+
+    // Etichetta e percentuale sopra la testa.
+    ctx.save();
+    ctx.translate(f.x, f.y - BODY_H - 16);
+    ctx.textAlign = "center";
+    ctx.font = '600 15px "Chakra Petch", ui-sans-serif, system-ui, sans-serif';
+    ctx.fillStyle = f.color;
+    ctx.fillText(`${f.label}  ${Math.round(f.percent)}%`, 0, 0);
+    ctx.restore();
+  }
+
+  drawEffects(ctx) {
+    for (const e of this.effects) {
+      const t = clamp(e.life / e.max, 0, 1);
+      const alpha = 1 - t;
+      if (e.type === "spark") {
+        // Stella a quattro punte allungata sull'asse del knockback.
+        const eased = 1 - (1 - t) ** 3;
+        const r = lerp(12, 70 * e.size + 26, eased);
+        ctx.save();
+        ctx.translate(e.x, e.y); ctx.rotate(e.angle);
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = e.color;
+        ctx.beginPath();
+        ctx.moveTo(r * 1.6, 0); ctx.lineTo(0, r * 0.42);
+        ctx.lineTo(-r * 0.7, 0); ctx.lineTo(0, -r * 0.42);
+        ctx.closePath(); ctx.fill();
+        ctx.fillStyle = "#ffffff";
+        ctx.beginPath(); ctx.arc(0, 0, r * 0.3, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+      } else {
+        ctx.save();
+        ctx.globalAlpha = alpha * 0.8;
+        ctx.strokeStyle = e.color; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.ellipse(e.x, e.y, lerp(8, 46, t), lerp(4, 14, t), 0, 0, Math.PI * 2); ctx.stroke();
+        ctx.restore();
+      }
+    }
+  }
+
+  drawDebugBoxes(ctx) {
+    for (const f of this.fighters) {
+      if (!f.visible) continue;
+      const h = f.hurtboxRect();
+      ctx.strokeStyle = "rgba(80,200,255,0.85)"; ctx.lineWidth = 1.5;
+      ctx.strokeRect(h.left, h.top, h.right - h.left, h.bottom - h.top);
+      const b = f.hitboxRect();
+      if (b) {
+        ctx.fillStyle = "rgba(255,60,70,0.28)";
+        ctx.fillRect(b.left, b.top, b.right - b.left, b.bottom - b.top);
+        ctx.strokeStyle = "rgba(255,80,90,0.95)";
+        ctx.strokeRect(b.left, b.top, b.right - b.left, b.bottom - b.top);
+      }
+    }
+  }
+
+  // --- HUD (spazio schermo) -------------------------------------------------
+  drawHUD(ctx, W, H) {
+    const panelW = 250, gap = 60;
+    const totalW = this.fighters.length * panelW + gap * (this.fighters.length - 1);
+    let x = (W - totalW) / 2;
+    for (const f of this.fighters) {
+      const cx = x + panelW / 2;
+      ctx.textAlign = "center";
+      ctx.font = '700 18px "Chakra Petch", ui-sans-serif, system-ui, sans-serif';
+      ctx.fillStyle = f.color;
+      ctx.fillText(f.label, cx, H - 108);
+
+      // Gradiente bianco -> giallo -> rosso: il pericolo si legge senza numeri.
+      const t = clamp(f.percent / 150, 0, 1);
+      ctx.fillStyle = t < 0.5 ? mixColor("#ffffff", "#ffd95c", t * 2) : mixColor("#ffd95c", "#ff594a", (t - 0.5) * 2);
+      ctx.font = '700 54px "Chakra Petch", ui-sans-serif, system-ui, sans-serif';
+      ctx.fillText(`${Math.round(f.percent)}%`, cx, H - 56);
+
+      ctx.font = '500 18px "Chakra Petch", ui-sans-serif, system-ui, sans-serif';
+      ctx.fillStyle = f.stocks > 0 ? f.color : "#6b7488";
+      ctx.fillText(f.stocks > 0 ? "● ".repeat(f.stocks).trim() : "OUT", cx, H - 26);
+      x += panelW + gap;
+    }
+
+    // Registro degli eventi: utile in playtest per capire cosa e' successo.
+    ctx.textAlign = "left";
+    ctx.font = '400 13px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace';
+    this.logLines.forEach((l, i) => {
+      ctx.fillStyle = `rgba(200,212,232,${clamp(l.life / 2, 0, 1) * 0.75})`;
+      ctx.fillText(l.text, 18, 28 + i * 18);
+    });
+
+    if (this.winner || this.fighters.some((f) => f.stocks <= 0)) {
+      ctx.textAlign = "center";
+      ctx.fillStyle = "rgba(8,10,16,0.72)";
+      ctx.fillRect(0, H / 2 - 70, W, 140);
+      ctx.font = '700 46px "Chakra Petch", ui-sans-serif, system-ui, sans-serif';
+      ctx.fillStyle = this.winner ? this.winner.color : "#e8edf7";
+      ctx.fillText(this.winner ? `${this.winner.label} VINCE!` : "PAREGGIO", W / 2, H / 2 + 4);
+      ctx.font = '500 18px "Chakra Petch", ui-sans-serif, system-ui, sans-serif';
+      ctx.fillStyle = "#a9b4c9";
+      ctx.fillText("premi R per rigiocare", W / 2, H / 2 + 38);
+    }
+  }
+}
+
+// =============================================================================
+//  9. UTILITY
+// =============================================================================
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function moveToward(from, to, delta) {
+  return Math.abs(to - from) <= delta ? to : from + Math.sign(to - from) * delta;
+}
+function hexToRgb(h) {
+  const v = parseInt(h.slice(1), 16);
+  return { r: (v >> 16) & 255, g: (v >> 8) & 255, b: v & 255 };
+}
+function mixColor(a, b, t) {
+  const A = hexToRgb(a), B = hexToRgb(b);
+  return `rgb(${Math.round(lerp(A.r, B.r, t))},${Math.round(lerp(A.g, B.g, t))},${Math.round(lerp(A.b, B.b, t))})`;
+}
+function shade(color, amount) {
+  const m = color.match(/\d+/g);
+  const [r, g, b] = m ? m.map(Number) : [255, 255, 255];
+  const f = (v) => clamp(Math.round(v + 255 * amount), 0, 255);
+  return `rgb(${f(r)},${f(g)},${f(b)})`;
+}
+
+// =============================================================================
+//  10. AVVIO: loop a passo fisso con accumulatore
+// =============================================================================
+const canvas = document.getElementById("game");
+const game = new Game(canvas);
+let last = performance.now(), accumulator = 0;
+
+function frame(now) {
+  const elapsed = Math.min((now - last) / 1000, 0.25);
+  last = now;
+  accumulator += elapsed;
+  let steps = 0;
+  // Passo fisso: la simulazione avanza sempre a 1/60 s, il rendering segue il
+  // monitor. Senza questo il frame data degli attacchi cambierebbe con gli FPS.
+  while (accumulator >= DT && steps < MAX_FRAME_SKIP) {
+    game.update(DT);
+    accumulator -= DT;
+    steps++;
+  }
+  if (steps >= MAX_FRAME_SKIP) accumulator = 0;   // recupero dopo un lag spike
+  game.draw();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// Il pannello iniziale serve a dare il focus alla pagina (per la tastiera).
+const hint = document.getElementById("hint");
+function dismissHint() { hint.style.display = "none"; canvas.focus(); }
+hint.addEventListener("click", dismissHint);
+addEventListener("keydown", dismissHint, { once: true });
+
+// Aggancio per i test automatici e per il debug da console.
+window.__pf = { game, Combat, MOVESET, makeStats, Keys, Pressed, STATE, ARENA };
+</script>
+</html>
