@@ -1,0 +1,48 @@
+[gd_scene load_steps=8 format=3]
+
+[ext_resource type="Script" path="res://scripts/player/player_controller.gd" id="1_q7433"]
+[ext_resource type="Script" path="res://scripts/player/character_visual.gd" id="2_rxvam"]
+[ext_resource type="Script" path="res://scripts/combat/hurtbox.gd" id="3_go2dr"]
+[ext_resource type="Script" path="res://scripts/combat/hitbox.gd" id="4_2op15"]
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_jfi8y"]
+size = Vector2(34, 58)
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_aq0ll"]
+size = Vector2(40, 62)
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_gxc3t"]
+size = Vector2(40, 40)
+
+[node name="Fighter" type="CharacterBody2D"]
+script = ExtResource("1_q7433")
+player_index = 1
+team = 0
+player_color = Color(0.309804, 0.764706, 0.968627, 1)
+stats = null
+debug_state_label = false
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="."]
+position = Vector2(0, -29)
+shape = SubResource("RectangleShape2D_jfi8y")
+
+[node name="Visual" type="Node2D" parent="."]
+script = ExtResource("2_rxvam")
+body_size = Vector2(34, 58)
+base_color = Color(0.309804, 0.764706, 0.968627, 1)
+
+[node name="Hurtbox" type="Area2D" parent="."]
+script = ExtResource("3_go2dr")
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Hurtbox"]
+position = Vector2(0, -29)
+shape = SubResource("RectangleShape2D_aq0ll")
+
+[node name="Hitbox" type="Area2D" parent="."]
+position = Vector2(0, -29)
+script = ExtResource("4_2op15")
+draw_debug = false
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Hitbox"]
+shape = SubResource("RectangleShape2D_gxc3t")
+disabled = true

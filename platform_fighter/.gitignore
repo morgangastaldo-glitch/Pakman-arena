@@ -1,0 +1,4 @@
+# Cartella di cache/import generata da Godot: non va versionata.
+.godot/
+# Preset di esportazione (contengono percorsi e chiavi locali).
+export_presets.cfg

@@ -1,0 +1,187 @@
+[gd_scene load_steps=16 format=3]
+
+[ext_resource type="Script" path="res://scripts/world/platform.gd" id="1_5w00h"]
+[ext_resource type="Script" path="res://scripts/world/blast_zone.gd" id="2_nw7xd"]
+[ext_resource type="PackedScene" path="res://scenes/Player.tscn" id="3_2ws8k"]
+[ext_resource type="Script" path="res://scripts/player/player_controller.gd" id="4_mqkq8"]
+[ext_resource type="Script" path="res://scripts/game/arena_camera.gd" id="5_teffm"]
+[ext_resource type="Script" path="res://scripts/game/game_manager.gd" id="6_2gxcm"]
+[ext_resource type="Script" path="res://scripts/game/hud.gd" id="7_gkcoq"]
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_hvb81"]
+size = Vector2(760, 56)
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_cs5ff"]
+size = Vector2(250, 24)
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_csalc"]
+size = Vector2(250, 24)
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_eamox"]
+size = Vector2(270, 24)
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_g6duq"]
+size = Vector2(400, 2600)
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_jpi58"]
+size = Vector2(400, 2600)
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_c0pdn"]
+size = Vector2(2700, 400)
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_ar0iq"]
+size = Vector2(2700, 400)
+
+[node name="Arena" type="Node2D"]
+
+[node name="Background" type="CanvasLayer" parent="."]
+layer = -10
+
+[node name="Sky" type="ColorRect" parent="Background"]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+mouse_filter = 2
+color = Color(0.0666667, 0.0784314, 0.113725, 1)
+
+[node name="World" type="Node2D" parent="."]
+
+[node name="MainPlatform" type="StaticBody2D" parent="World"]
+position = Vector2(0, 180)
+script = ExtResource("1_5w00h")
+size = Vector2(760, 56)
+one_way = false
+color = Color(0.211765, 0.266667, 0.364706, 1)
+one_way_margin = 12.0
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="World/MainPlatform"]
+shape = SubResource("RectangleShape2D_hvb81")
+one_way_collision_margin = 12.0
+
+[node name="PlatformLeft" type="StaticBody2D" parent="World" groups=["one_way_platform"]]
+position = Vector2(-330, 10)
+script = ExtResource("1_5w00h")
+size = Vector2(250, 24)
+one_way = true
+color = Color(0.290196, 0.356863, 0.478431, 1)
+one_way_margin = 12.0
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="World/PlatformLeft"]
+shape = SubResource("RectangleShape2D_cs5ff")
+one_way_collision = true
+one_way_collision_margin = 12.0
+
+[node name="PlatformRight" type="StaticBody2D" parent="World" groups=["one_way_platform"]]
+position = Vector2(330, 10)
+script = ExtResource("1_5w00h")
+size = Vector2(250, 24)
+one_way = true
+color = Color(0.290196, 0.356863, 0.478431, 1)
+one_way_margin = 12.0
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="World/PlatformRight"]
+shape = SubResource("RectangleShape2D_csalc")
+one_way_collision = true
+one_way_collision_margin = 12.0
+
+[node name="PlatformTop" type="StaticBody2D" parent="World" groups=["one_way_platform"]]
+position = Vector2(0, -150)
+script = ExtResource("1_5w00h")
+size = Vector2(270, 24)
+one_way = true
+color = Color(0.290196, 0.356863, 0.478431, 1)
+one_way_margin = 12.0
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="World/PlatformTop"]
+shape = SubResource("RectangleShape2D_eamox")
+one_way_collision = true
+one_way_collision_margin = 12.0
+
+[node name="SpawnPoints" type="Node2D" parent="."]
+
+[node name="Spawn1" type="Marker2D" parent="SpawnPoints" groups=["spawn_point"]]
+position = Vector2(-220, 60)
+
+[node name="Spawn2" type="Marker2D" parent="SpawnPoints" groups=["spawn_point"]]
+position = Vector2(220, 60)
+
+[node name="Spawn3" type="Marker2D" parent="SpawnPoints" groups=["spawn_point"]]
+position = Vector2(0, -260)
+
+[node name="Spawn4" type="Marker2D" parent="SpawnPoints" groups=["spawn_point"]]
+position = Vector2(-330, -90)
+
+[node name="BlastZones" type="Node2D" parent="."]
+
+[node name="BlastLeft" type="Area2D" parent="BlastZones" groups=["blast_zone"]]
+position = Vector2(-1150, -150)
+script = ExtResource("2_nw7xd")
+size = Vector2(400, 2600)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="BlastZones/BlastLeft"]
+shape = SubResource("RectangleShape2D_g6duq")
+
+[node name="BlastRight" type="Area2D" parent="BlastZones" groups=["blast_zone"]]
+position = Vector2(1150, -150)
+script = ExtResource("2_nw7xd")
+size = Vector2(400, 2600)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="BlastZones/BlastRight"]
+shape = SubResource("RectangleShape2D_jpi58")
+
+[node name="BlastTop" type="Area2D" parent="BlastZones" groups=["blast_zone"]]
+position = Vector2(0, -1050)
+script = ExtResource("2_nw7xd")
+size = Vector2(2700, 400)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="BlastZones/BlastTop"]
+shape = SubResource("RectangleShape2D_c0pdn")
+
+[node name="BlastBottom" type="Area2D" parent="BlastZones" groups=["blast_zone"]]
+position = Vector2(0, 900)
+script = ExtResource("2_nw7xd")
+size = Vector2(2700, 400)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="BlastZones/BlastBottom"]
+shape = SubResource("RectangleShape2D_ar0iq")
+
+[node name="Fighters" type="Node2D" parent="."]
+
+[node name="Player1" type="CharacterBody2D" parent="Fighters" instance=ExtResource("3_2ws8k")]
+position = Vector2(-220, 60)
+script = ExtResource("4_mqkq8")
+player_index = 1
+team = 0
+player_color = Color(0.309804, 0.764706, 0.968627, 1)
+stats = null
+debug_state_label = false
+
+[node name="Player2" type="CharacterBody2D" parent="Fighters" instance=ExtResource("3_2ws8k")]
+position = Vector2(220, 60)
+script = ExtResource("4_mqkq8")
+player_index = 2
+team = 0
+player_color = Color(1, 0.439216, 0.262745, 1)
+stats = null
+debug_state_label = false
+
+[node name="ArenaCamera" type="Camera2D" parent="."]
+position = Vector2(0, -40)
+script = ExtResource("5_teffm")
+follow_speed = 6.0
+zoom_speed = 4.0
+padding = Vector2(520, 380)
+min_zoom = 0.62
+max_zoom = 1.15
+bounds_size = Vector2(2600, 1800)
+shake_decay = 9.0
+
+[node name="GameManager" type="Node" parent="."]
+script = ExtResource("6_2gxcm")
+stocks_per_player = 3
+respawn_delay = 1.1
+respawn_invulnerability = 2.0
+allow_restart = true
+
+[node name="HUD" type="CanvasLayer" parent="."]
+script = ExtResource("7_gkcoq")
